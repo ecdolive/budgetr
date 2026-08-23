@@ -286,6 +286,181 @@ function buildBudgetRollups(resolved, categories, incomeSubcats){
 function emptyBudgets(){ return { Expenses: {}, Income: {} }; }
 
 /* ============================================================
+   BUDGET EDITOR — converts the raw {Expenses,Income} JSON to/from an
+   id-keyed working draft (so category/subcategory names can be freely
+   renamed in text inputs without key-collision issues), plus the totals
+   math shared by the editor's live per-row/category/right-panel numbers.
+   ============================================================ */
+let _budgetIdSeq = 1;
+function nextBudgetId(){ return 'b' + (_budgetIdSeq++); }
+
+function budgetsRawToDraft(raw){
+  const toItems = (items, fallbackLabel) => (Array.isArray(items) ? items : []).map(it => ({
+    id: nextBudgetId(),
+    freq: it.freq || 'monthly',
+    label: it.label != null ? it.label : fallbackLabel,
+    amount: it.amount,
+  }));
+  const expenses = Object.entries((raw && raw.Expenses) || {}).map(([catName, subs]) => ({
+    id: nextBudgetId(),
+    name: catName,
+    subcategories: Object.entries(subs || {}).map(([subName, items]) => ({
+      id: nextBudgetId(),
+      name: subName,
+      items: toItems(items, subName),
+    })),
+  }));
+  const income = Object.entries((raw && raw.Income) || {}).map(([subName, items]) => ({
+    id: nextBudgetId(),
+    name: subName,
+    items: toItems(items, subName),
+  }));
+  return { expenses, income };
+}
+
+function draftToBudgetsRaw(draft){
+  const serializeItems = (items) => items
+    .filter(it => (it.label && it.label.trim()) || it.amount)
+    .map(it => ({ freq: it.freq, label: it.label, amount: it.amount }));
+  const Expenses = {};
+  draft.expenses.forEach(cat => {
+    const catName = cat.name.trim();
+    if (!catName) return;
+    const subs = {};
+    cat.subcategories.forEach(sub => {
+      const subName = sub.name.trim();
+      if (!subName) return;
+      subs[subName] = serializeItems(sub.items);
+    });
+    Expenses[catName] = subs;
+  });
+  const Income = {};
+  draft.income.forEach(sub => {
+    const subName = sub.name.trim();
+    if (!subName) return;
+    Income[subName] = serializeItems(sub.items);
+  });
+  return { Expenses, Income };
+}
+
+// Sign convention matches the raw JSON: expense item amounts are stored
+// negative (spend), income item amounts positive — same as everywhere
+// else BUDGETS is consumed (see buildBudgetRollups above). The editor UI
+// always displays/accepts positive numbers for expenses and flips the
+// sign on read/write so users never have to think about it.
+function budgetItemYearTotal(item){
+  return resolveLineItem({ freq: item.freq, amount: item.amount }, DATA.year).reduce((a, b) => a + b, 0);
+}
+function budgetSubYearTotal(sub){
+  return sub.items.reduce((a, it) => a + budgetItemYearTotal(it), 0);
+}
+function budgetCatYearTotal(cat){
+  return cat.subcategories.reduce((a, s) => a + budgetSubYearTotal(s), 0);
+}
+function draftAnnualTotals(draft){
+  const incomeTotal = draft.income.reduce((a, s) => a + budgetSubYearTotal(s), 0);
+  const expenseTotal = draft.expenses.reduce((a, c) => a + Math.abs(budgetCatYearTotal(c)), 0);
+  return { incomeTotal, expenseTotal, net: incomeTotal - expenseTotal };
+}
+function updateBudgetRightSummary(){
+  if (!budgetSummaryEls) return;
+  const t = draftAnnualTotals(budgetDraft);
+  budgetSummaryEls.income.textContent = fmt(t.incomeTotal);
+  budgetSummaryEls.expenses.textContent = fmt(t.expenseTotal);
+  budgetSummaryEls.net.textContent = fmtSigned(t.net);
+  budgetSummaryEls.net.className = 'right-total-value num ' + signCls(t.net);
+}
+
+function enterBudgetEditor(){
+  budgetDraft = budgetsRawToDraft(BUDGETS_RAW);
+  budgetEditMode = true;
+  budgetEditTab = 'expenses';
+  budgetOpenCats = new Set();
+  searchQuery = '';
+  document.getElementById('searchInput').value = '';
+  document.getElementById('csvPicker').disabled = true;
+  document.getElementById('budgetPicker').disabled = true;
+  document.getElementById('editBudgetBtn').disabled = true;
+  renderAll();
+}
+function exitBudgetEditor(){
+  budgetEditMode = false;
+  budgetDraft = null;
+  budgetSummaryEls = null;
+  document.getElementById('csvPicker').disabled = false;
+  document.getElementById('budgetPicker').disabled = false;
+  document.getElementById('editBudgetBtn').disabled = false;
+}
+function cancelBudgetEdit(){
+  exitBudgetEditor();
+  renderAll();
+}
+function saveBudgetEdit(){
+  BUDGETS_RAW = draftToBudgetsRaw(budgetDraft);
+  recomputeDerived();
+  exitBudgetEditor();
+  setIOStatus('Budget saved.', 'ok');
+  renderAll();
+}
+
+// Pulls category/subcategory averages out of a prior year's transaction
+// CSV(s) and adds them as suggested "last year avg" line items — additive
+// only, so it never removes or overwrites anything already in the draft.
+function importLastYearCSVIntoDraft(files){
+  try{
+    const allRows = [];
+    files.forEach(f => allRows.push(...parseFidelityCSV(f.text, f.name)));
+    if (allRows.length === 0) throw new Error('No transaction rows found in the file(s) provided.');
+    const agg = aggregate(allRows, files.map(f => f.name));
+
+    const hasExistingData = budgetDraft.expenses.length > 0 || budgetDraft.income.length > 0;
+    if (hasExistingData && !confirm(
+      "This budget already has categories. Importing will add a suggested line item (last year's monthly average) to matching or new subcategories — it won't remove or overwrite anything you've already entered. Continue?"
+    )) return;
+
+    const findByName = (list, name) => list.find(x => x.name.trim().toLowerCase() === name.trim().toLowerCase());
+
+    agg.categories.forEach(cat => {
+      let draftCat = findByName(budgetDraft.expenses, cat.name);
+      if (!draftCat){
+        draftCat = { id: nextBudgetId(), name: cat.name, subcategories: [] };
+        budgetDraft.expenses.push(draftCat);
+      }
+      cat.subcategories.forEach(sub => {
+        let draftSub = findByName(draftCat.subcategories, sub.name);
+        if (!draftSub){
+          draftSub = { id: nextBudgetId(), name: sub.name, items: [] };
+          draftCat.subcategories.push(draftSub);
+        }
+        const avgMonthly = Math.round(sub.yearly / 12);
+        if (avgMonthly !== 0){
+          draftSub.items.push({ id: nextBudgetId(), freq: 'monthly', label: `${sub.name} (last year avg)`, amount: -avgMonthly });
+        }
+      });
+      budgetOpenCats.add(draftCat.id);
+    });
+
+    agg.incomeSubcats.forEach(sub => {
+      let draftSub = findByName(budgetDraft.income, sub.name);
+      if (!draftSub){
+        draftSub = { id: nextBudgetId(), name: sub.name, items: [] };
+        budgetDraft.income.push(draftSub);
+      }
+      const avgMonthly = Math.round(sub.yearly / 12);
+      if (avgMonthly !== 0){
+        draftSub.items.push({ id: nextBudgetId(), freq: 'monthly', label: `${sub.name} (last year avg)`, amount: avgMonthly });
+      }
+    });
+
+    setIOStatus(`Imported starting values from ${files.map(f => f.name).join(', ')}.`, 'ok');
+    renderMid();
+    renderRight();
+  } catch(err){
+    setIOStatus('Could not parse CSV: ' + err.message, 'err');
+  }
+}
+
+/* ============================================================
    STATE
    ============================================================ */
 let DATA = emptyData();
@@ -300,6 +475,15 @@ let openCats = new Set();
 let selectedSub = null;      // { kind:'expense', category, subcategory } | { kind:'income', subcategory } | null
 let searchQuery = '';
 let txnSort = { key: 'date', dir: 1 };
+
+// Budget editor — a distinct "mode" (like search) that takes over the mid
+// and right panels. See the BUDGET EDITOR section below.
+let budgetEditMode = false;
+let budgetDraft = null;      // { expenses:[{id,name,subcategories:[{id,name,items:[{id,freq,label,amount}]}]}], income:[{id,name,items:[...]}] }
+let budgetEditTab = 'expenses';  // 'expenses' | 'income', within the editor
+let budgetOpenCats = new Set();  // open category ids, editor-local (separate from openCats)
+let budgetFocusId = null;        // id of a newly-added row to focus after the next render
+let budgetSummaryEls = null;     // right-panel live-total <span> refs while editing
 
 /* ============================================================
    HELPERS
@@ -334,6 +518,50 @@ function findSubcategory(catName, subName){
 }
 function findIncomeSub(name){ return DATA.incomeSubcats.find(s=>s.name===name); }
 
+// DATA.categories/incomeSubcats only contain rows seen in a loaded CSV — a
+// category that only exists in the budget (e.g. set up before this year's
+// transactions have been imported) wouldn't otherwise appear anywhere in
+// the ledger table, only in the card totals. These merge in any
+// budget-only category/subcategory as an all-zero-actual row, so a
+// freshly-created budget is visible immediately, before any CSV is loaded.
+function mergedExpenseCategories(){
+  const result = DATA.categories.map(cat=>({
+    name: cat.name,
+    monthly: cat.monthly,
+    subcategories: cat.subcategories.map(s=>({ name: s.name, monthly: s.monthly })),
+  }));
+  const byName = new Map(result.map(c=>[c.name, c]));
+  Object.entries(BUDGETS.expenses||{}).forEach(([catName, subs])=>{
+    let cat = byName.get(catName);
+    if (!cat){
+      cat = { name: catName, monthly: new Array(12).fill(0), subcategories: [] };
+      byName.set(catName, cat);
+      result.push(cat);
+    }
+    const subByName = new Map(cat.subcategories.map(s=>[s.name, s]));
+    Object.keys(subs||{}).forEach(subName=>{
+      if (!subByName.has(subName)){
+        const sub = { name: subName, monthly: new Array(12).fill(0) };
+        cat.subcategories.push(sub);
+        subByName.set(subName, sub);
+      }
+    });
+  });
+  return result;
+}
+function mergedIncomeSubcats(){
+  const result = DATA.incomeSubcats.map(s=>({ name: s.name, monthly: s.monthly }));
+  const byName = new Map(result.map(s=>[s.name, s]));
+  Object.keys(BUDGETS.income||{}).forEach(subName=>{
+    if (!byName.has(subName)){
+      const sub = { name: subName, monthly: new Array(12).fill(0) };
+      result.push(sub);
+      byName.set(subName, sub);
+    }
+  });
+  return result;
+}
+
 /* ============================================================
    LEFT PANEL — timeframe list
    ============================================================ */
@@ -351,17 +579,19 @@ function renderLeftNav(){
   const yearNet = DATA.net.reduce((a,b)=>a+b,0);
   wrap.appendChild(tfItem('Year', yearNet, 'year'));
 
+  const cmi = DATA.currentMonthIndex;
   for (let i=0;i<12;i++){
     const hasData = DATA.monthsPresent.includes(i);
     const val = hasData ? DATA.net[i] : monthPlanNet(i);
-    wrap.appendChild(tfItem(monthName(i), val, i));
+    const isFuture = cmi === null ? true : i > cmi;
+    wrap.appendChild(tfItem(monthName(i), val, i, isFuture));
   }
 }
-function tfItem(label, value, key){
+function tfItem(label, value, key, isFuture){
   const div = document.createElement('div');
-  div.className = 'tf-item' + (timeframe===key ? ' active' : '');
+  div.className = 'tf-item' + (timeframe===key ? ' active' : '') + (isFuture ? ' future' : '');
   const cls = value>0?'pos':(value<0?'neg':'zero');
-  div.innerHTML = `<span>${label}</span><span class="net ${cls}">${value===0?'–':fmtSigned(value)}</span>`;
+  div.innerHTML = `<span class="tf-label">${label}</span><span class="net ${isFuture?'':cls}">${value===0?'–':fmtSigned(value)}</span>`;
   div.addEventListener('click', ()=>{
     timeframe = key;
     searchQuery = '';
@@ -387,6 +617,19 @@ function wrapScroll(el){
 function renderMid(){
   const mid = document.getElementById('midPanel');
   mid.innerHTML = '';
+
+  if (budgetEditMode){
+    renderBudgetEditor(mid);
+    if (budgetFocusId){
+      const id = budgetFocusId;
+      budgetFocusId = null;
+      const el = mid.querySelector(
+        `[data-cat-id="${id}"] > .budget-cat-header .budget-name-input, [data-sub-id="${id}"] > .budget-sub-header .budget-name-input`
+      );
+      if (el){ el.focus(); if (el.select) el.select(); }
+    }
+    return;
+  }
 
   if (searchQuery){
     mid.appendChild(renderSearchResultsTable());
@@ -418,7 +661,7 @@ function renderPills(){
     const b = document.createElement('button');
     b.className = 'pill' + (pill===key?' active':'');
     b.textContent = label;
-    b.addEventListener('click', ()=>{ pill = key; selectedSub = null; renderAll(); });
+    b.addEventListener('click', ()=>{ pill = key; renderAll(); });
     wrap.appendChild(b);
   });
   return wrap;
@@ -460,8 +703,14 @@ function renderCards(){
   }
   const netActual = incomeActual - expensesActual;
 
-  const incomePlan = timeframe==='year' ? ROLL.incomeTotalMonthly.reduce((a,b)=>a+b,0) : ROLL.incomeTotalMonthly[timeframe];
-  const expensesPlan = timeframe==='year' ? ROLL.expenseTotalMonthly.reduce((a,b)=>a+b,0) : ROLL.expenseTotalMonthly[timeframe];
+  // On the YTD pill, "Plan" should read as "planned through the months
+  // we actually have data for" — not the full year — so it's a fair
+  // comparison against the actual value shown above it.
+  const yearPlanSum = (monthly) => timeframe==='year' && pill==='ytd'
+    ? DATA.monthsPresent.reduce((a,i)=>a+monthly[i],0)
+    : monthly.reduce((a,b)=>a+b,0);
+  const incomePlan = timeframe==='year' ? yearPlanSum(ROLL.incomeTotalMonthly) : ROLL.incomeTotalMonthly[timeframe];
+  const expensesPlan = timeframe==='year' ? yearPlanSum(ROLL.expenseTotalMonthly) : ROLL.expenseTotalMonthly[timeframe];
   const netPlan = incomePlan - expensesPlan;
 
   wrap.appendChild(card('Income', incomeActual, incomePlan, 'income', false));
@@ -477,8 +726,7 @@ function card(label, actual, plan, tabKey, colorBySign){
   const valText = colorBySign ? fmtSigned(actual) : fmt(actual);
   const planText = colorBySign ? fmtSigned(plan) : fmt(plan);
   div.innerHTML = `
-    <div class="card-head"><span class="card-label">${label}</span></div>
-    <div class="${valCls}">${valText}</div>
+    <div class="card-head"><span class="card-label">${label}</span><span class="${valCls}">${valText}</span></div>
     <div class="card-sub"><span>Plan</span><span class="amt num">${planText}</span></div>
   `;
   if (tabKey){
@@ -496,14 +744,18 @@ function renderYearTable(){
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   table.appendChild(tbody);
+  const plannedMask = plannedMonthMask();
+  const noDash = new Array(12).fill(false);
+  const numCell = (v, i, dashMask) => `<td class="num${plannedMask[i]?' planned':''}">${dashMask[i]?'<span class="dash">–</span>':fmt(v)}</td>`;
 
   if (activeTab === 'expenses'){
-    if (DATA.categories.length === 0){
+    const categories = mergedExpenseCategories();
+    if (categories.length === 0){
       tbody.innerHTML = `<tr><td colspan="14" class="empty-table">No expense categories loaded yet.</td></tr>`;
     } else {
       let grandTotal = 0;
       const monthTotals = new Array(12).fill(0);
-      DATA.categories.forEach(cat=>{
+      categories.forEach(cat=>{
         const { values, dashMask } = yearRowValues(cat.monthly, ROLL.expenseCategoryMonthly[cat.name] || new Array(12).fill(0));
         values.forEach((v,i)=>monthTotals[i]+=v);
         const total = values.reduce((a,b)=>a+b,0);
@@ -513,7 +765,7 @@ function renderYearTable(){
         const tr = document.createElement('tr');
         tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
         tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
-          values.map((v,i)=>`<td class="num">${dashMask[i]?'<span class="dash">–</span>':fmt(v)}</td>`).join('') +
+          values.map((v,i)=>numCell(v,i,dashMask)).join('') +
           `<td class="num">${fmt(total)}</td>`;
         tr.addEventListener('click', ()=>{
           if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
@@ -529,7 +781,7 @@ function renderYearTable(){
           const sr = document.createElement('tr');
           sr.className = 'sub-row' + (isOpen?' open':'') + (isSel?' selected':'');
           sr.innerHTML = `<td><span class="cell-label">${sub.name}</span></td>` +
-            subVals.map((v,i)=>`<td class="num">${subDash[i]?'<span class="dash">–</span>':fmt(v)}</td>`).join('') +
+            subVals.map((v,i)=>numCell(v,i,subDash)).join('') +
             `<td class="num">${fmt(subTotal)}</td>`;
           sr.addEventListener('click', (e)=>{
             e.stopPropagation();
@@ -540,17 +792,18 @@ function renderYearTable(){
       });
       const trTotal = document.createElement('tr');
       trTotal.className = 'total-row';
-      trTotal.innerHTML = `<td>Total</td>` + monthTotals.map(v=>`<td class="num">${fmt(v)}</td>`).join('') + `<td class="num">${fmt(grandTotal)}</td>`;
+      trTotal.innerHTML = `<td>Total</td>` + monthTotals.map((v,i)=>numCell(v,i,noDash)).join('') + `<td class="num">${fmt(grandTotal)}</td>`;
       tbody.appendChild(trTotal);
     }
   } else {
     // Income — flat, selectable rows
-    if (DATA.incomeSubcats.length === 0){
+    const incomeSubcats = mergedIncomeSubcats();
+    if (incomeSubcats.length === 0){
       tbody.innerHTML = `<tr><td colspan="14" class="empty-table">No income categories loaded yet.</td></tr>`;
     } else {
       let grandTotal = 0;
       const monthTotals = new Array(12).fill(0);
-      DATA.incomeSubcats.forEach(sub=>{
+      incomeSubcats.forEach(sub=>{
         const budget = ROLL.incomeSubMonthly[sub.name] || new Array(12).fill(0);
         const { values, dashMask } = yearRowValues(sub.monthly, budget);
         values.forEach((v,i)=>monthTotals[i]+=v);
@@ -560,7 +813,7 @@ function renderYearTable(){
         const tr = document.createElement('tr');
         tr.className = 'income-row' + (isSel?' selected':'');
         tr.innerHTML = `<td><span class="cell-label">${sub.name}</span></td>` +
-          values.map((v,i)=>`<td class="num">${dashMask[i]?'<span class="dash">–</span>':fmt(v)}</td>`).join('') +
+          values.map((v,i)=>numCell(v,i,dashMask)).join('') +
           `<td class="num">${fmt(total)}</td>`;
         tr.addEventListener('click', ()=>{
           selectSub({ kind:'income', subcategory: sub.name });
@@ -569,12 +822,25 @@ function renderYearTable(){
       });
       const trTotal = document.createElement('tr');
       trTotal.className = 'total-row';
-      trTotal.innerHTML = `<td>Total</td>` + monthTotals.map(v=>`<td class="num">${fmt(v)}</td>`).join('') + `<td class="num">${fmt(grandTotal)}</td>`;
+      trTotal.innerHTML = `<td>Total</td>` + monthTotals.map((v,i)=>numCell(v,i,noDash)).join('') + `<td class="num">${fmt(grandTotal)}</td>`;
       tbody.appendChild(trTotal);
     }
   }
 
   return table;
+}
+
+// Which of the 12 months are showing a planned (budget) rather than actual
+// value for the current pill — Plan: always; Projection: any month after
+// the current one (or every month, if there's no "current month" to speak
+// of yet); YTD: never. Same for every row, so callers compute it once.
+function plannedMonthMask(){
+  if (pill === 'plan') return new Array(12).fill(true);
+  if (pill === 'projection'){
+    const cmi = DATA.currentMonthIndex;
+    return new Array(12).fill(false).map((_,i)=> cmi===null ? true : i>cmi);
+  }
+  return new Array(12).fill(false);
 }
 
 // Resolves the 12 display values + a dash-mask for a row, based on the active pill.
@@ -611,11 +877,12 @@ function renderMonthTable(){
   }
 
   if (activeTab === 'expenses'){
-    if (DATA.categories.length === 0){
+    const categories = mergedExpenseCategories();
+    if (categories.length === 0){
       tbody.innerHTML = `<tr><td colspan="4" class="empty-table">No expense categories loaded yet.</td></tr>`;
     } else {
       let totActual=0, totPlan=0;
-      DATA.categories.forEach(cat=>{
+      categories.forEach(cat=>{
         const actual = cat.monthly[mi] || 0;
         const planVal = (ROLL.expenseCategoryMonthly[cat.name]||[])[mi] || 0;
         totActual += actual; totPlan += planVal;
@@ -651,11 +918,12 @@ function renderMonthTable(){
       tbody.appendChild(trTotal);
     }
   } else {
-    if (DATA.incomeSubcats.length === 0){
+    const incomeSubcats = mergedIncomeSubcats();
+    if (incomeSubcats.length === 0){
       tbody.innerHTML = `<tr><td colspan="4" class="empty-table">No income categories loaded yet.</td></tr>`;
     } else {
       let totActual=0, totPlan=0;
-      DATA.incomeSubcats.forEach(sub=>{
+      incomeSubcats.forEach(sub=>{
         const actual = sub.monthly[mi] || 0;
         const planVal = (ROLL.incomeSubMonthly[sub.name]||[])[mi] || 0;
         totActual += actual; totPlan += planVal;
@@ -748,11 +1016,364 @@ function selectSub(sub){
 }
 
 /* ============================================================
+   BUDGET EDITOR — mid-panel UI. A distinct mode (like search): while
+   active it fully replaces the mid/right panel content. Text/number
+   field edits mutate budgetDraft in place and patch just the affected
+   total <span>s (no full re-render, so focus/cursor position survives
+   typing); structural changes (add/remove category, subcategory, or
+   line item; expand/collapse) call renderMid() to rebuild from
+   budgetDraft, since row DOM has to change shape anyway.
+   ============================================================ */
+function renderBudgetEditor(mid){
+  const header = document.createElement('div');
+  header.className = 'budget-editor-header';
+  const hasSaved = Object.keys(BUDGETS_RAW.Expenses||{}).length || Object.keys(BUDGETS_RAW.Income||{}).length;
+  header.innerHTML = `
+    <div class="budget-editor-title">${hasSaved ? 'Edit Budget' : 'Create Budget'}</div>
+    <div class="budget-editor-actions">
+      <button class="file-btn ghost" type="button" id="budgetCancelBtn">Cancel</button>
+      <button class="file-btn primary" type="button" id="budgetSaveBtn">Save budget</button>
+    </div>
+  `;
+  header.querySelector('#budgetCancelBtn').addEventListener('click', ()=>{
+    if (confirm('Discard changes to this budget?')) cancelBudgetEdit();
+  });
+  header.querySelector('#budgetSaveBtn').addEventListener('click', saveBudgetEdit);
+  mid.appendChild(header);
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'budget-editor-toolbar';
+  const toggle = document.createElement('div');
+  toggle.className = 'budget-tab-toggle';
+  [['expenses','Expenses'],['income','Income']].forEach(([key,label])=>{
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'pill' + (budgetEditTab===key ? ' active' : '');
+    b.textContent = label;
+    b.addEventListener('click', ()=>{ budgetEditTab = key; renderMid(); renderRight(); });
+    toggle.appendChild(b);
+  });
+  toolbar.appendChild(toggle);
+
+  const importLabel = document.createElement('label');
+  importLabel.className = 'file-btn';
+  importLabel.textContent = "Import last year's CSV as starting point";
+  const importInput = document.createElement('input');
+  importInput.type = 'file';
+  importInput.accept = '.csv';
+  importInput.multiple = true;
+  importLabel.appendChild(importInput);
+  importInput.addEventListener('change', async (e)=>{
+    const fileList = Array.from(e.target.files || []);
+    if (!fileList.length) return;
+    const files = await Promise.all(fileList.map(f => f.text().then(text=>({name:f.name, text}))));
+    importLastYearCSVIntoDraft(files);
+    e.target.value = '';
+  });
+  toolbar.appendChild(importLabel);
+  mid.appendChild(toolbar);
+
+  const body = document.createElement('div');
+  body.className = 'budget-editor-body';
+  if (budgetEditTab === 'expenses') renderBudgetExpensesBody(body);
+  else renderBudgetIncomeBody(body);
+  mid.appendChild(body);
+}
+
+function renderBudgetExpensesBody(container){
+  if (budgetDraft.expenses.length === 0){
+    const hint = document.createElement('div');
+    hint.className = 'budget-empty-hint';
+    hint.textContent = 'No expense categories yet. Click "+ Add category" below, or import last year’s CSV as a starting point.';
+    container.appendChild(hint);
+  }
+  budgetDraft.expenses.forEach(cat=>{
+    container.appendChild(renderBudgetCategoryBlock(cat));
+  });
+  const addCatBtn = document.createElement('button');
+  addCatBtn.type = 'button';
+  addCatBtn.className = 'add-cat-btn';
+  addCatBtn.textContent = '+ Add category';
+  addCatBtn.addEventListener('click', ()=>{
+    const cat = { id: nextBudgetId(), name:'', subcategories: [] };
+    budgetDraft.expenses.push(cat);
+    budgetOpenCats.add(cat.id);
+    budgetFocusId = cat.id;
+    renderMid();
+    renderRight();
+  });
+  container.appendChild(addCatBtn);
+}
+
+function renderBudgetIncomeBody(container){
+  if (budgetDraft.income.length === 0){
+    const hint = document.createElement('div');
+    hint.className = 'budget-empty-hint';
+    hint.textContent = 'No income sources yet. Click "+ Add income source" below, or import last year’s CSV as a starting point.';
+    container.appendChild(hint);
+  }
+  budgetDraft.income.forEach(sub=>{
+    container.appendChild(renderBudgetSubBlock(sub, { kind:'income' }));
+  });
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'add-cat-btn';
+  addBtn.textContent = '+ Add income source';
+  addBtn.addEventListener('click', ()=>{
+    const sub = { id: nextBudgetId(), name:'', items: [] };
+    budgetDraft.income.push(sub);
+    budgetFocusId = sub.id;
+    renderMid();
+    renderRight();
+  });
+  container.appendChild(addBtn);
+}
+
+function renderBudgetCategoryBlock(cat){
+  const wrap = document.createElement('div');
+  wrap.className = 'budget-cat';
+  wrap.dataset.catId = cat.id;
+  const isOpen = budgetOpenCats.has(cat.id);
+
+  const header = document.createElement('div');
+  header.className = 'budget-cat-header';
+
+  const arrow = document.createElement('span');
+  arrow.className = 'arrow' + (isOpen ? ' open' : '');
+  arrow.innerHTML = `<img src="icons/chevron-right.svg" alt="">`;
+  header.appendChild(arrow);
+
+  const nameInput = document.createElement('input');
+  nameInput.className = 'budget-name-input';
+  nameInput.placeholder = 'Category name';
+  nameInput.value = cat.name;
+  nameInput.addEventListener('input', ()=>{ cat.name = nameInput.value; });
+  nameInput.addEventListener('click', e=>e.stopPropagation());
+  header.appendChild(nameInput);
+
+  const totalEl = document.createElement('span');
+  totalEl.className = 'budget-cat-total num';
+  totalEl.textContent = fmt(Math.abs(budgetCatYearTotal(cat)));
+  header.appendChild(totalEl);
+
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'icon-btn';
+  removeBtn.title = 'Delete category';
+  removeBtn.textContent = '✕';
+  removeBtn.addEventListener('click', (e)=>{
+    e.stopPropagation();
+    if (!confirm(`Delete category "${cat.name || '(unnamed)'}" and all its subcategories?`)) return;
+    budgetDraft.expenses = budgetDraft.expenses.filter(c=>c.id!==cat.id);
+    renderMid();
+    renderRight();
+  });
+  header.appendChild(removeBtn);
+
+  header.addEventListener('click', ()=>{
+    if (budgetOpenCats.has(cat.id)) budgetOpenCats.delete(cat.id); else budgetOpenCats.add(cat.id);
+    renderMid();
+  });
+  wrap.appendChild(header);
+
+  if (isOpen){
+    const subsWrap = document.createElement('div');
+    subsWrap.className = 'budget-subcats';
+    cat.subcategories.forEach(sub=>{
+      subsWrap.appendChild(renderBudgetSubBlock(sub, { kind:'expense', cat, catTotalEl: totalEl }));
+    });
+    const addSubBtn = document.createElement('button');
+    addSubBtn.type = 'button';
+    addSubBtn.className = 'add-sub-btn';
+    addSubBtn.textContent = '+ Add subcategory';
+    addSubBtn.addEventListener('click', ()=>{
+      const sub = { id: nextBudgetId(), name:'', items: [] };
+      cat.subcategories.push(sub);
+      budgetFocusId = sub.id;
+      renderMid();
+      renderRight();
+    });
+    subsWrap.appendChild(addSubBtn);
+    wrap.appendChild(subsWrap);
+  }
+
+  return wrap;
+}
+
+// opts: { kind:'expense', cat, catTotalEl } | { kind:'income' }
+function renderBudgetSubBlock(sub, opts){
+  const wrap = document.createElement('div');
+  wrap.className = 'budget-sub';
+  wrap.dataset.subId = sub.id;
+
+  const header = document.createElement('div');
+  header.className = 'budget-sub-header';
+
+  const nameInput = document.createElement('input');
+  nameInput.className = 'budget-name-input';
+  nameInput.placeholder = opts.kind==='income' ? 'Income source name' : 'Subcategory name';
+  nameInput.value = sub.name;
+  nameInput.addEventListener('input', ()=>{ sub.name = nameInput.value; });
+  header.appendChild(nameInput);
+
+  const totalEl = document.createElement('span');
+  totalEl.className = 'budget-sub-total num';
+  totalEl.textContent = fmt(Math.abs(budgetSubYearTotal(sub)));
+  header.appendChild(totalEl);
+
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'icon-btn';
+  removeBtn.title = 'Delete';
+  removeBtn.textContent = '✕';
+  removeBtn.addEventListener('click', ()=>{
+    if (!confirm(`Delete "${sub.name || '(unnamed)'}"?`)) return;
+    if (opts.kind==='expense') opts.cat.subcategories = opts.cat.subcategories.filter(s=>s.id!==sub.id);
+    else budgetDraft.income = budgetDraft.income.filter(s=>s.id!==sub.id);
+    renderMid();
+    renderRight();
+  });
+  header.appendChild(removeBtn);
+  wrap.appendChild(header);
+
+  const itemsWrap = document.createElement('div');
+  itemsWrap.className = 'budget-items';
+  sub.items.forEach(item=>{
+    itemsWrap.appendChild(renderBudgetItemRow(item, sub, opts, totalEl));
+  });
+  wrap.appendChild(itemsWrap);
+
+  const addItemBtn = document.createElement('button');
+  addItemBtn.type = 'button';
+  addItemBtn.className = 'add-item-btn';
+  addItemBtn.textContent = '+ Add line item';
+  addItemBtn.addEventListener('click', ()=>{
+    sub.items.push({ id: nextBudgetId(), freq:'monthly', label: sub.name||'', amount: 0 });
+    renderMid();
+    renderRight();
+  });
+  wrap.appendChild(addItemBtn);
+
+  return wrap;
+}
+
+function onBudgetItemChanged(sub, opts, subTotalEl){
+  subTotalEl.textContent = fmt(Math.abs(budgetSubYearTotal(sub)));
+  if (opts.kind==='expense' && opts.catTotalEl){
+    opts.catTotalEl.textContent = fmt(Math.abs(budgetCatYearTotal(opts.cat)));
+  }
+  updateBudgetRightSummary();
+}
+
+function renderBudgetItemRow(item, sub, opts, subTotalEl){
+  const row = document.createElement('div');
+  row.className = 'budget-item-row';
+
+  const labelInput = document.createElement('input');
+  labelInput.className = 'budget-item-label';
+  labelInput.placeholder = 'Label';
+  labelInput.value = item.label || '';
+  labelInput.addEventListener('input', ()=>{ item.label = labelInput.value; });
+  row.appendChild(labelInput);
+
+  const freqSelect = document.createElement('select');
+  freqSelect.className = 'budget-item-freq';
+  const freqOptions = [['monthly','Monthly'],['daily','Daily'], ...MONTHS_FULL.map((m,i)=>[MONTH_ABBR[i], m+' (once)'])];
+  const curFreq = (item.freq||'monthly').toLowerCase();
+  freqOptions.forEach(([val,label])=>{
+    const opt = document.createElement('option');
+    opt.value = val; opt.textContent = label;
+    if (curFreq === val) opt.selected = true;
+    freqSelect.appendChild(opt);
+  });
+  row.appendChild(freqSelect);
+
+  const isArrayAmount = Array.isArray(item.amount) && curFreq === 'monthly';
+  let amountInput = null;
+  if (isArrayAmount){
+    const note = document.createElement('span');
+    note.className = 'budget-array-note';
+    const avg = item.amount.reduce((a,b)=>a+(Number(b)||0),0)/12;
+    note.textContent = `Custom monthly values (avg ${fmt(Math.abs(avg))})`;
+    const convertBtn = document.createElement('button');
+    convertBtn.type = 'button';
+    convertBtn.className = 'icon-btn';
+    convertBtn.title = 'Replace with a single amount';
+    convertBtn.textContent = '✎';
+    convertBtn.addEventListener('click', ()=>{
+      item.amount = Math.round(Math.abs(avg));
+      renderMid();
+      renderRight();
+    });
+    note.appendChild(convertBtn);
+    row.appendChild(note);
+  } else {
+    amountInput = document.createElement('input');
+    amountInput.type = 'number';
+    amountInput.step = '1';
+    amountInput.className = 'budget-item-amount num';
+    const displayVal = opts.kind==='expense' ? Math.abs(Number(item.amount)||0) : (Number(item.amount)||0);
+    amountInput.value = displayVal || '';
+    amountInput.placeholder = '0';
+    row.appendChild(amountInput);
+  }
+
+  freqSelect.addEventListener('change', ()=>{
+    item.freq = freqSelect.value;
+    onBudgetItemChanged(sub, opts, subTotalEl);
+  });
+  if (amountInput){
+    amountInput.addEventListener('input', ()=>{
+      const raw = parseFloat(amountInput.value);
+      const v = isNaN(raw) ? 0 : raw;
+      item.amount = opts.kind==='expense' ? -Math.abs(v) : Math.abs(v);
+      onBudgetItemChanged(sub, opts, subTotalEl);
+    });
+  }
+
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'icon-btn';
+  removeBtn.title = 'Remove line item';
+  removeBtn.textContent = '✕';
+  removeBtn.addEventListener('click', ()=>{
+    sub.items = sub.items.filter(it=>it.id!==item.id);
+    renderMid();
+    renderRight();
+  });
+  row.appendChild(removeBtn);
+
+  return row;
+}
+
+/* ============================================================
    RIGHT PANEL
    ============================================================ */
 function renderRight(){
   const right = document.getElementById('rightPanel');
   right.innerHTML = '';
+
+  if (budgetEditMode){
+    const t = draftAnnualTotals(budgetDraft);
+    right.innerHTML = `
+      <div class="right-header">
+        <div class="right-eyebrow">Annual Plan Preview</div>
+        <div class="right-title">${budgetEditTab==='expenses'?'Expenses':'Income'} draft</div>
+      </div>
+      <div class="right-body">
+        <div class="right-total-row"><span class="right-total-label">Income</span><span class="right-total-value num" id="budgetSumIncome">${fmt(t.incomeTotal)}</span></div>
+        <div class="right-total-row"><span class="right-total-label">Expenses</span><span class="right-total-value num" id="budgetSumExpenses">${fmt(t.expenseTotal)}</span></div>
+        <div class="right-total-row"><span class="right-total-label">Net</span><span class="right-total-value num ${signCls(t.net)}" id="budgetSumNet">${fmtSigned(t.net)}</span></div>
+        <div class="right-empty">Totals update as you edit. Nothing is saved until you click <b>Save budget</b>.</div>
+      </div>
+    `;
+    budgetSummaryEls = {
+      income: document.getElementById('budgetSumIncome'),
+      expenses: document.getElementById('budgetSumExpenses'),
+      net: document.getElementById('budgetSumNet'),
+    };
+    return;
+  }
 
   if (searchQuery){
     right.innerHTML = `<div class="right-body"><div class="right-empty">Search results are shown in the main panel. Clear the search to browse categories and see detail here.</div></div>`;
@@ -837,7 +1458,8 @@ function renderRightTxnTable(container, rows){
   } else {
     rows.forEach(r=>{
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td class="txn-date">${r.dateLabel}</td><td>${escapeHTML(r.description)}</td><td class="amt ${signCls(r.amount)}">${fmt(r.amount)}</td>`;
+      tr.className = r.planned ? 'planned' : '';
+      tr.innerHTML = `<td class="txn-date">${r.dateLabel}</td><td>${escapeHTML(r.description)}</td><td class="amt ${r.planned?'':signCls(r.amount)}">${fmt(r.amount)}</td>`;
       tbody.appendChild(tr);
     });
   }
@@ -850,6 +1472,7 @@ function renderRightActualList(container, monthFilter, forMonthLabel){
     dateLabel: forMonthLabel!==null ? String(parseInt(t.date.slice(8,10),10)+'/'+parseInt(t.date.slice(5,7),10)) : (parseInt(t.date.slice(5,7),10))+'/'+(parseInt(t.date.slice(8,10),10)),
     description: t.description,
     amount: t.amount,
+    planned: false,
   }));
   renderRightTxnTable(container, txns);
 }
@@ -862,7 +1485,7 @@ function renderRightPlannedList(container, monthFilter){
     items.forEach(it=>{
       const v = it.monthly[m];
       if (v){
-        rows.push({ dateLabel: MONTHS[m], description: it.label, amount: v, _m:m });
+        rows.push({ dateLabel: MONTHS[m], description: it.label, amount: v, _m:m, planned: true });
       }
     });
   }
@@ -887,12 +1510,12 @@ function renderRightProjectedList(container){
 
     if (useActual){
       getSelectedTxns(m).forEach(t=>{
-        rows.push({ dateLabel: (parseInt(t.date.slice(5,7),10))+'/'+(parseInt(t.date.slice(8,10),10)), description: t.description, amount: t.amount });
+        rows.push({ dateLabel: (parseInt(t.date.slice(5,7),10))+'/'+(parseInt(t.date.slice(8,10),10)), description: t.description, amount: t.amount, planned: false });
       });
     } else {
       items.forEach(it=>{
         const v = it.monthly[m];
-        if (v) rows.push({ dateLabel: MONTHS[m], description: it.label, amount: v });
+        if (v) rows.push({ dateLabel: MONTHS[m], description: it.label, amount: v, planned: true });
       });
     }
   }
@@ -966,6 +1589,8 @@ document.getElementById('downloadBudgets').addEventListener('click', ()=>{
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
 });
+
+document.getElementById('editBudgetBtn').addEventListener('click', enterBudgetEditor);
 
 async function tryAutoFetch(){
   try{
