@@ -17,7 +17,7 @@
     --bg-row-hover:var(--surface-interactive-hover);
     --bg-row-selected:var(--surface-interactive-selected-accent);
     --bg-pill-active:var(--ink-primary);
-    --bg-pill-inactive:var(--surface-panel);
+    --bg-pill-inactive:var(--surface-interactive-default);
     --bg-input:var(--surface-panel);
     --border:var(--ink-stroke);
     --border-soft:var(--ink-stroke);
@@ -228,7 +228,7 @@
     cursor:pointer;
   }
   .pill.active{background:var(--bg-pill-active);color:var(--surface-page);}
-  .pill:hover:not(.active){color:var(--text-primary);}
+  .pill:hover:not(.active){background:var(--surface-interactive-hover);color:var(--text-primary);}
 
   .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:24px;}
   .card{
@@ -294,6 +294,7 @@
   table.ledger tbody tr.cat-row:hover{background:var(--bg-row-hover);}
   table.ledger tbody tr.cat-row td:first-child{border-radius:var(--radius-sm) 0 0 var(--radius-sm);}
   table.ledger tbody tr.cat-row td:last-child{border-radius:0 var(--radius-sm) var(--radius-sm) 0;}
+  table.ledger tbody tr.cat-row.has-selection td{border-bottom:1px solid var(--accent-teal);}
   .catname{display:flex;align-items:center;gap:8px;}
   .catname .cell-label{flex:1 1 auto;}
   .arrow{
@@ -320,10 +321,8 @@
   tr.income-row:hover{background:var(--bg-row-hover);}
   tr.income-row.selected{background:var(--bg-row-selected);}
   tr.income-row.selected td{color:var(--accent-teal);}
-  tr.income-row:hover td:first-child,
-  tr.income-row.selected td:first-child{border-radius:var(--radius-sm) 0 0 var(--radius-sm);}
-  tr.income-row:hover td:last-child,
-  tr.income-row.selected td:last-child{border-radius:0 var(--radius-sm) var(--radius-sm) 0;}
+  tr.income-row td:first-child{border-radius:var(--radius-sm) 0 0 var(--radius-sm);}
+  tr.income-row td:last-child{border-radius:0 var(--radius-sm) var(--radius-sm) 0;}
   table.ledger tbody tr.total-row{font-weight:700;}
   table.ledger tbody tr.total-row td{padding-top:14px;color:var(--text-secondary);border-top:1px solid var(--border);}
   .dash{color:var(--text-muted);}
@@ -332,7 +331,11 @@
 
   /* Search results table (flat transactions) */
   table.txn-flat th{cursor:pointer;}
-  table.txn-flat td:nth-child(2){text-align:left;white-space:normal;}
+  table.txn-flat th,
+  table.txn-flat td{text-align:left;}
+  table.txn-flat td:nth-child(2){white-space:normal;}
+  table.txn-flat th:nth-child(3),
+  table.txn-flat td:nth-child(3){text-align:right;}
 
   /* ================= RIGHT PANEL ================= */
   .right{

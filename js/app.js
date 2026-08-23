@@ -509,8 +509,9 @@ function renderYearTable(){
         const total = values.reduce((a,b)=>a+b,0);
         grandTotal += total;
         const isOpen = openCats.has(cat.name);
+        const hasSelectedSub = !isOpen && selectedSub && selectedSub.kind==='expense' && selectedSub.category===cat.name;
         const tr = document.createElement('tr');
-        tr.className = 'cat-row';
+        tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
         tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
           values.map((v,i)=>`<td class="num">${dashMask[i]?'<span class="dash">–</span>':fmt(v)}</td>`).join('') +
           `<td class="num">${fmt(total)}</td>`;
@@ -619,8 +620,9 @@ function renderMonthTable(){
         const planVal = (ROLL.expenseCategoryMonthly[cat.name]||[])[mi] || 0;
         totActual += actual; totPlan += planVal;
         const isOpen = openCats.has(cat.name);
+        const hasSelectedSub = !isOpen && selectedSub && selectedSub.kind==='expense' && selectedSub.category===cat.name;
         const tr = document.createElement('tr');
-        tr.className = 'cat-row';
+        tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
         tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
           `<td class="num">${fmt(planVal)}</td><td class="num">${fmt(actual)}</td><td class="num">${fmtSigned(actual-planVal)}</td>`;
         tr.addEventListener('click', ()=>{
