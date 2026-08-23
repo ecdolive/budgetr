@@ -1,0 +1,33 @@
+/* ============================================================
+   DESIGN TOKENS — COLOR (PRIMITIVES)
+   Generated from design-tokens/color-tokens.json, a Figma
+   variables export ("Dark" mode). Do not hand-edit values here
+   without also updating that source file — regenerate instead.
+
+   These are raw, Figma-named primitives (Surface.*, Ink.*).
+   Nothing in the app should reference these directly; styles.css
+   maps them onto the app's semantic variables (--bg-*, --text-*,
+   --accent-*, etc.) so component CSS never has to change when
+   the palette is re-synced from Figma.
+   ============================================================ */
+:root{
+  /* Surface */
+  --surface-page:#171717;
+  --surface-panel:#202020;
+  --surface-interactive-default:rgba(255,255,255,0.04);
+  --surface-interactive-hover:rgba(255,255,255,0.08);
+  --surface-interactive-press:rgba(255,255,255,0.12);
+  --surface-interactive-selected:rgba(255,255,255,0.12);
+  --surface-interactive-hover-accent:rgba(51,187,255,0.16);
+  --surface-interactive-press-accent:rgba(51,187,255,0.24);
+  --surface-interactive-selected-accent:rgba(51,187,255,0.24);
+
+  /* Ink */
+  --ink-primary:#FFFFFF;
+  --ink-secondary:rgba(255,255,255,0.7);
+  --ink-tertiary:rgba(255,255,255,0.5);
+  --ink-accent:#00EAFF;
+  --ink-positive:#00FFD4;
+  --ink-negative:#FF8095;
+  --ink-stroke:rgba(255,255,255,0.08);
+}
