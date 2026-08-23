@@ -738,7 +738,7 @@ function card(label, actual, plan, tabKey, colorBySign){
 /* ---- Year table ---- */
 function renderYearTable(){
   const table = document.createElement('table');
-  table.className = 'ledger';
+  table.className = 'ledger ledger-year';
   const thead = document.createElement('thead');
   thead.innerHTML = `<tr><th>Category</th>${MONTHS.map(m=>`<th>${m}</th>`).join('')}<th>Total</th></tr>`;
   table.appendChild(thead);
@@ -861,7 +861,7 @@ function yearRowValues(actualMonthly, budgetMonthly){
 function renderMonthTable(){
   const mi = timeframe;
   const table = document.createElement('table');
-  table.className = 'ledger';
+  table.className = 'ledger ledger-month';
   const thead = document.createElement('thead');
   thead.innerHTML = `<tr><th>Category</th><th>Plan</th><th>Actual</th><th>Difference</th></tr>`;
   table.appendChild(thead);
@@ -1402,7 +1402,7 @@ function renderRight(){
   if (timeframe !== 'year'){
     eyebrowEl.className = 'right-eyebrow';
     eyebrowEl.textContent = `${monthFullName(timeframe)} Transactions`;
-    renderRightActualList(body, timeframe, timeframe);
+    renderRightActualList(body, timeframe);
     return;
   }
 
@@ -1410,7 +1410,7 @@ function renderRight(){
   eyebrowEl.textContent = pill==='plan' ? 'Planned Transactions' : (pill==='projection' ? 'Projected Transactions' : 'YTD Transactions');
 
   if (pill === 'ytd'){
-    renderRightActualList(body, null, null);
+    renderRightActualList(body, null);
   } else if (pill === 'plan'){
     renderRightPlannedList(body, null, null);
   } else {
@@ -1467,9 +1467,9 @@ function renderRightTxnTable(container, rows){
   container.appendChild(wrapScroll(table));
 }
 
-function renderRightActualList(container, monthFilter, forMonthLabel){
+function renderRightActualList(container, monthFilter){
   const txns = getSelectedTxns(monthFilter).map(t=>({
-    dateLabel: forMonthLabel!==null ? String(parseInt(t.date.slice(8,10),10)+'/'+parseInt(t.date.slice(5,7),10)) : (parseInt(t.date.slice(5,7),10))+'/'+(parseInt(t.date.slice(8,10),10)),
+    dateLabel: (parseInt(t.date.slice(5,7),10))+'/'+(parseInt(t.date.slice(8,10),10)),
     description: t.description,
     amount: t.amount,
     planned: false,

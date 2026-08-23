@@ -284,6 +284,24 @@
   /* Projection pill: months after the current one; Plan pill: every month
      — both are showing a planned (budget), not actual, value. */
   table.ledger td.num.planned{color:var(--text-muted);}
+  /* Month tab: the Plan column is always a planned figure (unlike Actual/
+     Difference), so it reads muted rather than primary. */
+  table.ledger-month td:nth-child(2){color:var(--text-muted);}
+  /* Year tab (all 3 pills): fixed, explicit column widths so the 12 month
+     columns line up identically regardless of which pill's numbers are
+     currently in them — auto layout would otherwise size each column to
+     its own content, drifting between pills. table-layout:fixed only
+     honors explicit column widths when the table itself has an explicit
+     (non-auto, non-percentage) width — hence the literal px sum below,
+     rather than 100%, so a wider table still overflows into the existing
+     .table-scroll horizontal scroll instead of being squeezed to fit. */
+  table.ledger.ledger-year{table-layout:fixed;width:1028px;}
+  table.ledger-year th:first-child,
+  table.ledger-year td:first-child{width:180px;}
+  table.ledger-year th:not(:first-child):not(:last-child),
+  table.ledger-year td:not(:first-child):not(:last-child){width:64px;}
+  table.ledger-year th:last-child,
+  table.ledger-year td:last-child{width:80px;}
   /* Category-column text: wrap up to 2 lines, then ellipsize. */
   table.ledger .cell-label{
     display:-webkit-box;
