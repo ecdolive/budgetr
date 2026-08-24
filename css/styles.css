@@ -413,7 +413,9 @@
 
   /* "Add to plan" quick-add control (Year tab, Plan pill, row selected) */
   .add-plan-wrap{margin-top:18px;}
-  .add-plan-actions{display:flex;gap:8px;justify-content:flex-end;}
+  /* margin-top adds to .modal-dialog's 1rem gap above this row, for 2rem
+     of total space above the Cancel/Add buttons. */
+  .add-plan-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:1rem;}
 
   /* Modal (the "Add to plan" form) — centered over the whole app, with a
      subtle scrim behind it rather than a fully-opaque one, so the app
@@ -436,28 +438,84 @@
     padding:22px;
     display:flex;
     flex-direction:column;
-    gap:10px;
+    gap:1rem;
     box-shadow:0 24px 60px rgba(0,0,0,0.45);
   }
   .modal-title{font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:4px;}
   .modal-dialog select,
   .modal-dialog input{width:100%;}
 
-  /* Frequency picker inside the "Add to plan" modal — a pill toggle group
-     (same visual language as the Expenses/Income and YTD/Projection/Plan
-     pills) standing in for a native multi-select. */
-  .freq-section{display:flex;flex-direction:column;gap:8px;}
-  .pill.freq-pill{height:1.75rem;padding:0 6px;font-size:12px;}
-  .freq-pill-all{width:100%;}
-  .freq-divider{
+  /* Groups the category/subcategory fields, and separately the
+     description/amount fields, so each pair stays visually tied together
+     while sharing the same 1rem vertical rhythm as .modal-dialog between
+     that group and the next section (frequency picker, then actions). */
+  .modal-group{display:flex;flex-direction:column;gap:1rem;}
+
+  /* Category/subcategory selectors inside the "Add to plan" modal. */
+  .modal-field{display:flex;flex-direction:column;gap:4px;}
+  .modal-field-label{
     font-size:10.5px;
     text-transform:uppercase;
     letter-spacing:0.06em;
     color:var(--text-muted);
     font-weight:600;
-    text-align:center;
   }
-  .freq-months-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;}
+  /* Holds a select next to its "+ New" name input, so choosing "+ New"
+     shrinks the select to share the row instead of stacking below it. */
+  .modal-inline-row{display:flex;gap:8px;}
+  .modal-inline-row .modal-select-wrap,
+  .modal-inline-row .modal-inline-new{flex:1 1 0;min-width:0;}
+  /* Wraps each <select> so its chevron can be a positioned icon with real
+     padding from the pill's right edge, instead of the browser's native
+     arrow (which sits flush against it with no controllable spacing). */
+  .modal-select-wrap{position:relative;}
+  .modal-select-chevron{
+    position:absolute;
+    right:14px;
+    top:50%;
+    width:12px;
+    height:12px;
+    transform:translateY(-50%) rotate(90deg);
+    pointer-events:none;
+    opacity:0.5; /* approximates --text-muted against --bg-input; icon is a fixed white stroke */
+  }
+  .modal-select{
+    height:2rem;
+    background:var(--bg-input);
+    border:1px solid var(--border);
+    color:var(--text-primary);
+    font-size:13px;
+    padding:0 34px 0 16px;
+    border-radius:20px;
+    appearance:none;
+    -webkit-appearance:none;
+    -moz-appearance:none;
+  }
+  .modal-select:focus{outline:none;border-color:var(--accent-teal-dim);}
+
+  /* Label/amount fields inside the "Add to plan" modal — pill-shaped
+     (same capsule radius/height as .pill) rather than the small-radius
+     rectangular inputs used elsewhere, to read as a matched pair with the
+     frequency pills in the same form. */
+  .modal-pill-input{
+    height:2rem;
+    background:var(--bg-input);
+    border:1px solid var(--border);
+    color:var(--text-primary);
+    font-size:13px;
+    padding:0 16px;
+    border-radius:20px;
+  }
+  .modal-pill-input:focus{outline:none;border-color:var(--accent-teal-dim);}
+  .modal-pill-input.num{text-align:left;}
+
+  /* Frequency picker inside the "Add to plan" modal — a pill toggle group
+     (same visual language as the Expenses/Income and YTD/Projection/Plan
+     pills) standing in for a native multi-select. */
+  .freq-section{display:flex;flex-direction:column;gap:1rem;}
+  .pill.freq-pill{height:1.75rem;padding:0 6px;font-size:12px;}
+  .freq-pill-all{width:100%;}
+  .freq-months-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;}
   .freq-months-grid .pill{width:100%;}
 
   /* ================= BUDGET EDITOR ================= */

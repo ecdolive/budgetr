@@ -1505,24 +1505,25 @@ function getSelectedBudgetItems(){
 // same as getSelectedBudgetItems above. Amount is entered by the user as
 // a plain positive number; the stored sign follows the same convention
 // as everywhere else BUDGETS_RAW is written (negative for expenses).
-function addSelectedBudgetItem(freq, label, rawAmount){
-  if (!selectedSub) return false;
+function addSelectedBudgetItem(freq, label, rawAmount, target){
+  const t = target || selectedSub;
+  if (!t) return false;
   const amt = Math.abs(Number(rawAmount) || 0);
   if (amt === 0) return false;
-  const targetName = selectedSub.kind==='expense' ? selectedSub.subcategory : selectedSub.category;
+  const targetName = t.kind==='expense' ? t.subcategory : t.category;
   const item = {
     freq,
     label: (label && label.trim()) || targetName,
-    amount: selectedSub.kind==='expense' ? -amt : amt,
+    amount: t.kind==='expense' ? -amt : amt,
   };
-  if (selectedSub.kind === 'expense'){
-    if (!BUDGETS_RAW.Expenses[selectedSub.category]) BUDGETS_RAW.Expenses[selectedSub.category] = {};
-    const subs = BUDGETS_RAW.Expenses[selectedSub.category];
-    if (!subs[selectedSub.subcategory]) subs[selectedSub.subcategory] = [];
-    subs[selectedSub.subcategory].push(item);
+  if (t.kind === 'expense'){
+    if (!BUDGETS_RAW.Expenses[t.category]) BUDGETS_RAW.Expenses[t.category] = {};
+    const subs = BUDGETS_RAW.Expenses[t.category];
+    if (!subs[t.subcategory]) subs[t.subcategory] = [];
+    subs[t.subcategory].push(item);
   } else {
-    if (!BUDGETS_RAW.Income[selectedSub.category]) BUDGETS_RAW.Income[selectedSub.category] = [];
-    BUDGETS_RAW.Income[selectedSub.category].push(item);
+    if (!BUDGETS_RAW.Income[t.category]) BUDGETS_RAW.Income[t.category] = [];
+    BUDGETS_RAW.Income[t.category].push(item);
   }
   recomputeDerived();
   return true;
@@ -1612,7 +1613,7 @@ function renderAddToPlanControl(container){
 // overlays the whole app rather than being scoped to the right panel.
 function openAddToPlanModal(){
   if (!selectedSub) return;
-  const targetLabel = selectedSub.kind==='expense' ? selectedSub.subcategory : selectedSub.category;
+  const kind = selectedSub.kind;
 
   const scrim = document.createElement('div');
   scrim.className = 'modal-scrim';
@@ -1624,8 +1625,165 @@ function openAddToPlanModal(){
 
   const title = document.createElement('div');
   title.className = 'modal-title';
-  title.textContent = `Add to plan — ${targetLabel}`;
+  title.textContent = 'Add line item to budget';
   dialog.appendChild(title);
+
+  // Category / subcategory — default to whatever's currently selected in
+  // the ledger, but changeable here so the new item can be filed elsewhere
+  // without closing the modal and re-selecting a different row first.
+  // Income budget items only ever live at the source (category) level, so
+  // there's no subcategory selector for income. Grouped together (and
+  // below, description+amount grouped together) so the modal reads as
+  // distinct sections with visible breathing room between them, rather
+  // than one long uniform list of fields.
+  const NEW_OPTION = '__new__';
+
+  // A hidden-by-default text input that appears next to a select once its
+  // "+ New" option is chosen, for typing the new category/subcategory
+  // name — the select shrinks to share the row with it. No label above
+  // it — the placeholder alone identifies the field.
+  function makeNewNameInput(placeholder){
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'modal-pill-input modal-inline-new';
+    input.placeholder = placeholder;
+    input.hidden = true;
+    return input;
+  }
+  // Prepends "+ New" above whatever real category/subcategory options are
+  // already in the select.
+  // Native <select> arrows sit flush against the edge with no control over
+  // spacing, so the default appearance is suppressed (via CSS) in favor of
+  // a positioned chevron icon with real padding from the pill's right edge.
+  function wrapSelect(select){
+    const wrap = document.createElement('div');
+    wrap.className = 'modal-select-wrap';
+    const chevron = document.createElement('img');
+    chevron.className = 'modal-select-chevron';
+    chevron.src = 'icons/chevron-right.svg';
+    chevron.alt = '';
+    wrap.appendChild(select);
+    wrap.appendChild(chevron);
+    return wrap;
+  }
+  function addNewOption(select){
+    const opt = document.createElement('option');
+    opt.value = NEW_OPTION;
+    opt.textContent = '+ New';
+    select.insertBefore(opt, select.firstChild);
+    return opt;
+  }
+
+  const catSubGroup = document.createElement('div');
+  catSubGroup.className = 'modal-group';
+  dialog.appendChild(catSubGroup);
+
+  const catField = document.createElement('div');
+  catField.className = 'modal-field';
+  const catLabel = document.createElement('div');
+  catLabel.className = 'modal-field-label';
+  catLabel.textContent = 'Category';
+  const catRow = document.createElement('div');
+  catRow.className = 'modal-inline-row';
+  const catSelect = document.createElement('select');
+  catSelect.className = 'modal-select';
+  (kind==='expense' ? mergedExpenseCategories() : mergedIncomeSubcats()).forEach(c=>{
+    const opt = document.createElement('option');
+    opt.value = c.name;
+    opt.textContent = c.name;
+    if (c.name === selectedSub.category) opt.selected = true;
+    catSelect.appendChild(opt);
+  });
+  addNewOption(catSelect);
+  catField.appendChild(catLabel);
+  catField.appendChild(catRow);
+  catRow.appendChild(wrapSelect(catSelect));
+  catSubGroup.appendChild(catField);
+
+  const catNewInput = makeNewNameInput('Category name');
+  catRow.appendChild(catNewInput);
+  const syncCatNew = () => { catNewInput.hidden = catSelect.value !== NEW_OPTION; };
+  syncCatNew();
+
+  let subSelect = null;
+  let subNewInput = null;
+  if (kind === 'expense'){
+    const subField = document.createElement('div');
+    subField.className = 'modal-field';
+    const subLabel = document.createElement('div');
+    subLabel.className = 'modal-field-label';
+    subLabel.textContent = 'Subcategory';
+    const subRow = document.createElement('div');
+    subRow.className = 'modal-inline-row';
+    subSelect = document.createElement('select');
+    subSelect.className = 'modal-select';
+    subField.appendChild(subLabel);
+    subField.appendChild(subRow);
+    subRow.appendChild(wrapSelect(subSelect));
+    catSubGroup.appendChild(subField);
+
+    subNewInput = makeNewNameInput('Subcategory name');
+    subRow.appendChild(subNewInput);
+    const syncSubNew = () => { subNewInput.hidden = subSelect.value !== NEW_OPTION; };
+
+    const populateSubs = (catName, preferredSub) => {
+      subSelect.innerHTML = '';
+      if (catName !== NEW_OPTION){
+        const cat = mergedExpenseCategories().find(c=>c.name===catName);
+        (cat ? cat.subcategories : []).forEach(s=>{
+          const opt = document.createElement('option');
+          opt.value = s.name;
+          opt.textContent = s.name;
+          if (s.name === preferredSub) opt.selected = true;
+          subSelect.appendChild(opt);
+        });
+      }
+      const newOpt = addNewOption(subSelect);
+      // A brand-new category has no existing subcategories yet, so force
+      // "+ New" rather than leaving the select empty.
+      if (catName === NEW_OPTION) newOpt.selected = true;
+      syncSubNew();
+    };
+    populateSubs(selectedSub.category, selectedSub.subcategory);
+    subSelect.addEventListener('change', syncSubNew);
+    catSelect.addEventListener('change', () => {
+      populateSubs(catSelect.value, null);
+      syncCatNew();
+    });
+  } else {
+    catSelect.addEventListener('change', syncCatNew);
+  }
+
+  const descAmountGroup = document.createElement('div');
+  descAmountGroup.className = 'modal-group';
+  dialog.appendChild(descAmountGroup);
+
+  const labelField = document.createElement('div');
+  labelField.className = 'modal-field';
+  const labelFieldLabel = document.createElement('div');
+  labelFieldLabel.className = 'modal-field-label';
+  labelFieldLabel.textContent = 'Description';
+  const labelInput = document.createElement('input');
+  labelInput.type = 'text';
+  labelInput.className = 'modal-pill-input';
+  labelInput.placeholder = 'Description';
+  labelField.appendChild(labelFieldLabel);
+  labelField.appendChild(labelInput);
+  descAmountGroup.appendChild(labelField);
+
+  const amountField = document.createElement('div');
+  amountField.className = 'modal-field';
+  const amountFieldLabel = document.createElement('div');
+  amountFieldLabel.className = 'modal-field-label';
+  amountFieldLabel.textContent = 'Amount';
+  const amountInput = document.createElement('input');
+  amountInput.type = 'number';
+  amountInput.step = '1';
+  amountInput.className = 'modal-pill-input num';
+  amountInput.placeholder = '0';
+  amountField.appendChild(amountFieldLabel);
+  amountField.appendChild(amountInput);
+  descAmountGroup.appendChild(amountField);
 
   // Frequency picker — a pill toggle group (same look as the Expenses/
   // Income and YTD/Projection/Plan pills elsewhere) instead of a <select>,
@@ -1639,8 +1797,17 @@ function openAddToPlanModal(){
     Object.entries(freqPillEls).forEach(([val,el])=>el.classList.toggle('active', selectedFreqs.has(val)));
   };
 
+  const freqField = document.createElement('div');
+  freqField.className = 'modal-field';
+  const freqLabel = document.createElement('div');
+  freqLabel.className = 'modal-field-label';
+  freqLabel.textContent = 'Month';
+  freqField.appendChild(freqLabel);
+  dialog.appendChild(freqField);
+
   const freqSection = document.createElement('div');
   freqSection.className = 'freq-section';
+  freqField.appendChild(freqSection);
 
   const allPill = document.createElement('button');
   allPill.type = 'button';
@@ -1653,11 +1820,6 @@ function openAddToPlanModal(){
   });
   freqPillEls.monthly = allPill;
   freqSection.appendChild(allPill);
-
-  const freqDivider = document.createElement('div');
-  freqDivider.className = 'freq-divider';
-  freqDivider.textContent = 'Or specific month(s)';
-  freqSection.appendChild(freqDivider);
 
   const monthsGrid = document.createElement('div');
   monthsGrid.className = 'freq-months-grid';
@@ -1677,20 +1839,6 @@ function openAddToPlanModal(){
   });
   freqSection.appendChild(monthsGrid);
   syncFreqPills();
-  dialog.appendChild(freqSection);
-
-  const labelInput = document.createElement('input');
-  labelInput.type = 'text';
-  labelInput.className = 'budget-item-label';
-  labelInput.placeholder = 'Label';
-  dialog.appendChild(labelInput);
-
-  const amountInput = document.createElement('input');
-  amountInput.type = 'number';
-  amountInput.step = '1';
-  amountInput.className = 'budget-item-amount num';
-  amountInput.placeholder = 'Amount';
-  dialog.appendChild(amountInput);
 
   const actions = document.createElement('div');
   actions.className = 'add-plan-actions';
@@ -1717,9 +1865,24 @@ function openAddToPlanModal(){
   cancelBtn.addEventListener('click', close);
   addBtn.addEventListener('click', ()=>{
     if (selectedFreqs.size === 0) return;
+
+    let categoryName = catSelect.value;
+    if (categoryName === NEW_OPTION){
+      categoryName = catNewInput.value.trim();
+      if (!categoryName){ catNewInput.focus(); return; }
+    }
+    let subcategoryName = null;
+    if (kind === 'expense'){
+      subcategoryName = subSelect.value;
+      if (subcategoryName === NEW_OPTION){
+        subcategoryName = subNewInput.value.trim();
+        if (!subcategoryName){ subNewInput.focus(); return; }
+      }
+    }
+    const target = { kind, category: categoryName, subcategory: subcategoryName };
     let anyAdded = false;
     selectedFreqs.forEach(freq=>{
-      if (addSelectedBudgetItem(freq, labelInput.value, amountInput.value)) anyAdded = true;
+      if (addSelectedBudgetItem(freq, labelInput.value, amountInput.value, target)) anyAdded = true;
     });
     if (!anyAdded){
       amountInput.focus();
