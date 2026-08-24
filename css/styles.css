@@ -141,7 +141,7 @@
     padding:12px 14px;
     border-radius:0.25rem;
     cursor:pointer;
-    color:var(--text-secondary);
+    color:var(--text-primary);
     font-weight:600;
     font-size:14px;
     user-select:none;
@@ -153,6 +153,11 @@
   .tf-item .net.pos{color:var(--positive);}
   .tf-item .net.neg{color:var(--negative);}
   .tf-item .net.zero{color:var(--text-muted);}
+  /* Months after the current one have no actual data yet — their net is a
+     planned figure, so both the label and the value are dimmed a step
+     further than a normal (past/current) month row. */
+  .tf-item.future .tf-label{color:var(--text-secondary);}
+  .tf-item.future .net{color:var(--text-muted);}
 
   .data-io{
     margin-top:auto;
@@ -276,6 +281,27 @@
     white-space:nowrap;
   }
   table.ledger td:first-child{text-align:left;white-space:normal;}
+  /* Projection pill: months after the current one; Plan pill: every month
+     — both are showing a planned (budget), not actual, value. */
+  table.ledger td.num.planned{color:var(--text-muted);}
+  /* Month tab: the Plan column is always a planned figure (unlike Actual/
+     Difference), so it reads muted rather than primary. */
+  table.ledger-month td:nth-child(2){color:var(--text-muted);}
+  /* Year tab (all 3 pills): fixed, explicit column widths so the 12 month
+     columns line up identically regardless of which pill's numbers are
+     currently in them — auto layout would otherwise size each column to
+     its own content, drifting between pills. table-layout:fixed only
+     honors explicit column widths when the table itself has an explicit
+     (non-auto, non-percentage) width — hence the literal px sum below,
+     rather than 100%, so a wider table still overflows into the existing
+     .table-scroll horizontal scroll instead of being squeezed to fit. */
+  table.ledger.ledger-year{table-layout:fixed;width:1028px;}
+  table.ledger-year th:first-child,
+  table.ledger-year td:first-child{width:180px;}
+  table.ledger-year th:not(:first-child):not(:last-child),
+  table.ledger-year td:not(:first-child):not(:last-child){width:64px;}
+  table.ledger-year th:last-child,
+  table.ledger-year td:last-child{width:80px;}
   /* Category-column text: wrap up to 2 lines, then ellipsize. */
   table.ledger .cell-label{
     display:-webkit-box;
@@ -317,12 +343,6 @@
   tr.sub-row:hover td:last-child,
   tr.sub-row.selected td:last-child{border-radius:0 var(--radius-sm) var(--radius-sm) 0;}
   tr.sub-row td:first-child{padding-left:30px;}
-  tr.income-row{background:var(--bg-row);cursor:pointer;font-weight:600;}
-  tr.income-row:hover{background:var(--bg-row-hover);}
-  tr.income-row.selected{background:var(--bg-row-selected);}
-  tr.income-row.selected td{color:var(--accent-teal);}
-  tr.income-row td:first-child{border-radius:var(--radius-sm) 0 0 var(--radius-sm);}
-  tr.income-row td:last-child{border-radius:0 var(--radius-sm) var(--radius-sm) 0;}
   table.ledger tbody tr.total-row{font-weight:700;}
   table.ledger tbody tr.total-row td{padding-top:14px;color:var(--text-secondary);border-top:1px solid var(--border);}
   .dash{color:var(--text-muted);}
@@ -382,6 +402,183 @@
   table.txn-list td.amt.neg{color:var(--negative);}
   table.txn-list td.amt.pos{color:var(--positive);}
   .txn-date{color:var(--text-muted);white-space:nowrap;}
+  /* Planned (not-yet-actual) line items — same idea as the ledger table's
+     .planned cells: shown in tertiary color rather than primary/pos/neg,
+     since they're a projection, not a real transaction. */
+  table.txn-list tr.planned td{color:var(--text-muted);}
+  table.txn-list tr.planned td.amt{color:var(--text-muted);}
   .right-empty{
     color:var(--text-muted);font-size:13px;line-height:1.6;padding-top:32px;
   }
+
+  /* "Add to plan" quick-add control (Year tab, Plan pill, row selected) */
+  .add-plan-wrap{margin-top:18px;}
+  .add-plan-actions{display:flex;gap:8px;justify-content:flex-end;}
+
+  /* Modal (the "Add to plan" form) — centered over the whole app, with a
+     subtle scrim behind it rather than a fully-opaque one, so the app
+     stays legible/contextual underneath. */
+  .modal-scrim{
+    position:fixed;
+    inset:0;
+    background:rgba(12,12,12,0.5);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    z-index:100;
+  }
+  .modal-dialog{
+    width:320px;
+    max-width:calc(100vw - 40px);
+    background:var(--bg-mid);
+    border:1px solid var(--border);
+    border-radius:var(--radius-lg);
+    padding:22px;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    box-shadow:0 24px 60px rgba(0,0,0,0.45);
+  }
+  .modal-title{font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:4px;}
+  .modal-dialog select,
+  .modal-dialog input{width:100%;}
+
+  /* Frequency picker inside the "Add to plan" modal — a pill toggle group
+     (same visual language as the Expenses/Income and YTD/Projection/Plan
+     pills) standing in for a native multi-select. */
+  .freq-section{display:flex;flex-direction:column;gap:8px;}
+  .pill.freq-pill{height:1.75rem;padding:0 6px;font-size:12px;}
+  .freq-pill-all{width:100%;}
+  .freq-divider{
+    font-size:10.5px;
+    text-transform:uppercase;
+    letter-spacing:0.06em;
+    color:var(--text-muted);
+    font-weight:600;
+    text-align:center;
+  }
+  .freq-months-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;}
+  .freq-months-grid .pill{width:100%;}
+
+  /* ================= BUDGET EDITOR ================= */
+  /* .budget-editor-header/.budget-editor-toolbar own their inset as
+     padding/height (not margin), same reasoning as .mid-title/.pills —
+     see the header comment above them. */
+  .budget-editor-header{
+    position:sticky;
+    top:0;
+    z-index:3;
+    background:var(--bg-mid);
+    height:4rem;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:0 30px;
+  }
+  .budget-editor-title{font-size:22px;font-weight:700;}
+  .budget-editor-actions{display:flex;gap:10px;}
+  .budget-editor-toolbar{
+    position:sticky;
+    top:4rem;
+    z-index:2;
+    background:var(--bg-mid);
+    height:4rem;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:0 30px;
+    border-bottom:1px solid var(--border-soft);
+  }
+  .budget-tab-toggle{display:flex;gap:8px;}
+  .budget-editor-body{padding:24px 30px 60px;display:flex;flex-direction:column;gap:10px;}
+  .budget-empty-hint{color:var(--text-muted);font-size:13px;padding:20px 0;}
+
+  .file-btn.primary{background:var(--accent-teal);border-color:var(--accent-teal);color:var(--surface-page);font-weight:700;}
+  .file-btn.primary:hover{opacity:0.88;color:var(--surface-page);}
+  .file-btn.ghost{background:transparent;}
+  button.file-btn:disabled,
+  .file-btn:has(input:disabled){opacity:0.4;pointer-events:none;cursor:not-allowed;}
+
+  .budget-cat{background:var(--bg-row);border-radius:var(--radius-sm);}
+  .budget-cat-header{display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer;}
+  .budget-cat-header .arrow{flex-shrink:0;}
+  .budget-name-input{
+    background:transparent;
+    border:1px solid transparent;
+    color:var(--text-primary);
+    font-size:14px;
+    font-weight:700;
+    padding:4px 6px;
+    border-radius:var(--radius-sm);
+    min-width:0;
+    flex:1 1 auto;
+  }
+  .budget-name-input:hover,.budget-name-input:focus{background:var(--bg-input);border-color:var(--border);}
+  .budget-name-input:focus{outline:none;border-color:var(--accent-teal-dim);}
+  .budget-sub .budget-name-input{font-weight:600;font-size:13px;}
+  .budget-cat-total,.budget-sub-total{font-size:13px;color:var(--text-secondary);white-space:nowrap;}
+  .icon-btn{
+    background:transparent;
+    border:none;
+    color:var(--text-muted);
+    width:22px;height:22px;
+    border-radius:var(--radius-sm);
+    cursor:pointer;
+    font-size:13px;
+    line-height:1;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    flex-shrink:0;
+  }
+  .icon-btn:hover{background:var(--bg-row-hover);color:var(--negative);}
+
+  .budget-subcats{padding:0 10px 10px 30px;display:flex;flex-direction:column;gap:8px;}
+  .budget-sub{background:var(--surface-panel);border:1px solid var(--border-soft);border-radius:var(--radius-sm);padding:8px 10px;}
+  .budget-sub-header{display:flex;align-items:center;gap:8px;}
+  .budget-items{margin-top:6px;display:flex;flex-direction:column;gap:6px;}
+  .budget-item-row{display:flex;align-items:center;gap:6px;}
+  .budget-item-label{
+    flex:1 1 auto;
+    min-width:0;
+    background:var(--bg-input);
+    border:1px solid var(--border);
+    color:var(--text-primary);
+    font-size:12.5px;
+    padding:6px 8px;
+    border-radius:var(--radius-sm);
+  }
+  .budget-item-freq{
+    background:var(--bg-input);
+    border:1px solid var(--border);
+    color:var(--text-secondary);
+    font-size:12px;
+    padding:6px 4px;
+    border-radius:var(--radius-sm);
+  }
+  .budget-item-amount{
+    width:88px;
+    flex-shrink:0;
+    background:var(--bg-input);
+    border:1px solid var(--border);
+    color:var(--text-primary);
+    font-size:12.5px;
+    padding:6px 8px;
+    border-radius:var(--radius-sm);
+    text-align:right;
+  }
+  .budget-item-label:focus,.budget-item-freq:focus,.budget-item-amount:focus{outline:none;border-color:var(--accent-teal-dim);}
+  .budget-array-note{flex:1 1 auto;font-size:11.5px;color:var(--text-muted);display:flex;align-items:center;}
+
+  .add-row-btn,.add-sub-btn,.add-item-btn,.add-cat-btn{
+    align-self:flex-start;
+    background:transparent;
+    border:1px dashed var(--border);
+    color:var(--text-secondary);
+    font-size:12px;
+    font-weight:600;
+    padding:6px 12px;
+    border-radius:var(--radius-sm);
+    cursor:pointer;
+  }
+  .add-row-btn:hover,.add-sub-btn:hover,.add-item-btn:hover,.add-cat-btn:hover{border-color:var(--accent-teal-dim);color:var(--text-primary);}
