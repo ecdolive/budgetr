@@ -343,12 +343,6 @@
   tr.sub-row:hover td:last-child,
   tr.sub-row.selected td:last-child{border-radius:0 var(--radius-sm) var(--radius-sm) 0;}
   tr.sub-row td:first-child{padding-left:30px;}
-  tr.income-row{background:var(--bg-row);cursor:pointer;font-weight:600;}
-  tr.income-row:hover{background:var(--bg-row-hover);}
-  tr.income-row.selected{background:var(--bg-row-selected);}
-  tr.income-row.selected td{color:var(--accent-teal);}
-  tr.income-row td:first-child{border-radius:var(--radius-sm) 0 0 var(--radius-sm);}
-  tr.income-row td:last-child{border-radius:0 var(--radius-sm) var(--radius-sm) 0;}
   table.ledger tbody tr.total-row{font-weight:700;}
   table.ledger tbody tr.total-row td{padding-top:14px;color:var(--text-secondary);border-top:1px solid var(--border);}
   .dash{color:var(--text-muted);}
@@ -416,6 +410,55 @@
   .right-empty{
     color:var(--text-muted);font-size:13px;line-height:1.6;padding-top:32px;
   }
+
+  /* "Add to plan" quick-add control (Year tab, Plan pill, row selected) */
+  .add-plan-wrap{margin-top:18px;}
+  .add-plan-actions{display:flex;gap:8px;justify-content:flex-end;}
+
+  /* Modal (the "Add to plan" form) — centered over the whole app, with a
+     subtle scrim behind it rather than a fully-opaque one, so the app
+     stays legible/contextual underneath. */
+  .modal-scrim{
+    position:fixed;
+    inset:0;
+    background:rgba(12,12,12,0.5);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    z-index:100;
+  }
+  .modal-dialog{
+    width:320px;
+    max-width:calc(100vw - 40px);
+    background:var(--bg-mid);
+    border:1px solid var(--border);
+    border-radius:var(--radius-lg);
+    padding:22px;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    box-shadow:0 24px 60px rgba(0,0,0,0.45);
+  }
+  .modal-title{font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:4px;}
+  .modal-dialog select,
+  .modal-dialog input{width:100%;}
+
+  /* Frequency picker inside the "Add to plan" modal — a pill toggle group
+     (same visual language as the Expenses/Income and YTD/Projection/Plan
+     pills) standing in for a native multi-select. */
+  .freq-section{display:flex;flex-direction:column;gap:8px;}
+  .pill.freq-pill{height:1.75rem;padding:0 6px;font-size:12px;}
+  .freq-pill-all{width:100%;}
+  .freq-divider{
+    font-size:10.5px;
+    text-transform:uppercase;
+    letter-spacing:0.06em;
+    color:var(--text-muted);
+    font-weight:600;
+    text-align:center;
+  }
+  .freq-months-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;}
+  .freq-months-grid .pill{width:100%;}
 
   /* ================= BUDGET EDITOR ================= */
   /* .budget-editor-header/.budget-editor-toolbar own their inset as

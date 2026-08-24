@@ -121,21 +121,37 @@ function aggregate(allRows, sourceFiles){
   const income = new Array(12).fill(0);
   rows.filter(r=>r.type==='Income').forEach(r=>{ income[r.date.getMonth()] += r.amount; });
 
-  // Income subcategory tree — flat, keyed on CSV "Subcategory" (per product decision:
-  // Income's Category is always "Income", so its row grouping is the Subcategory
-  // field instead, no further drill-down for now).
+  // Income tree — top level keyed on CSV "Subcategory" (Income's Category
+  // is always "Income", so Subcategory is the row grouping), same shape as
+  // the expense category/subcategory tree below: each top-level row's
+  // children are transactions rolled up by identical description, so
+  // repeat income (e.g. the same employer's paycheck) collapses into one
+  // selectable row instead of one per transaction.
   const incomeMap = new Map();
   rows.filter(r=>r.type==='Income').forEach(r=>{
     const mi = r.date.getMonth();
     const name = r.subcategory || '(Uncategorized)';
-    if (!incomeMap.has(name)) incomeMap.set(name, new Array(12).fill(0));
-    incomeMap.get(name)[mi] += r.amount;
+    if (!incomeMap.has(name)) incomeMap.set(name, new Map());
+    const descMap = incomeMap.get(name);
+    const desc = r.description || '(No description)';
+    if (!descMap.has(desc)) descMap.set(desc, new Array(12).fill(0));
+    descMap.get(desc)[mi] += r.amount;
   });
-  const incomeSubcats = [...incomeMap.entries()].map(([name, monthly])=>({
-    name,
-    monthly: monthly.map(v=>Math.round(v*100)/100),
-    yearly: Math.round(monthly.reduce((a,b)=>a+b,0)*100)/100,
-  })).sort((a,b)=>b.yearly-a.yearly);
+  const incomeSubcats = [...incomeMap.entries()].map(([name, descMap])=>{
+    const subcategories = [...descMap.entries()].map(([dname, monthly])=>({
+      name: dname,
+      monthly: monthly.map(v=>Math.round(v*100)/100),
+      yearly: Math.round(monthly.reduce((a,b)=>a+b,0)*100)/100,
+    })).sort((a,b)=>b.yearly-a.yearly);
+    const monthly = new Array(12).fill(0);
+    subcategories.forEach(s=>s.monthly.forEach((v,i)=>monthly[i]+=v));
+    return {
+      name,
+      monthly: monthly.map(v=>Math.round(v*100)/100),
+      yearly: Math.round(monthly.reduce((a,b)=>a+b,0)*100)/100,
+      subcategories,
+    };
+  }).sort((a,b)=>b.yearly-a.yearly);
 
   // Expenses category -> subcategory tree, netting refunds (positive expense
   // amounts) against spending rather than abs()-ing them into extra spend.
@@ -472,7 +488,8 @@ let timeframe = 'year';      // 'year' | 0-11 (month index)
 let pill = 'ytd';            // 'ytd' | 'projection' | 'plan'  (Year view only)
 let activeTab = 'expenses';  // 'income' | 'expenses'
 let openCats = new Set();
-let selectedSub = null;      // { kind:'expense', category, subcategory } | { kind:'income', subcategory } | null
+let selectedSub = null;      // { kind:'expense'|'income', category, subcategory } | null — for income, category is the
+                              // top-level income source and subcategory is a rolled-up transaction description
 let searchQuery = '';
 let txnSort = { key: 'date', dir: 1 };
 
@@ -516,7 +533,11 @@ function findSubcategory(catName, subName){
   const c = findCategory(catName);
   return c ? c.subcategories.find(s=>s.name===subName) : null;
 }
-function findIncomeSub(name){ return DATA.incomeSubcats.find(s=>s.name===name); }
+function findIncomeCat(name){ return DATA.incomeSubcats.find(c=>c.name===name); }
+function findIncomeSub(catName, subName){
+  const c = findIncomeCat(catName);
+  return c ? c.subcategories.find(s=>s.name===subName) : null;
+}
 
 // DATA.categories/incomeSubcats only contain rows seen in a loaded CSV — a
 // category that only exists in the budget (e.g. set up before this year's
@@ -550,13 +571,17 @@ function mergedExpenseCategories(){
   return result;
 }
 function mergedIncomeSubcats(){
-  const result = DATA.incomeSubcats.map(s=>({ name: s.name, monthly: s.monthly }));
-  const byName = new Map(result.map(s=>[s.name, s]));
-  Object.keys(BUDGETS.income||{}).forEach(subName=>{
-    if (!byName.has(subName)){
-      const sub = { name: subName, monthly: new Array(12).fill(0) };
-      result.push(sub);
-      byName.set(subName, sub);
+  const result = DATA.incomeSubcats.map(cat=>({
+    name: cat.name,
+    monthly: cat.monthly,
+    subcategories: cat.subcategories.map(s=>({ name: s.name, monthly: s.monthly })),
+  }));
+  const byName = new Map(result.map(c=>[c.name, c]));
+  Object.keys(BUDGETS.income||{}).forEach(name=>{
+    if (!byName.has(name)){
+      const cat = { name, monthly: new Array(12).fill(0), subcategories: [] };
+      byName.set(name, cat);
+      result.push(cat);
     }
   });
   return result;
@@ -796,29 +821,51 @@ function renderYearTable(){
       tbody.appendChild(trTotal);
     }
   } else {
-    // Income — flat, selectable rows
+    // Income — top-level rows (income sources) expand to reveal
+    // transactions rolled up by identical description; only those
+    // description rows are selectable, same pattern as expenses.
     const incomeSubcats = mergedIncomeSubcats();
     if (incomeSubcats.length === 0){
       tbody.innerHTML = `<tr><td colspan="14" class="empty-table">No income categories loaded yet.</td></tr>`;
     } else {
       let grandTotal = 0;
       const monthTotals = new Array(12).fill(0);
-      incomeSubcats.forEach(sub=>{
-        const budget = ROLL.incomeSubMonthly[sub.name] || new Array(12).fill(0);
-        const { values, dashMask } = yearRowValues(sub.monthly, budget);
+      incomeSubcats.forEach(cat=>{
+        const budget = ROLL.incomeSubMonthly[cat.name] || new Array(12).fill(0);
+        const { values, dashMask } = yearRowValues(cat.monthly, budget);
         values.forEach((v,i)=>monthTotals[i]+=v);
         const total = values.reduce((a,b)=>a+b,0);
         grandTotal += total;
-        const isSel = selectedSub && selectedSub.kind==='income' && selectedSub.subcategory===sub.name;
+        const isOpen = openCats.has(cat.name);
+        const hasSelectedSub = !isOpen && selectedSub && selectedSub.kind==='income' && selectedSub.category===cat.name;
         const tr = document.createElement('tr');
-        tr.className = 'income-row' + (isSel?' selected':'');
-        tr.innerHTML = `<td><span class="cell-label">${sub.name}</span></td>` +
+        tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
+        tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
           values.map((v,i)=>numCell(v,i,dashMask)).join('') +
           `<td class="num">${fmt(total)}</td>`;
         tr.addEventListener('click', ()=>{
-          selectSub({ kind:'income', subcategory: sub.name });
+          if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
+          renderMid();
         });
         tbody.appendChild(tr);
+
+        cat.subcategories.forEach(sub=>{
+          // No per-description budget exists — only the top-level income
+          // source is plannable, so a rolled-up row's Plan is always 0.
+          const { values: subVals, dashMask: subDash } = yearRowValues(sub.monthly, new Array(12).fill(0));
+          const subTotal = subVals.reduce((a,b)=>a+b,0);
+          const isSel = selectedSub && selectedSub.kind==='income' && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
+          const sr = document.createElement('tr');
+          sr.className = 'sub-row' + (isOpen?' open':'') + (isSel?' selected':'');
+          sr.innerHTML = `<td><span class="cell-label">${sub.name}</span></td>` +
+            subVals.map((v,i)=>numCell(v,i,subDash)).join('') +
+            `<td class="num">${fmt(subTotal)}</td>`;
+          sr.addEventListener('click', (e)=>{
+            e.stopPropagation();
+            selectSub({ kind:'income', category: cat.name, subcategory: sub.name });
+          });
+          tbody.appendChild(sr);
+        });
       });
       const trTotal = document.createElement('tr');
       trTotal.className = 'total-row';
@@ -923,18 +970,36 @@ function renderMonthTable(){
       tbody.innerHTML = `<tr><td colspan="4" class="empty-table">No income categories loaded yet.</td></tr>`;
     } else {
       let totActual=0, totPlan=0;
-      incomeSubcats.forEach(sub=>{
-        const actual = sub.monthly[mi] || 0;
-        const planVal = (ROLL.incomeSubMonthly[sub.name]||[])[mi] || 0;
+      incomeSubcats.forEach(cat=>{
+        const actual = cat.monthly[mi] || 0;
+        const planVal = (ROLL.incomeSubMonthly[cat.name]||[])[mi] || 0;
         totActual += actual; totPlan += planVal;
-        const isSel = selectedSub && selectedSub.kind==='income' && selectedSub.subcategory===sub.name;
+        const isOpen = openCats.has(cat.name);
+        const hasSelectedSub = !isOpen && selectedSub && selectedSub.kind==='income' && selectedSub.category===cat.name;
         const tr = document.createElement('tr');
-        tr.className = 'income-row' + (isSel?' selected':'');
-        tr.innerHTML = rowHTML(sub.name, actual, planVal, false);
+        tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
+        tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
+          `<td class="num">${fmt(planVal)}</td><td class="num">${fmt(actual)}</td><td class="num">${fmtSigned(actual-planVal)}</td>`;
         tr.addEventListener('click', ()=>{
-          selectSub({ kind:'income', subcategory: sub.name });
+          if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
+          renderMid();
         });
         tbody.appendChild(tr);
+
+        cat.subcategories.forEach(sub=>{
+          const subActual = sub.monthly[mi] || 0;
+          // No per-description budget exists — only the top-level income
+          // source is plannable.
+          const isSel = selectedSub && selectedSub.kind==='income' && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
+          const sr = document.createElement('tr');
+          sr.className = 'sub-row' + (isOpen?' open':'') + (isSel?' selected':'');
+          sr.innerHTML = rowHTML(sub.name, subActual, 0, true);
+          sr.addEventListener('click', (e)=>{
+            e.stopPropagation();
+            selectSub({ kind:'income', category: cat.name, subcategory: sub.name });
+          });
+          tbody.appendChild(sr);
+        });
       });
       const trTotal = document.createElement('tr');
       trTotal.className = 'total-row';
@@ -1413,6 +1478,7 @@ function renderRight(){
     renderRightActualList(body, null);
   } else if (pill === 'plan'){
     renderRightPlannedList(body, null, null);
+    renderAddToPlanControl(body);
   } else {
     renderRightProjectedList(body);
   }
@@ -1420,22 +1486,53 @@ function renderRight(){
 
 function getSelectedActualMonthly(){
   if (selectedSub.kind === 'expense') return findSubcategory(selectedSub.category, selectedSub.subcategory)?.monthly || new Array(12).fill(0);
-  return findIncomeSub(selectedSub.subcategory)?.monthly || new Array(12).fill(0);
+  return findIncomeSub(selectedSub.category, selectedSub.subcategory)?.monthly || new Array(12).fill(0);
 }
 function getSelectedBudgetItems(){
   if (selectedSub.kind === 'expense'){
     const sub = (BUDGETS.expenses[selectedSub.category]||{})[selectedSub.subcategory];
     return sub ? sub.items : [];
   }
-  const sub = BUDGETS.income[selectedSub.subcategory];
+  // Income budget items only exist at the top level (income source), not
+  // per rolled-up description — selectedSub.category is that source.
+  const sub = BUDGETS.income[selectedSub.category];
   return sub ? sub.items : [];
+}
+
+// Adds a new raw budget line item for whatever is currently selected —
+// same target the "Add to plan" quick-add control (Year tab, Plan pill)
+// writes to. For income, that's always the top-level source (category),
+// same as getSelectedBudgetItems above. Amount is entered by the user as
+// a plain positive number; the stored sign follows the same convention
+// as everywhere else BUDGETS_RAW is written (negative for expenses).
+function addSelectedBudgetItem(freq, label, rawAmount){
+  if (!selectedSub) return false;
+  const amt = Math.abs(Number(rawAmount) || 0);
+  if (amt === 0) return false;
+  const targetName = selectedSub.kind==='expense' ? selectedSub.subcategory : selectedSub.category;
+  const item = {
+    freq,
+    label: (label && label.trim()) || targetName,
+    amount: selectedSub.kind==='expense' ? -amt : amt,
+  };
+  if (selectedSub.kind === 'expense'){
+    if (!BUDGETS_RAW.Expenses[selectedSub.category]) BUDGETS_RAW.Expenses[selectedSub.category] = {};
+    const subs = BUDGETS_RAW.Expenses[selectedSub.category];
+    if (!subs[selectedSub.subcategory]) subs[selectedSub.subcategory] = [];
+    subs[selectedSub.subcategory].push(item);
+  } else {
+    if (!BUDGETS_RAW.Income[selectedSub.category]) BUDGETS_RAW.Income[selectedSub.category] = [];
+    BUDGETS_RAW.Income[selectedSub.category].push(item);
+  }
+  recomputeDerived();
+  return true;
 }
 function getSelectedTxns(monthFilter){
   return DATA.transactions.filter(t=>{
     if (selectedSub.kind==='expense'){
       if (t.type!=='Expenses' || t.category!==selectedSub.category || t.subcategory!==selectedSub.subcategory) return false;
     } else {
-      if (t.type!=='Income' || t.subcategory!==selectedSub.subcategory) return false;
+      if (t.type!=='Income' || t.subcategory!==selectedSub.category || t.description!==selectedSub.subcategory) return false;
     }
     if (monthFilter!==null && monthFilter!==undefined && t.month!==monthFilter) return false;
     return true;
@@ -1490,6 +1587,152 @@ function renderRightPlannedList(container, monthFilter){
     });
   }
   renderRightTxnTable(container, rows);
+}
+
+// Quick-add control shown under the planned line items (Year tab, Plan
+// pill, row selected) — lets the user add a one-time or monthly recurring
+// budget line item for whatever's selected without opening the full
+// budget editor. Writes straight to BUDGETS_RAW via addSelectedBudgetItem.
+function renderAddToPlanControl(container){
+  const wrap = document.createElement('div');
+  wrap.className = 'add-plan-wrap';
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'add-item-btn';
+  btn.textContent = '+ Add to plan';
+  btn.addEventListener('click', openAddToPlanModal);
+  wrap.appendChild(btn);
+
+  container.appendChild(wrap);
+}
+
+// Centered modal (with a scrim behind it) for the "Add to plan" quick-add
+// form — built fresh and appended to <body> each time it opens, so it
+// overlays the whole app rather than being scoped to the right panel.
+function openAddToPlanModal(){
+  if (!selectedSub) return;
+  const targetLabel = selectedSub.kind==='expense' ? selectedSub.subcategory : selectedSub.category;
+
+  const scrim = document.createElement('div');
+  scrim.className = 'modal-scrim';
+
+  const dialog = document.createElement('div');
+  dialog.className = 'modal-dialog';
+  dialog.addEventListener('click', e=>e.stopPropagation());
+  scrim.appendChild(dialog);
+
+  const title = document.createElement('div');
+  title.className = 'modal-title';
+  title.textContent = `Add to plan — ${targetLabel}`;
+  dialog.appendChild(title);
+
+  // Frequency picker — a pill toggle group (same look as the Expenses/
+  // Income and YTD/Projection/Plan pills elsewhere) instead of a <select>,
+  // so more than one month can be picked at once. "Every month" and
+  // specific months are mutually exclusive: picking a month clears "Every
+  // month", and vice versa; multiple specific months can stay selected
+  // together (e.g. a one-time item in both June and December).
+  const selectedFreqs = new Set(['monthly']);
+  const freqPillEls = {};
+  const syncFreqPills = () => {
+    Object.entries(freqPillEls).forEach(([val,el])=>el.classList.toggle('active', selectedFreqs.has(val)));
+  };
+
+  const freqSection = document.createElement('div');
+  freqSection.className = 'freq-section';
+
+  const allPill = document.createElement('button');
+  allPill.type = 'button';
+  allPill.className = 'pill freq-pill freq-pill-all';
+  allPill.textContent = 'Every month';
+  allPill.addEventListener('click', ()=>{
+    selectedFreqs.clear();
+    selectedFreqs.add('monthly');
+    syncFreqPills();
+  });
+  freqPillEls.monthly = allPill;
+  freqSection.appendChild(allPill);
+
+  const freqDivider = document.createElement('div');
+  freqDivider.className = 'freq-divider';
+  freqDivider.textContent = 'Or specific month(s)';
+  freqSection.appendChild(freqDivider);
+
+  const monthsGrid = document.createElement('div');
+  monthsGrid.className = 'freq-months-grid';
+  MONTHS.forEach((m,i)=>{
+    const val = MONTH_ABBR[i];
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'pill freq-pill';
+    b.textContent = m;
+    b.addEventListener('click', ()=>{
+      selectedFreqs.delete('monthly');
+      if (selectedFreqs.has(val)) selectedFreqs.delete(val); else selectedFreqs.add(val);
+      syncFreqPills();
+    });
+    freqPillEls[val] = b;
+    monthsGrid.appendChild(b);
+  });
+  freqSection.appendChild(monthsGrid);
+  syncFreqPills();
+  dialog.appendChild(freqSection);
+
+  const labelInput = document.createElement('input');
+  labelInput.type = 'text';
+  labelInput.className = 'budget-item-label';
+  labelInput.placeholder = 'Label';
+  dialog.appendChild(labelInput);
+
+  const amountInput = document.createElement('input');
+  amountInput.type = 'number';
+  amountInput.step = '1';
+  amountInput.className = 'budget-item-amount num';
+  amountInput.placeholder = 'Amount';
+  dialog.appendChild(amountInput);
+
+  const actions = document.createElement('div');
+  actions.className = 'add-plan-actions';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'file-btn ghost';
+  cancelBtn.textContent = 'Cancel';
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'file-btn primary';
+  addBtn.textContent = 'Add';
+  actions.appendChild(cancelBtn);
+  actions.appendChild(addBtn);
+  dialog.appendChild(actions);
+
+  function close(){
+    document.removeEventListener('keydown', onKeydown);
+    scrim.remove();
+  }
+  function onKeydown(e){
+    if (e.key === 'Escape') close();
+  }
+  scrim.addEventListener('click', close);
+  cancelBtn.addEventListener('click', close);
+  addBtn.addEventListener('click', ()=>{
+    if (selectedFreqs.size === 0) return;
+    let anyAdded = false;
+    selectedFreqs.forEach(freq=>{
+      if (addSelectedBudgetItem(freq, labelInput.value, amountInput.value)) anyAdded = true;
+    });
+    if (!anyAdded){
+      amountInput.focus();
+      return;
+    }
+    close();
+    renderMid();
+    renderRight();
+  });
+  document.addEventListener('keydown', onKeydown);
+
+  document.body.appendChild(scrim);
+  labelInput.focus();
 }
 
 function renderRightProjectedList(container){
