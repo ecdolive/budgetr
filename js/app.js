@@ -245,27 +245,26 @@ function resolveLineItem(item, year){
 }
 
 function resolveBudgets(raw, year){
-  const result = { expenses: {}, income: {} };
-  const expensesRaw = (raw && raw.Expenses) || {};
-  Object.entries(expensesRaw).forEach(([catName, subs])=>{
-    result.expenses[catName] = {};
-    Object.entries(subs||{}).forEach(([subName, items])=>{
-      const list = Array.isArray(items) ? items : [];
-      const resolvedItems = list.map(it=>({ freq: it.freq, label: it.label||subName, amount: it.amount, monthly: resolveLineItem(it, year) }));
-      const monthly = new Array(12).fill(0);
-      resolvedItems.forEach(it=>it.monthly.forEach((v,i)=>monthly[i]+=v));
-      result.expenses[catName][subName] = { monthly: monthly.map(v=>Math.round(v*100)/100), items: resolvedItems };
+  // Expenses and Income share the same Category -> Subcategory -> items
+  // shape, so both groups resolve through the same logic.
+  const resolveGroup = (groupRaw) => {
+    const out = {};
+    Object.entries(groupRaw||{}).forEach(([catName, subs])=>{
+      out[catName] = {};
+      Object.entries(subs||{}).forEach(([subName, items])=>{
+        const list = Array.isArray(items) ? items : [];
+        const resolvedItems = list.map(it=>({ freq: it.freq, label: it.label||subName, amount: it.amount, monthly: resolveLineItem(it, year) }));
+        const monthly = new Array(12).fill(0);
+        resolvedItems.forEach(it=>it.monthly.forEach((v,i)=>monthly[i]+=v));
+        out[catName][subName] = { monthly: monthly.map(v=>Math.round(v*100)/100), items: resolvedItems };
+      });
     });
-  });
-  const incomeRaw = (raw && raw.Income) || {};
-  Object.entries(incomeRaw).forEach(([subName, items])=>{
-    const list = Array.isArray(items) ? items : [];
-    const resolvedItems = list.map(it=>({ freq: it.freq, label: it.label||subName, amount: it.amount, monthly: resolveLineItem(it, year) }));
-    const monthly = new Array(12).fill(0);
-    resolvedItems.forEach(it=>it.monthly.forEach((v,i)=>monthly[i]+=v));
-    result.income[subName] = { monthly: monthly.map(v=>Math.round(v*100)/100), items: resolvedItems };
-  });
-  return result;
+    return out;
+  };
+  return {
+    expenses: resolveGroup(raw && raw.Expenses),
+    income: resolveGroup(raw && raw.Income),
+  };
 }
 
 // Derived, aggregated views built once per render from the resolved budgets.
@@ -286,16 +285,25 @@ function buildBudgetRollups(resolved, categories, incomeSubcats){
   const expenseTotalMonthly = new Array(12).fill(0);
   Object.values(expenseCategoryMonthly).forEach(arr=>arr.forEach((v,i)=>expenseTotalMonthly[i]+=v));
 
-  const incomeSubMonthly = {}; // subName -> [12] positive (already positive)
-  Object.entries(resolved.income).forEach(([subName, subData])=>{
-    incomeSubMonthly[subName] = subData.monthly.slice();
+  // Income category (source) monthly = sum of its subcategories' (rolled-up
+  // description) monthly — already positive, no sign flip needed. Same
+  // bottom-up shape as expenses above.
+  const incomeCategoryMonthly = {}; // catName -> [12] positive
+  const incomeSubMonthly = {};      // "cat||sub" -> [12] positive
+  Object.entries(resolved.income).forEach(([catName, subs])=>{
+    const catArr = new Array(12).fill(0);
+    Object.entries(subs).forEach(([subName, subData])=>{
+      incomeSubMonthly[catName+'||'+subName] = subData.monthly.slice();
+      subData.monthly.forEach((v,i)=>catArr[i]+=v);
+    });
+    incomeCategoryMonthly[catName] = catArr.map(v=>Math.round(v*100)/100);
   });
   const incomeTotalMonthly = new Array(12).fill(0);
-  Object.values(incomeSubMonthly).forEach(arr=>arr.forEach((v,i)=>incomeTotalMonthly[i]+=v));
+  Object.values(incomeCategoryMonthly).forEach(arr=>arr.forEach((v,i)=>incomeTotalMonthly[i]+=v));
 
   return {
     expenseCategoryMonthly, expenseSubMonthly, expenseTotalMonthly,
-    incomeSubMonthly, incomeTotalMonthly,
+    incomeCategoryMonthly, incomeSubMonthly, incomeTotalMonthly,
   };
 }
 
@@ -317,7 +325,9 @@ function budgetsRawToDraft(raw){
     label: it.label != null ? it.label : fallbackLabel,
     amount: it.amount,
   }));
-  const expenses = Object.entries((raw && raw.Expenses) || {}).map(([catName, subs]) => ({
+  // Expenses and Income share the same Category -> Subcategory -> items
+  // shape, so both groups convert through the same logic.
+  const toCategories = (groupRaw) => Object.entries(groupRaw || {}).map(([catName, subs]) => ({
     id: nextBudgetId(),
     name: catName,
     subcategories: Object.entries(subs || {}).map(([subName, items]) => ({
@@ -326,37 +336,35 @@ function budgetsRawToDraft(raw){
       items: toItems(items, subName),
     })),
   }));
-  const income = Object.entries((raw && raw.Income) || {}).map(([subName, items]) => ({
-    id: nextBudgetId(),
-    name: subName,
-    items: toItems(items, subName),
-  }));
-  return { expenses, income };
+  return {
+    expenses: toCategories(raw && raw.Expenses),
+    income: toCategories(raw && raw.Income),
+  };
 }
 
 function draftToBudgetsRaw(draft){
   const serializeItems = (items) => items
     .filter(it => (it.label && it.label.trim()) || it.amount)
     .map(it => ({ freq: it.freq, label: it.label, amount: it.amount }));
-  const Expenses = {};
-  draft.expenses.forEach(cat => {
-    const catName = cat.name.trim();
-    if (!catName) return;
-    const subs = {};
-    cat.subcategories.forEach(sub => {
-      const subName = sub.name.trim();
-      if (!subName) return;
-      subs[subName] = serializeItems(sub.items);
+  const serializeCategories = (list) => {
+    const out = {};
+    list.forEach(cat => {
+      const catName = cat.name.trim();
+      if (!catName) return;
+      const subs = {};
+      cat.subcategories.forEach(sub => {
+        const subName = sub.name.trim();
+        if (!subName) return;
+        subs[subName] = serializeItems(sub.items);
+      });
+      out[catName] = subs;
     });
-    Expenses[catName] = subs;
-  });
-  const Income = {};
-  draft.income.forEach(sub => {
-    const subName = sub.name.trim();
-    if (!subName) return;
-    Income[subName] = serializeItems(sub.items);
-  });
-  return { Expenses, Income };
+    return out;
+  };
+  return {
+    Expenses: serializeCategories(draft.expenses),
+    Income: serializeCategories(draft.income),
+  };
 }
 
 // Sign convention matches the raw JSON: expense item amounts are stored
@@ -374,7 +382,7 @@ function budgetCatYearTotal(cat){
   return cat.subcategories.reduce((a, s) => a + budgetSubYearTotal(s), 0);
 }
 function draftAnnualTotals(draft){
-  const incomeTotal = draft.income.reduce((a, s) => a + budgetSubYearTotal(s), 0);
+  const incomeTotal = draft.income.reduce((a, c) => a + budgetCatYearTotal(c), 0);
   const expenseTotal = draft.expenses.reduce((a, c) => a + Math.abs(budgetCatYearTotal(c)), 0);
   return { incomeTotal, expenseTotal, net: incomeTotal - expenseTotal };
 }
@@ -456,16 +464,24 @@ function importLastYearCSVIntoDraft(files){
       budgetOpenCats.add(draftCat.id);
     });
 
-    agg.incomeSubcats.forEach(sub => {
-      let draftSub = findByName(budgetDraft.income, sub.name);
-      if (!draftSub){
-        draftSub = { id: nextBudgetId(), name: sub.name, items: [] };
-        budgetDraft.income.push(draftSub);
+    agg.incomeSubcats.forEach(cat => {
+      let draftCat = findByName(budgetDraft.income, cat.name);
+      if (!draftCat){
+        draftCat = { id: nextBudgetId(), name: cat.name, subcategories: [] };
+        budgetDraft.income.push(draftCat);
       }
-      const avgMonthly = Math.round(sub.yearly / 12);
-      if (avgMonthly !== 0){
-        draftSub.items.push({ id: nextBudgetId(), freq: 'monthly', label: `${sub.name} (last year avg)`, amount: avgMonthly });
-      }
+      cat.subcategories.forEach(sub => {
+        let draftSub = findByName(draftCat.subcategories, sub.name);
+        if (!draftSub){
+          draftSub = { id: nextBudgetId(), name: sub.name, items: [] };
+          draftCat.subcategories.push(draftSub);
+        }
+        const avgMonthly = Math.round(sub.yearly / 12);
+        if (avgMonthly !== 0){
+          draftSub.items.push({ id: nextBudgetId(), freq: 'monthly', label: `${sub.name} (last year avg)`, amount: avgMonthly });
+        }
+      });
+      budgetOpenCats.add(draftCat.id);
     });
 
     setIOStatus(`Imported starting values from ${files.map(f => f.name).join(', ')}.`, 'ok');
@@ -577,12 +593,21 @@ function mergedIncomeSubcats(){
     subcategories: cat.subcategories.map(s=>({ name: s.name, monthly: s.monthly })),
   }));
   const byName = new Map(result.map(c=>[c.name, c]));
-  Object.keys(BUDGETS.income||{}).forEach(name=>{
-    if (!byName.has(name)){
-      const cat = { name, monthly: new Array(12).fill(0), subcategories: [] };
-      byName.set(name, cat);
+  Object.entries(BUDGETS.income||{}).forEach(([catName, subs])=>{
+    let cat = byName.get(catName);
+    if (!cat){
+      cat = { name: catName, monthly: new Array(12).fill(0), subcategories: [] };
+      byName.set(catName, cat);
       result.push(cat);
     }
+    const subByName = new Map(cat.subcategories.map(s=>[s.name, s]));
+    Object.keys(subs||{}).forEach(subName=>{
+      if (!subByName.has(subName)){
+        const sub = { name: subName, monthly: new Array(12).fill(0) };
+        cat.subcategories.push(sub);
+        subByName.set(subName, sub);
+      }
+    });
   });
   return result;
 }
@@ -831,7 +856,7 @@ function renderYearTable(){
       let grandTotal = 0;
       const monthTotals = new Array(12).fill(0);
       incomeSubcats.forEach(cat=>{
-        const budget = ROLL.incomeSubMonthly[cat.name] || new Array(12).fill(0);
+        const budget = ROLL.incomeCategoryMonthly[cat.name] || new Array(12).fill(0);
         const { values, dashMask } = yearRowValues(cat.monthly, budget);
         values.forEach((v,i)=>monthTotals[i]+=v);
         const total = values.reduce((a,b)=>a+b,0);
@@ -850,9 +875,8 @@ function renderYearTable(){
         tbody.appendChild(tr);
 
         cat.subcategories.forEach(sub=>{
-          // No per-description budget exists — only the top-level income
-          // source is plannable, so a rolled-up row's Plan is always 0.
-          const { values: subVals, dashMask: subDash } = yearRowValues(sub.monthly, new Array(12).fill(0));
+          const subBudget = ROLL.incomeSubMonthly[cat.name+'||'+sub.name] || new Array(12).fill(0);
+          const { values: subVals, dashMask: subDash } = yearRowValues(sub.monthly, subBudget);
           const subTotal = subVals.reduce((a,b)=>a+b,0);
           const isSel = selectedSub && selectedSub.kind==='income' && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
           const sr = document.createElement('tr');
@@ -972,7 +996,7 @@ function renderMonthTable(){
       let totActual=0, totPlan=0;
       incomeSubcats.forEach(cat=>{
         const actual = cat.monthly[mi] || 0;
-        const planVal = (ROLL.incomeSubMonthly[cat.name]||[])[mi] || 0;
+        const planVal = (ROLL.incomeCategoryMonthly[cat.name]||[])[mi] || 0;
         totActual += actual; totPlan += planVal;
         const isOpen = openCats.has(cat.name);
         const hasSelectedSub = !isOpen && selectedSub && selectedSub.kind==='income' && selectedSub.category===cat.name;
@@ -988,12 +1012,11 @@ function renderMonthTable(){
 
         cat.subcategories.forEach(sub=>{
           const subActual = sub.monthly[mi] || 0;
-          // No per-description budget exists — only the top-level income
-          // source is plannable.
+          const subPlan = (ROLL.incomeSubMonthly[cat.name+'||'+sub.name]||[])[mi] || 0;
           const isSel = selectedSub && selectedSub.kind==='income' && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
           const sr = document.createElement('tr');
           sr.className = 'sub-row' + (isOpen?' open':'') + (isSel?' selected':'');
-          sr.innerHTML = rowHTML(sub.name, subActual, 0, true);
+          sr.innerHTML = rowHTML(sub.name, subActual, subPlan, true);
           sr.addEventListener('click', (e)=>{
             e.stopPropagation();
             selectSub({ kind:'income', category: cat.name, subcategory: sub.name });
@@ -1153,7 +1176,7 @@ function renderBudgetExpensesBody(container){
     container.appendChild(hint);
   }
   budgetDraft.expenses.forEach(cat=>{
-    container.appendChild(renderBudgetCategoryBlock(cat));
+    container.appendChild(renderBudgetCategoryBlock(cat, { kind:'expense' }));
   });
   const addCatBtn = document.createElement('button');
   addCatBtn.type = 'button';
@@ -1177,24 +1200,30 @@ function renderBudgetIncomeBody(container){
     hint.textContent = 'No income sources yet. Click "+ Add income source" below, or import last year’s CSV as a starting point.';
     container.appendChild(hint);
   }
-  budgetDraft.income.forEach(sub=>{
-    container.appendChild(renderBudgetSubBlock(sub, { kind:'income' }));
+  budgetDraft.income.forEach(cat=>{
+    container.appendChild(renderBudgetCategoryBlock(cat, { kind:'income' }));
   });
   const addBtn = document.createElement('button');
   addBtn.type = 'button';
   addBtn.className = 'add-cat-btn';
   addBtn.textContent = '+ Add income source';
   addBtn.addEventListener('click', ()=>{
-    const sub = { id: nextBudgetId(), name:'', items: [] };
-    budgetDraft.income.push(sub);
-    budgetFocusId = sub.id;
+    const cat = { id: nextBudgetId(), name:'', subcategories: [] };
+    budgetDraft.income.push(cat);
+    budgetOpenCats.add(cat.id);
+    budgetFocusId = cat.id;
     renderMid();
     renderRight();
   });
   container.appendChild(addBtn);
 }
 
-function renderBudgetCategoryBlock(cat){
+// opts: { kind: 'expense' | 'income' } — income sources and expense
+// categories are both Category -> Subcategory -> line items now, so this
+// one block (and renderBudgetSubBlock below) renders both, with only the
+// wording and which budgetDraft array is written to differing by kind.
+function renderBudgetCategoryBlock(cat, opts){
+  const kind = opts.kind;
   const wrap = document.createElement('div');
   wrap.className = 'budget-cat';
   wrap.dataset.catId = cat.id;
@@ -1210,7 +1239,7 @@ function renderBudgetCategoryBlock(cat){
 
   const nameInput = document.createElement('input');
   nameInput.className = 'budget-name-input';
-  nameInput.placeholder = 'Category name';
+  nameInput.placeholder = kind==='income' ? 'Income source name' : 'Category name';
   nameInput.value = cat.name;
   nameInput.addEventListener('input', ()=>{ cat.name = nameInput.value; });
   nameInput.addEventListener('click', e=>e.stopPropagation());
@@ -1224,12 +1253,14 @@ function renderBudgetCategoryBlock(cat){
   const removeBtn = document.createElement('button');
   removeBtn.type = 'button';
   removeBtn.className = 'icon-btn';
-  removeBtn.title = 'Delete category';
+  removeBtn.title = kind==='income' ? 'Delete income source' : 'Delete category';
   removeBtn.textContent = '✕';
   removeBtn.addEventListener('click', (e)=>{
     e.stopPropagation();
-    if (!confirm(`Delete category "${cat.name || '(unnamed)'}" and all its subcategories?`)) return;
-    budgetDraft.expenses = budgetDraft.expenses.filter(c=>c.id!==cat.id);
+    const label = kind==='income' ? 'income source' : 'category';
+    if (!confirm(`Delete ${label} "${cat.name || '(unnamed)'}" and all its subcategories?`)) return;
+    if (kind==='income') budgetDraft.income = budgetDraft.income.filter(c=>c.id!==cat.id);
+    else budgetDraft.expenses = budgetDraft.expenses.filter(c=>c.id!==cat.id);
     renderMid();
     renderRight();
   });
@@ -1245,7 +1276,7 @@ function renderBudgetCategoryBlock(cat){
     const subsWrap = document.createElement('div');
     subsWrap.className = 'budget-subcats';
     cat.subcategories.forEach(sub=>{
-      subsWrap.appendChild(renderBudgetSubBlock(sub, { kind:'expense', cat, catTotalEl: totalEl }));
+      subsWrap.appendChild(renderBudgetSubBlock(sub, { kind, cat, catTotalEl: totalEl }));
     });
     const addSubBtn = document.createElement('button');
     addSubBtn.type = 'button';
@@ -1265,7 +1296,7 @@ function renderBudgetCategoryBlock(cat){
   return wrap;
 }
 
-// opts: { kind:'expense', cat, catTotalEl } | { kind:'income' }
+// opts: { kind: 'expense' | 'income', cat, catTotalEl }
 function renderBudgetSubBlock(sub, opts){
   const wrap = document.createElement('div');
   wrap.className = 'budget-sub';
@@ -1276,7 +1307,7 @@ function renderBudgetSubBlock(sub, opts){
 
   const nameInput = document.createElement('input');
   nameInput.className = 'budget-name-input';
-  nameInput.placeholder = opts.kind==='income' ? 'Income source name' : 'Subcategory name';
+  nameInput.placeholder = 'Subcategory name';
   nameInput.value = sub.name;
   nameInput.addEventListener('input', ()=>{ sub.name = nameInput.value; });
   header.appendChild(nameInput);
@@ -1293,8 +1324,7 @@ function renderBudgetSubBlock(sub, opts){
   removeBtn.textContent = '✕';
   removeBtn.addEventListener('click', ()=>{
     if (!confirm(`Delete "${sub.name || '(unnamed)'}"?`)) return;
-    if (opts.kind==='expense') opts.cat.subcategories = opts.cat.subcategories.filter(s=>s.id!==sub.id);
-    else budgetDraft.income = budgetDraft.income.filter(s=>s.id!==sub.id);
+    opts.cat.subcategories = opts.cat.subcategories.filter(s=>s.id!==sub.id);
     renderMid();
     renderRight();
   });
@@ -1324,7 +1354,7 @@ function renderBudgetSubBlock(sub, opts){
 
 function onBudgetItemChanged(sub, opts, subTotalEl){
   subTotalEl.textContent = fmt(Math.abs(budgetSubYearTotal(sub)));
-  if (opts.kind==='expense' && opts.catTotalEl){
+  if (opts.catTotalEl){
     opts.catTotalEl.textContent = fmt(Math.abs(budgetCatYearTotal(opts.cat)));
   }
   updateBudgetRightSummary();
@@ -1489,42 +1519,33 @@ function getSelectedActualMonthly(){
   return findIncomeSub(selectedSub.category, selectedSub.subcategory)?.monthly || new Array(12).fill(0);
 }
 function getSelectedBudgetItems(){
-  if (selectedSub.kind === 'expense'){
-    const sub = (BUDGETS.expenses[selectedSub.category]||{})[selectedSub.subcategory];
-    return sub ? sub.items : [];
-  }
-  // Income budget items only exist at the top level (income source), not
-  // per rolled-up description — selectedSub.category is that source.
-  const sub = BUDGETS.income[selectedSub.category];
+  const group = selectedSub.kind === 'expense' ? BUDGETS.expenses : BUDGETS.income;
+  const sub = (group[selectedSub.category]||{})[selectedSub.subcategory];
   return sub ? sub.items : [];
 }
 
 // Adds a new raw budget line item for whatever is currently selected —
 // same target the "Add to plan" quick-add control (Year tab, Plan pill)
-// writes to. For income, that's always the top-level source (category),
-// same as getSelectedBudgetItems above. Amount is entered by the user as
-// a plain positive number; the stored sign follows the same convention
-// as everywhere else BUDGETS_RAW is written (negative for expenses).
+// writes to. Expenses and income both live at Category -> Subcategory ->
+// items, so both kinds are written the same way. Amount is entered by the
+// user as a plain positive number; the stored sign follows the same
+// convention as everywhere else BUDGETS_RAW is written (negative for
+// expenses, positive for income).
 function addSelectedBudgetItem(freq, label, rawAmount, target){
   const t = target || selectedSub;
   if (!t) return false;
   const amt = Math.abs(Number(rawAmount) || 0);
   if (amt === 0) return false;
-  const targetName = t.kind==='expense' ? t.subcategory : t.category;
   const item = {
     freq,
-    label: (label && label.trim()) || targetName,
+    label: (label && label.trim()) || t.subcategory,
     amount: t.kind==='expense' ? -amt : amt,
   };
-  if (t.kind === 'expense'){
-    if (!BUDGETS_RAW.Expenses[t.category]) BUDGETS_RAW.Expenses[t.category] = {};
-    const subs = BUDGETS_RAW.Expenses[t.category];
-    if (!subs[t.subcategory]) subs[t.subcategory] = [];
-    subs[t.subcategory].push(item);
-  } else {
-    if (!BUDGETS_RAW.Income[t.category]) BUDGETS_RAW.Income[t.category] = [];
-    BUDGETS_RAW.Income[t.category].push(item);
-  }
+  const group = t.kind === 'expense' ? BUDGETS_RAW.Expenses : BUDGETS_RAW.Income;
+  if (!group[t.category]) group[t.category] = {};
+  const subs = group[t.category];
+  if (!subs[t.subcategory]) subs[t.subcategory] = [];
+  subs[t.subcategory].push(item);
   recomputeDerived();
   return true;
 }
@@ -1614,6 +1635,9 @@ function renderAddToPlanControl(container){
 function openAddToPlanModal(){
   if (!selectedSub) return;
   const kind = selectedSub.kind;
+  // Expenses and income both live at Category -> Subcategory -> items, so
+  // both kinds show the same category + subcategory pair of selectors below.
+  const mergedCatsFn = kind==='expense' ? mergedExpenseCategories : mergedIncomeSubcats;
 
   const scrim = document.createElement('div');
   scrim.className = 'modal-scrim';
@@ -1631,11 +1655,9 @@ function openAddToPlanModal(){
   // Category / subcategory — default to whatever's currently selected in
   // the ledger, but changeable here so the new item can be filed elsewhere
   // without closing the modal and re-selecting a different row first.
-  // Income budget items only ever live at the source (category) level, so
-  // there's no subcategory selector for income. Grouped together (and
-  // below, description+amount grouped together) so the modal reads as
-  // distinct sections with visible breathing room between them, rather
-  // than one long uniform list of fields.
+  // Grouped together (and below, description+amount grouped together) so
+  // the modal reads as distinct sections with visible breathing room
+  // between them, rather than one long uniform list of fields.
   const NEW_OPTION = '__new__';
 
   // A hidden-by-default text input that appears next to a select once its
@@ -1687,7 +1709,7 @@ function openAddToPlanModal(){
   catRow.className = 'modal-inline-row';
   const catSelect = document.createElement('select');
   catSelect.className = 'modal-select';
-  (kind==='expense' ? mergedExpenseCategories() : mergedIncomeSubcats()).forEach(c=>{
+  mergedCatsFn().forEach(c=>{
     const opt = document.createElement('option');
     opt.value = c.name;
     opt.textContent = c.name;
@@ -1705,54 +1727,48 @@ function openAddToPlanModal(){
   const syncCatNew = () => { catNewInput.hidden = catSelect.value !== NEW_OPTION; };
   syncCatNew();
 
-  let subSelect = null;
-  let subNewInput = null;
-  if (kind === 'expense'){
-    const subField = document.createElement('div');
-    subField.className = 'modal-field';
-    const subLabel = document.createElement('div');
-    subLabel.className = 'modal-field-label';
-    subLabel.textContent = 'Subcategory';
-    const subRow = document.createElement('div');
-    subRow.className = 'modal-inline-row';
-    subSelect = document.createElement('select');
-    subSelect.className = 'modal-select';
-    subField.appendChild(subLabel);
-    subField.appendChild(subRow);
-    subRow.appendChild(wrapSelect(subSelect));
-    catSubGroup.appendChild(subField);
+  const subField = document.createElement('div');
+  subField.className = 'modal-field';
+  const subLabel = document.createElement('div');
+  subLabel.className = 'modal-field-label';
+  subLabel.textContent = 'Subcategory';
+  const subRow = document.createElement('div');
+  subRow.className = 'modal-inline-row';
+  const subSelect = document.createElement('select');
+  subSelect.className = 'modal-select';
+  subField.appendChild(subLabel);
+  subField.appendChild(subRow);
+  subRow.appendChild(wrapSelect(subSelect));
+  catSubGroup.appendChild(subField);
 
-    subNewInput = makeNewNameInput('Subcategory name');
-    subRow.appendChild(subNewInput);
-    const syncSubNew = () => { subNewInput.hidden = subSelect.value !== NEW_OPTION; };
+  const subNewInput = makeNewNameInput('Subcategory name');
+  subRow.appendChild(subNewInput);
+  const syncSubNew = () => { subNewInput.hidden = subSelect.value !== NEW_OPTION; };
 
-    const populateSubs = (catName, preferredSub) => {
-      subSelect.innerHTML = '';
-      if (catName !== NEW_OPTION){
-        const cat = mergedExpenseCategories().find(c=>c.name===catName);
-        (cat ? cat.subcategories : []).forEach(s=>{
-          const opt = document.createElement('option');
-          opt.value = s.name;
-          opt.textContent = s.name;
-          if (s.name === preferredSub) opt.selected = true;
-          subSelect.appendChild(opt);
-        });
-      }
-      const newOpt = addNewOption(subSelect);
-      // A brand-new category has no existing subcategories yet, so force
-      // "+ New" rather than leaving the select empty.
-      if (catName === NEW_OPTION) newOpt.selected = true;
-      syncSubNew();
-    };
-    populateSubs(selectedSub.category, selectedSub.subcategory);
-    subSelect.addEventListener('change', syncSubNew);
-    catSelect.addEventListener('change', () => {
-      populateSubs(catSelect.value, null);
-      syncCatNew();
-    });
-  } else {
-    catSelect.addEventListener('change', syncCatNew);
-  }
+  const populateSubs = (catName, preferredSub) => {
+    subSelect.innerHTML = '';
+    if (catName !== NEW_OPTION){
+      const cat = mergedCatsFn().find(c=>c.name===catName);
+      (cat ? cat.subcategories : []).forEach(s=>{
+        const opt = document.createElement('option');
+        opt.value = s.name;
+        opt.textContent = s.name;
+        if (s.name === preferredSub) opt.selected = true;
+        subSelect.appendChild(opt);
+      });
+    }
+    const newOpt = addNewOption(subSelect);
+    // A brand-new category has no existing subcategories yet, so force
+    // "+ New" rather than leaving the select empty.
+    if (catName === NEW_OPTION) newOpt.selected = true;
+    syncSubNew();
+  };
+  populateSubs(selectedSub.category, selectedSub.subcategory);
+  subSelect.addEventListener('change', syncSubNew);
+  catSelect.addEventListener('change', () => {
+    populateSubs(catSelect.value, null);
+    syncCatNew();
+  });
 
   const descAmountGroup = document.createElement('div');
   descAmountGroup.className = 'modal-group';
@@ -1871,13 +1887,10 @@ function openAddToPlanModal(){
       categoryName = catNewInput.value.trim();
       if (!categoryName){ catNewInput.focus(); return; }
     }
-    let subcategoryName = null;
-    if (kind === 'expense'){
-      subcategoryName = subSelect.value;
-      if (subcategoryName === NEW_OPTION){
-        subcategoryName = subNewInput.value.trim();
-        if (!subcategoryName){ subNewInput.focus(); return; }
-      }
+    let subcategoryName = subSelect.value;
+    if (subcategoryName === NEW_OPTION){
+      subcategoryName = subNewInput.value.trim();
+      if (!subcategoryName){ subNewInput.focus(); return; }
     }
     const target = { kind, category: categoryName, subcategory: subcategoryName };
     let anyAdded = false;
