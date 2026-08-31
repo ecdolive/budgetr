@@ -46,6 +46,7 @@
     font-family:'Atkinson Hyperlegible Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
     font-variant-numeric:tabular-nums;
     font-feature-settings:"tnum" 1;
+    text-align:right;
   }
   button{font-family:inherit;}
   /* Scrollbars stay invisible at rest and only appear while the
@@ -62,7 +63,7 @@
   /* ================= APP SHELL ================= */
   .app{
     display:grid;
-    grid-template-columns:260px 1fr 360px;
+    grid-template-columns:11rem 1fr 360px;
     gap:0.5rem;
     height:100vh;
     padding:0.5rem;
@@ -76,7 +77,7 @@
   .panel{overflow-y:auto;overflow-x:hidden;border-radius:var(--radius-lg);}
   .table-scroll{overflow-x:auto;}
   @media (max-width:1000px){
-    .app{grid-template-columns:220px 1fr 300px;min-width:0;}
+    .app{grid-template-columns:11rem 1fr 300px;min-width:0;}
   }
 
   /* ================= LEFT PANEL ================= */
@@ -122,7 +123,7 @@
     width:15px;height:15px;pointer-events:none;
     opacity:0.35; /* approximates --text-muted against --bg-input; icon is a fixed white stroke */
   }
-  #searchInput{
+  .search-input{
     width:100%;
     background:var(--bg-input);
     border:1px solid var(--border);
@@ -132,8 +133,8 @@
     font-size:13px;
     outline:none;
   }
-  #searchInput::placeholder{color:var(--text-muted);}
-  #searchInput:focus{border-color:var(--accent-teal-dim);}
+  .search-input::placeholder{color:var(--text-muted);}
+  .search-input:focus{border-color:var(--accent-teal-dim);}
 
   .tf-list{display:flex;flex-direction:column;gap:0.25rem;}
   .tf-item{
@@ -202,7 +203,7 @@
      edges and fully occludes content scrolling behind them, both
      vertically and (since .mid-body's table content scrolls horizontally
      in its own .table-scroll, never the panel itself) horizontally. */
-  .mid-title,.pills{
+  .mid-title{
     position:sticky;
     top:0;
     z-index:2;
@@ -211,12 +212,43 @@
     display:flex;
     align-items:center;
     padding:0 30px;
+    font-size:1.25rem;
+    font-weight:900;
   }
-  .mid-title{
-    font-size:22px;
-    font-weight:700;
+  /* Transactions tab: title bar also holds the filter field, so it needs
+     its own two-ended layout instead of the single-child default above. */
+  .transactions-toolbar{justify-content:space-between;gap:20px;}
+  .transactions-toolbar .search-wrap{width:280px;flex-shrink:0;}
+  /* Budget (year) tab: title bar holds the year label next to the
+     YTD/Forecast/Budget pill group, both left-aligned with a gap between
+     them rather than spread to the bar's full width. */
+  .year-toolbar{gap:20px;}
+  /* Month view: back button sits right in front of the month name, tightly
+     paired rather than spread apart — returns to whichever view (Budget
+     year table, eventually others) the month was opened from. The
+     prev/next month steppers live in their own group at the bar's other
+     end. */
+  .month-toolbar{justify-content:space-between;}
+  .month-toolbar-left{display:flex;align-items:center;gap:8px;}
+  .month-toolbar-nav{display:flex;align-items:center;gap:4px;flex-shrink:0;}
+  .back-btn{
+    background:transparent;
+    border:none;
+    cursor:pointer;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    width:28px;height:28px;
+    padding:0;
+    border-radius:50%;
+    flex-shrink:0;
+    opacity:0.6;
   }
-  .pills{gap:8px;}
+  .back-btn:hover{background:var(--bg-row-hover);opacity:1;}
+  .back-btn:disabled{opacity:0.2;cursor:default;}
+  .back-btn:disabled:hover{background:transparent;}
+  .back-btn img{width:16px;height:16px;}
+  .pills{display:flex;align-items:center;gap:8px;}
   .mid-body{padding:0 30px 60px;}
   .pill{
     background:var(--bg-pill-inactive);
@@ -254,9 +286,15 @@
 
   .search-heading{
     font-size:13px;color:var(--text-muted);margin-bottom:14px;font-weight:600;
-    padding-top:26px;
+    padding-top:26px; /* Transactions tab is the only user of this heading;
+      its sticky title bar sits flush above .mid-body (which has no top
+      padding of its own — see .mid-body below), so this is what actually
+      separates the heading from the bar. */
   }
   .search-heading b{color:var(--text-primary);}
+
+  table.ledger-year th.month-link{cursor:pointer;}
+  table.ledger-year th.month-link:hover{color:var(--text-primary);}
 
   table.ledger{width:100%;border-collapse:separate;border-spacing:0 4px;}
   table.ledger th{
@@ -294,12 +332,17 @@
      honors explicit column widths when the table itself has an explicit
      (non-auto, non-percentage) width — hence the literal px sum below,
      rather than 100%, so a wider table still overflows into the existing
-     .table-scroll horizontal scroll instead of being squeezed to fit. */
-  table.ledger.ledger-year{table-layout:fixed;width:1028px;}
+     .table-scroll horizontal scroll instead of being squeezed to fit.
+     Month columns are 76px — wide enough for a 6-figure comma'd value
+     (e.g. "12,012") plus its 20px of padding without overflowing; at the
+     old 64px, a value that wide would overrun the column's left edge
+     (right-aligned text overflows toward the left), throwing off
+     alignment against every narrower value in the same column. */
+  table.ledger.ledger-year{table-layout:fixed;width:1172px;}
   table.ledger-year th:first-child,
   table.ledger-year td:first-child{width:180px;}
   table.ledger-year th:not(:first-child):not(:last-child),
-  table.ledger-year td:not(:first-child):not(:last-child){width:64px;}
+  table.ledger-year td:not(:first-child):not(:last-child){width:76px;}
   table.ledger-year th:last-child,
   table.ledger-year td:last-child{width:80px;}
   /* Category-column text: wrap up to 2 lines, then ellipsize. */
@@ -346,6 +389,47 @@
   table.ledger tbody tr.total-row{font-weight:700;}
   table.ledger tbody tr.total-row td{padding-top:14px;color:var(--text-secondary);border-top:1px solid var(--border);}
   .dash{color:var(--text-muted);}
+
+  /* Grouped ledger tables (Year and Month view): Net/Income/Spending
+     section rows. A category row (e.g. "Salary", "Home") nests under its
+     Income/Spending group instead of sitting at the table's top level —
+     it keeps its normal (unindented) left edge, so only its always-visible
+     chevron marks the nesting; a description rollup below it keeps the
+     ledger's usual sub-row indent. */
+  table.ledger-grouped tr.group-gap td{height:20px;padding:0;border:none;background:transparent;}
+  table.ledger-grouped tr.net-row{font-weight:700;cursor:default;}
+  table.ledger-grouped tr.net-row td.pos{color:var(--positive);}
+  table.ledger-grouped tr.net-row td.neg{color:var(--negative);}
+  /* Net's arrow is permanently collapsed (never hoverable/interactive) —
+     matches the Income/Spending rows' .catname/.arrow layout at rest
+     exactly, with no :hover expansion since this row never expands. */
+  table.ledger-grouped tr.net-row .catname{gap:0;}
+  table.ledger-grouped tr.net-row .arrow{width:0;margin-right:0;overflow:hidden;}
+  table.ledger-grouped tr.net-row .arrow img{opacity:0;}
+  table.ledger tbody tr.group-row{
+    cursor:pointer;
+    font-weight:700;
+  }
+  table.ledger tbody tr.group-row:hover{background:var(--bg-row-hover);}
+  table.ledger tbody tr.group-row:hover td:first-child{border-radius:var(--radius-sm) 0 0 var(--radius-sm);}
+  table.ledger tbody tr.group-row:hover td:last-child{border-radius:0 var(--radius-sm) var(--radius-sm) 0;}
+  /* Unlike a category row's chevron (permanently reserved space, always
+     visible), a group row's chevron takes up no space at rest — the name
+     sits flush left — and only claims room (pushing the name over) once
+     the row is hovered, whether the group is open or closed. The <td>'s
+     own column width never changes; only the flex layout inside it does. */
+  table.ledger tbody tr.group-row .catname{gap:0;}
+  table.ledger tbody tr.group-row .arrow{
+    width:0;
+    margin-right:0;
+    overflow:hidden;
+    transition:width 0.15s ease, margin-right 0.15s ease;
+  }
+  table.ledger tbody tr.group-row .arrow img{opacity:0;}
+  table.ledger tbody tr.group-row:hover .arrow{width:1rem;margin-right:8px;}
+  table.ledger tbody tr.group-row:hover .arrow img{opacity:0.35;}
+  table.ledger-grouped td.group-total-income{color:var(--positive);}
+  table.ledger-grouped td.group-total-spending{color:var(--negative);}
   .diff-pos{color:var(--text-primary);}
   .empty-table{padding:40px 0;text-align:center;color:var(--text-muted);font-size:13px;}
 
@@ -580,7 +664,7 @@
     border:none;
     color:var(--text-muted);
     width:22px;height:22px;
-    border-radius:var(--radius-sm);
+    border-radius:50%;
     cursor:pointer;
     font-size:13px;
     line-height:1;

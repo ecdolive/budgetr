@@ -401,7 +401,6 @@ function enterBudgetEditor(){
   budgetEditTab = 'expenses';
   budgetOpenCats = new Set();
   searchQuery = '';
-  document.getElementById('searchInput').value = '';
   document.getElementById('csvPicker').disabled = true;
   document.getElementById('budgetPicker').disabled = true;
   document.getElementById('editBudgetBtn').disabled = true;
@@ -500,10 +499,15 @@ let BUDGETS_RAW = emptyBudgets();
 let BUDGETS = resolveBudgets(BUDGETS_RAW, DATA.year);
 let ROLL = buildBudgetRollups(BUDGETS, DATA.categories, DATA.incomeSubcats);
 
-let timeframe = 'year';      // 'year' | 0-11 (month index)
+let timeframe = 'year';      // 'year' | 0-11 (month index) | 'transactions'
+let monthViewOrigin = 'year'; // timeframe to return to via the month view's back button
 let pill = 'ytd';            // 'ytd' | 'projection' | 'plan'  (Year view only)
-let activeTab = 'expenses';  // 'income' | 'expenses'
 let openCats = new Set();
+// Which of the Year/Month tables' Income/Spending groups are expanded,
+// revealing their category rows. Both start open so the breakdown is
+// visible right away; independent from openCats, which tracks individual
+// category rows within an already-expanded group.
+let openGroups = new Set(['income','expenses']);
 let selectedSub = null;      // { kind:'expense'|'income', category, subcategory } | null — for income, category is the
                               // top-level income source and subcategory is a rolled-up transaction description
 let searchQuery = '';
@@ -626,26 +630,28 @@ function renderLeftNav(){
   const wrap = document.getElementById('tfList');
   wrap.innerHTML = '';
 
-  const yearNet = DATA.net.reduce((a,b)=>a+b,0);
-  wrap.appendChild(tfItem('Year', yearNet, 'year'));
+  // The Budget tab stays selected while viewing a month, too — a month
+  // view is reached from (and its back button returns to) the Budget tab,
+  // so it reads as a drill-down within Budget rather than a separate page.
+  wrap.appendChild(navItem('Budget', 'year', timeframe === 'year' || typeof timeframe === 'number'));
+  wrap.appendChild(navItem('Transactions', 'transactions'));
 
-  const cmi = DATA.currentMonthIndex;
-  for (let i=0;i<12;i++){
-    const hasData = DATA.monthsPresent.includes(i);
-    const val = hasData ? DATA.net[i] : monthPlanNet(i);
-    const isFuture = cmi === null ? true : i > cmi;
-    wrap.appendChild(tfItem(monthName(i), val, i, isFuture));
-  }
+  // Individual month tabs used to live here, each showing that month's net
+  // value (via monthPlanNet/DATA.net) — a month view is now reached by
+  // clicking that month's column header in the Year table instead, and the
+  // remaining left-nav tabs no longer show a net dollar figure at all.
+  // monthPlanNet is kept for that per-month net figure, since it'll be
+  // needed again once the month view (or its header) surfaces it elsewhere.
 }
-function tfItem(label, value, key, isFuture){
+function navItem(label, key, isActive){
   const div = document.createElement('div');
-  div.className = 'tf-item' + (timeframe===key ? ' active' : '') + (isFuture ? ' future' : '');
-  const cls = value>0?'pos':(value<0?'neg':'zero');
-  div.innerHTML = `<span class="tf-label">${label}</span><span class="net ${isFuture?'':cls}">${value===0?'–':fmtSigned(value)}</span>`;
+  div.className = 'tf-item' + ((isActive ?? timeframe===key) ? ' active' : '');
+  div.innerHTML = `<span class="tf-label">${label}</span>`;
   div.addEventListener('click', ()=>{
     timeframe = key;
+    // The transactions filter is local to that tab — leaving it resets the
+    // filter so Transactions is back to showing everything next time.
     searchQuery = '';
-    document.getElementById('searchInput').value = '';
     renderAll();
   });
   return div;
@@ -681,8 +687,8 @@ function renderMid(){
     return;
   }
 
-  if (searchQuery){
-    mid.appendChild(renderSearchResultsTable());
+  if (timeframe === 'transactions'){
+    renderTransactionsPage(mid);
     return;
   }
 
@@ -690,15 +696,74 @@ function renderMid(){
   body.className = 'mid-body';
 
   if (timeframe === 'year'){
-    mid.appendChild(renderPills());
-    body.appendChild(renderCards());
+    const bar = document.createElement('div');
+    bar.className = 'mid-title year-toolbar';
+    const yearLabel = document.createElement('span');
+    // DATA.year is derived from the loaded CSV (the year with the most
+    // transactions) — for now every transaction is assumed to fall in the
+    // same year, so this is just that year. Once multi-year data is
+    // supported this title will need to reflect that instead.
+    yearLabel.textContent = String(DATA.year);
+    bar.appendChild(yearLabel);
+    bar.appendChild(renderPills());
+    mid.appendChild(bar);
+    // No summary cards here — the Net/Income/Spending rows built into the
+    // table below (see renderYearTable) replace them.
     body.appendChild(wrapScroll(renderYearTable()));
   } else {
-    const title = document.createElement('div');
-    title.className = 'mid-title';
-    title.textContent = monthFullName(timeframe);
-    mid.appendChild(title);
-    body.appendChild(renderCards());
+    const bar = document.createElement('div');
+    bar.className = 'mid-title month-toolbar';
+
+    const left = document.createElement('div');
+    left.className = 'month-toolbar-left';
+    const backBtn = document.createElement('button');
+    backBtn.type = 'button';
+    backBtn.className = 'back-btn';
+    backBtn.title = 'Back to Budget';
+    backBtn.innerHTML = `<img src="icons/chevron-left.svg" alt="Back to Budget">`;
+    // Always returns to whatever view the month was opened from — prev/next
+    // month navigation below only ever changes timeframe, never
+    // monthViewOrigin, so this keeps working the same regardless of how
+    // many months the user has stepped through.
+    backBtn.addEventListener('click', ()=>{
+      timeframe = monthViewOrigin;
+      renderAll();
+    });
+    left.appendChild(backBtn);
+    const titleText = document.createElement('span');
+    titleText.textContent = `${monthFullName(timeframe)} ${DATA.year}`;
+    left.appendChild(titleText);
+    bar.appendChild(left);
+
+    const nav = document.createElement('div');
+    nav.className = 'month-toolbar-nav';
+    const prevBtn = document.createElement('button');
+    prevBtn.type = 'button';
+    prevBtn.className = 'back-btn';
+    prevBtn.title = 'Previous month';
+    prevBtn.innerHTML = `<img src="icons/chevron-left.svg" alt="Previous month">`;
+    prevBtn.disabled = timeframe === 0;
+    prevBtn.addEventListener('click', ()=>{
+      timeframe = timeframe - 1;
+      renderAll();
+    });
+    const nextBtn = document.createElement('button');
+    nextBtn.type = 'button';
+    nextBtn.className = 'back-btn';
+    nextBtn.title = 'Next month';
+    nextBtn.innerHTML = `<img src="icons/chevron-right.svg" alt="Next month">`;
+    nextBtn.disabled = timeframe === 11;
+    nextBtn.addEventListener('click', ()=>{
+      timeframe = timeframe + 1;
+      renderAll();
+    });
+    nav.appendChild(prevBtn);
+    nav.appendChild(nextBtn);
+    bar.appendChild(nav);
+
+    mid.appendChild(bar);
+    // No summary cards here — same as the Year view, the Net/Income/
+    // Spending rows built into the table below replace them.
     body.appendChild(wrapScroll(renderMonthTable()));
   }
   mid.appendChild(body);
@@ -707,7 +772,7 @@ function renderMid(){
 function renderPills(){
   const wrap = document.createElement('div');
   wrap.className = 'pills';
-  [['ytd','YTD'],['projection','Projection'],['plan','Plan']].forEach(([key,label])=>{
+  [['ytd','YTD'],['projection','Forecast'],['plan','Budget']].forEach(([key,label])=>{
     const b = document.createElement('button');
     b.className = 'pill' + (pill===key?' active':'');
     b.textContent = label;
@@ -730,67 +795,38 @@ function projectedMonthly(actualMonthly, budgetMonthly){
   return out;
 }
 
-/* ---- Cards ---- */
-function renderCards(){
-  const wrap = document.createElement('div');
-  wrap.className = 'cards';
-
-  let incomeActual, expensesActual;
-  if (timeframe === 'year'){
-    if (pill === 'ytd'){
-      incomeActual = DATA.monthsPresent.reduce((a,i)=>a+DATA.income[i],0);
-      expensesActual = DATA.monthsPresent.reduce((a,i)=>a+DATA.expenses[i],0);
-    } else if (pill === 'plan'){
-      incomeActual = ROLL.incomeTotalMonthly.reduce((a,b)=>a+b,0);
-      expensesActual = ROLL.expenseTotalMonthly.reduce((a,b)=>a+b,0);
-    } else { // projection
-      incomeActual = projectedMonthly(DATA.income, ROLL.incomeTotalMonthly).reduce((a,b)=>a+b,0);
-      expensesActual = projectedMonthly(DATA.expenses, ROLL.expenseTotalMonthly).reduce((a,b)=>a+b,0);
-    }
-  } else {
-    incomeActual = DATA.income[timeframe] || 0;
-    expensesActual = DATA.expenses[timeframe] || 0;
-  }
-  const netActual = incomeActual - expensesActual;
-
-  // On the YTD pill, "Plan" should read as "planned through the months
-  // we actually have data for" — not the full year — so it's a fair
-  // comparison against the actual value shown above it.
-  const yearPlanSum = (monthly) => timeframe==='year' && pill==='ytd'
-    ? DATA.monthsPresent.reduce((a,i)=>a+monthly[i],0)
-    : monthly.reduce((a,b)=>a+b,0);
-  const incomePlan = timeframe==='year' ? yearPlanSum(ROLL.incomeTotalMonthly) : ROLL.incomeTotalMonthly[timeframe];
-  const expensesPlan = timeframe==='year' ? yearPlanSum(ROLL.expenseTotalMonthly) : ROLL.expenseTotalMonthly[timeframe];
-  const netPlan = incomePlan - expensesPlan;
-
-  wrap.appendChild(card('Income', incomeActual, incomePlan, 'income', false));
-  wrap.appendChild(card('Expenses', expensesActual, expensesPlan, 'expenses', false));
-  wrap.appendChild(card('Net', netActual, netPlan, null, true));
-
-  return wrap;
+// A blank spacer row between a grouped ledger table's Net/Income/Spending
+// sections — wider than the table's normal row-to-row border-spacing, to
+// read as a section break rather than just another row. colspan must match
+// the table's column count (14 for the Year table, 4 for the Month table).
+function groupGapRow(colspan){
+  const tr = document.createElement('tr');
+  tr.className = 'group-gap';
+  tr.innerHTML = `<td colspan="${colspan}"></td>`;
+  return tr;
 }
-function card(label, actual, plan, tabKey, colorBySign){
-  const div = document.createElement('div');
-  div.className = 'card' + (tabKey ? ' tab' : '') + (tabKey && activeTab===tabKey ? ' active' : '');
-  const valCls = colorBySign ? ('card-value num '+signCls(actual)) : 'card-value num';
-  const valText = colorBySign ? fmtSigned(actual) : fmt(actual);
-  const planText = colorBySign ? fmtSigned(plan) : fmt(plan);
-  div.innerHTML = `
-    <div class="card-head"><span class="card-label">${label}</span><span class="${valCls}">${valText}</span></div>
-    <div class="card-sub"><span>Plan</span><span class="amt num">${planText}</span></div>
-  `;
-  if (tabKey){
-    div.addEventListener('click', ()=>{ activeTab = tabKey; selectedSub = null; renderAll(); });
-  }
-  return div;
+function emptyGroupRow(message, colspan){
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td colspan="${colspan}" class="empty-table">${message}</td>`;
+  return tr;
 }
 
 /* ---- Year table ---- */
 function renderYearTable(){
   const table = document.createElement('table');
-  table.className = 'ledger ledger-year';
+  table.className = 'ledger ledger-year ledger-grouped';
   const thead = document.createElement('thead');
-  thead.innerHTML = `<tr><th>Category</th>${MONTHS.map(m=>`<th>${m}</th>`).join('')}<th>Total</th></tr>`;
+  // Each month header is the entry point into that month's Plan/Actual/
+  // Difference view — the individual month tabs that used to live in the
+  // left nav were removed in favor of clicking the column here.
+  thead.innerHTML = `<tr><th></th>${MONTHS.map((m,i)=>`<th class="month-link" data-month="${i}">${m}</th>`).join('')}<th>Total</th></tr>`;
+  thead.querySelectorAll('th.month-link').forEach(th=>{
+    th.addEventListener('click', ()=>{
+      monthViewOrigin = timeframe;
+      timeframe = Number(th.dataset.month);
+      renderAll();
+    });
+  });
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   table.appendChild(tbody);
@@ -798,103 +834,109 @@ function renderYearTable(){
   const noDash = new Array(12).fill(false);
   const numCell = (v, i, dashMask) => `<td class="num${plannedMask[i]?' planned':''}">${dashMask[i]?'<span class="dash">–</span>':fmt(v)}</td>`;
 
-  if (activeTab === 'expenses'){
-    const categories = mergedExpenseCategories();
-    if (categories.length === 0){
-      tbody.innerHTML = `<tr><td colspan="14" class="empty-table">No expense categories loaded yet.</td></tr>`;
-    } else {
-      let grandTotal = 0;
-      const monthTotals = new Array(12).fill(0);
-      categories.forEach(cat=>{
-        const { values, dashMask } = yearRowValues(cat.monthly, ROLL.expenseCategoryMonthly[cat.name] || new Array(12).fill(0));
-        values.forEach((v,i)=>monthTotals[i]+=v);
-        const total = values.reduce((a,b)=>a+b,0);
-        grandTotal += total;
-        const isOpen = openCats.has(cat.name);
-        const hasSelectedSub = !isOpen && selectedSub && selectedSub.kind==='expense' && selectedSub.category===cat.name;
-        const tr = document.createElement('tr');
-        tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
-        tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
-          values.map((v,i)=>numCell(v,i,dashMask)).join('') +
-          `<td class="num">${fmt(total)}</td>`;
-        tr.addEventListener('click', ()=>{
-          if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
-          renderMid();
-        });
-        tbody.appendChild(tr);
+  // Income and Spending render as two collapsible groups within the same
+  // table (rather than the old Income/Expenses tab-switched single table),
+  // topped by a non-interactive Net row summarizing both. Group totals are
+  // needed for Net regardless of whether a group is currently expanded, so
+  // buildGroup always computes them and only builds the detail <tr>s when
+  // open — see buildGroup below.
+  function buildGroup(kind, categories, catBudgetMonthly, subBudgetMonthly, isOpen){
+    const monthTotals = new Array(12).fill(0);
+    let grandTotal = 0;
+    const rows = [];
+    categories.forEach(cat=>{
+      const { values, dashMask } = yearRowValues(cat.monthly, catBudgetMonthly[cat.name] || new Array(12).fill(0));
+      values.forEach((v,i)=>monthTotals[i]+=v);
+      const total = values.reduce((a,b)=>a+b,0);
+      grandTotal += total;
+      if (!isOpen) return;
 
-        cat.subcategories.forEach(sub=>{
-          const subBudget = ROLL.expenseSubMonthly[cat.name+'||'+sub.name] || new Array(12).fill(0);
-          const { values: subVals, dashMask: subDash } = yearRowValues(sub.monthly, subBudget);
-          const subTotal = subVals.reduce((a,b)=>a+b,0);
-          const isSel = selectedSub && selectedSub.kind==='expense' && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
-          const sr = document.createElement('tr');
-          sr.className = 'sub-row' + (isOpen?' open':'') + (isSel?' selected':'');
-          sr.innerHTML = `<td><span class="cell-label">${sub.name}</span></td>` +
-            subVals.map((v,i)=>numCell(v,i,subDash)).join('') +
-            `<td class="num">${fmt(subTotal)}</td>`;
-          sr.addEventListener('click', (e)=>{
-            e.stopPropagation();
-            selectSub({ kind:'expense', category: cat.name, subcategory: sub.name });
-          });
-          tbody.appendChild(sr);
-        });
+      const isCatOpen = openCats.has(cat.name);
+      const hasSelectedSub = !isCatOpen && selectedSub && selectedSub.kind===kind && selectedSub.category===cat.name;
+      const tr = document.createElement('tr');
+      tr.className = 'cat-row nested' + (hasSelectedSub?' has-selection':'');
+      tr.innerHTML = `<td><span class="catname"><span class="arrow${isCatOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
+        values.map((v,i)=>numCell(v,i,dashMask)).join('') +
+        `<td class="num">${fmt(total)}</td>`;
+      tr.addEventListener('click', ()=>{
+        if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
+        renderMid();
       });
-      const trTotal = document.createElement('tr');
-      trTotal.className = 'total-row';
-      trTotal.innerHTML = `<td>Total</td>` + monthTotals.map((v,i)=>numCell(v,i,noDash)).join('') + `<td class="num">${fmt(grandTotal)}</td>`;
-      tbody.appendChild(trTotal);
+      rows.push(tr);
+
+      cat.subcategories.forEach(sub=>{
+        const subBudget = subBudgetMonthly[cat.name+'||'+sub.name] || new Array(12).fill(0);
+        const { values: subVals, dashMask: subDash } = yearRowValues(sub.monthly, subBudget);
+        const subTotal = subVals.reduce((a,b)=>a+b,0);
+        const isSel = selectedSub && selectedSub.kind===kind && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
+        const sr = document.createElement('tr');
+        sr.className = 'sub-row' + (isCatOpen?' open':'') + (isSel?' selected':'');
+        sr.innerHTML = `<td><span class="cell-label">${sub.name}</span></td>` +
+          subVals.map((v,i)=>numCell(v,i,subDash)).join('') +
+          `<td class="num">${fmt(subTotal)}</td>`;
+        sr.addEventListener('click', (e)=>{
+          e.stopPropagation();
+          selectSub({ kind, category: cat.name, subcategory: sub.name });
+        });
+        rows.push(sr);
+      });
+    });
+    return { monthTotals, grandTotal, rows };
+  }
+
+  const incomeGroup = buildGroup('income', mergedIncomeSubcats(), ROLL.incomeCategoryMonthly, ROLL.incomeSubMonthly, openGroups.has('income'));
+  const spendingGroup = buildGroup('expense', mergedExpenseCategories(), ROLL.expenseCategoryMonthly, ROLL.expenseSubMonthly, openGroups.has('expenses'));
+
+  // Net row — derived from both groups' totals, always visible regardless
+  // of which (if either) group is expanded; not collapsible or selectable.
+  const netMonthTotals = incomeGroup.monthTotals.map((v,i)=>v - spendingGroup.monthTotals[i]);
+  const netGrandTotal = incomeGroup.grandTotal - spendingGroup.grandTotal;
+  const netCell = (v, i) => `<td class="num${plannedMask[i]?' planned':' '+signCls(v)}">${fmt(v)}</td>`;
+  const netRow = document.createElement('tr');
+  netRow.className = 'net-row';
+  // First cell reuses the exact .catname/.arrow/.cell-label structure the
+  // Income/Spending rows use (arrow permanently collapsed via CSS, never
+  // interactive) so "Net" lands in precisely the same spot their label
+  // sits at rest, keeping every column aligned across all three rows.
+  netRow.innerHTML = `<td><span class="catname"><span class="arrow"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">Net</span></span></td>` +
+    netMonthTotals.map((v,i)=>netCell(v,i)).join('') +
+    `<td class="num ${signCls(netGrandTotal)}">${fmt(netGrandTotal)}</td>`;
+  tbody.appendChild(netRow);
+  tbody.appendChild(groupGapRow(14));
+
+  // Group header row — bold summary line for Income or Spending, with a
+  // chevron that only shows on hover (see .group-row CSS) since — unlike
+  // a category row's chevron — it isn't the row's primary content.
+  function groupHeaderRow(kind, label, group, totalColorClass){
+    const isOpen = openGroups.has(kind);
+    const tr = document.createElement('tr');
+    tr.className = 'group-row' + (isOpen?' open':'');
+    tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${label}</span></span></td>` +
+      group.monthTotals.map((v,i)=>numCell(v,i,noDash)).join('') +
+      `<td class="num ${totalColorClass}">${fmt(group.grandTotal)}</td>`;
+    tr.addEventListener('click', ()=>{
+      if (openGroups.has(kind)) openGroups.delete(kind); else openGroups.add(kind);
+      renderMid();
+    });
+    return tr;
+  }
+
+  tbody.appendChild(groupHeaderRow('income', 'Income', incomeGroup, 'group-total-income'));
+  if (openGroups.has('income')){
+    if (incomeGroup.rows.length === 0){
+      tbody.appendChild(emptyGroupRow('No income categories loaded yet.', 14));
+    } else {
+      incomeGroup.rows.forEach(row=>tbody.appendChild(row));
     }
-  } else {
-    // Income — top-level rows (income sources) expand to reveal
-    // transactions rolled up by identical description; only those
-    // description rows are selectable, same pattern as expenses.
-    const incomeSubcats = mergedIncomeSubcats();
-    if (incomeSubcats.length === 0){
-      tbody.innerHTML = `<tr><td colspan="14" class="empty-table">No income categories loaded yet.</td></tr>`;
-    } else {
-      let grandTotal = 0;
-      const monthTotals = new Array(12).fill(0);
-      incomeSubcats.forEach(cat=>{
-        const budget = ROLL.incomeCategoryMonthly[cat.name] || new Array(12).fill(0);
-        const { values, dashMask } = yearRowValues(cat.monthly, budget);
-        values.forEach((v,i)=>monthTotals[i]+=v);
-        const total = values.reduce((a,b)=>a+b,0);
-        grandTotal += total;
-        const isOpen = openCats.has(cat.name);
-        const hasSelectedSub = !isOpen && selectedSub && selectedSub.kind==='income' && selectedSub.category===cat.name;
-        const tr = document.createElement('tr');
-        tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
-        tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
-          values.map((v,i)=>numCell(v,i,dashMask)).join('') +
-          `<td class="num">${fmt(total)}</td>`;
-        tr.addEventListener('click', ()=>{
-          if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
-          renderMid();
-        });
-        tbody.appendChild(tr);
+  }
+  tbody.appendChild(groupGapRow(14));
 
-        cat.subcategories.forEach(sub=>{
-          const subBudget = ROLL.incomeSubMonthly[cat.name+'||'+sub.name] || new Array(12).fill(0);
-          const { values: subVals, dashMask: subDash } = yearRowValues(sub.monthly, subBudget);
-          const subTotal = subVals.reduce((a,b)=>a+b,0);
-          const isSel = selectedSub && selectedSub.kind==='income' && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
-          const sr = document.createElement('tr');
-          sr.className = 'sub-row' + (isOpen?' open':'') + (isSel?' selected':'');
-          sr.innerHTML = `<td><span class="cell-label">${sub.name}</span></td>` +
-            subVals.map((v,i)=>numCell(v,i,subDash)).join('') +
-            `<td class="num">${fmt(subTotal)}</td>`;
-          sr.addEventListener('click', (e)=>{
-            e.stopPropagation();
-            selectSub({ kind:'income', category: cat.name, subcategory: sub.name });
-          });
-          tbody.appendChild(sr);
-        });
-      });
-      const trTotal = document.createElement('tr');
-      trTotal.className = 'total-row';
-      trTotal.innerHTML = `<td>Total</td>` + monthTotals.map((v,i)=>numCell(v,i,noDash)).join('') + `<td class="num">${fmt(grandTotal)}</td>`;
-      tbody.appendChild(trTotal);
+  tbody.appendChild(groupHeaderRow('expenses', 'Spending', spendingGroup, 'group-total-spending'));
+  if (openGroups.has('expenses')){
+    if (spendingGroup.rows.length === 0){
+      tbody.appendChild(emptyGroupRow('No expense categories loaded yet.', 14));
+    } else {
+      spendingGroup.rows.forEach(row=>tbody.appendChild(row));
     }
   }
 
@@ -932,9 +974,9 @@ function yearRowValues(actualMonthly, budgetMonthly){
 function renderMonthTable(){
   const mi = timeframe;
   const table = document.createElement('table');
-  table.className = 'ledger ledger-month';
+  table.className = 'ledger ledger-month ledger-grouped';
   const thead = document.createElement('thead');
-  thead.innerHTML = `<tr><th>Category</th><th>Plan</th><th>Actual</th><th>Difference</th></tr>`;
+  thead.innerHTML = `<tr><th></th><th>Plan</th><th>Actual</th><th>Difference</th></tr>`;
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   table.appendChild(tbody);
@@ -947,87 +989,96 @@ function renderMonthTable(){
       `<td class="num">${diff===0?'<span class="dash">–</span>':fmtSigned(diff)}</td>`;
   }
 
-  if (activeTab === 'expenses'){
-    const categories = mergedExpenseCategories();
-    if (categories.length === 0){
-      tbody.innerHTML = `<tr><td colspan="4" class="empty-table">No expense categories loaded yet.</td></tr>`;
-    } else {
-      let totActual=0, totPlan=0;
-      categories.forEach(cat=>{
-        const actual = cat.monthly[mi] || 0;
-        const planVal = (ROLL.expenseCategoryMonthly[cat.name]||[])[mi] || 0;
-        totActual += actual; totPlan += planVal;
-        const isOpen = openCats.has(cat.name);
-        const hasSelectedSub = !isOpen && selectedSub && selectedSub.kind==='expense' && selectedSub.category===cat.name;
-        const tr = document.createElement('tr');
-        tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
-        tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
-          `<td class="num">${fmt(planVal)}</td><td class="num">${fmt(actual)}</td><td class="num">${fmtSigned(actual-planVal)}</td>`;
-        tr.addEventListener('click', ()=>{
-          if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
-          renderMid();
-        });
-        tbody.appendChild(tr);
+  // Same Net/Income/Spending grouped format as the Year table (see
+  // renderYearTable), just with Plan/Actual/Difference columns instead of
+  // 12 months + Total. Both groups always render (no more activeTab-driven
+  // single-table switch), topped by a non-interactive Net row.
+  function buildGroup(kind, categories, catBudgetMonthly, subBudgetMonthly, isOpen){
+    let totActual = 0, totPlan = 0;
+    const rows = [];
+    categories.forEach(cat=>{
+      const actual = cat.monthly[mi] || 0;
+      const planVal = (catBudgetMonthly[cat.name]||[])[mi] || 0;
+      totActual += actual; totPlan += planVal;
+      if (!isOpen) return;
 
-        cat.subcategories.forEach(sub=>{
-          const subActual = sub.monthly[mi] || 0;
-          const subPlan = (ROLL.expenseSubMonthly[cat.name+'||'+sub.name]||[])[mi] || 0;
-          const isSel = selectedSub && selectedSub.kind==='expense' && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
-          const sr = document.createElement('tr');
-          sr.className = 'sub-row' + (isOpen?' open':'') + (isSel?' selected':'');
-          sr.innerHTML = rowHTML(sub.name, subActual, subPlan, true);
-          sr.addEventListener('click', (e)=>{
-            e.stopPropagation();
-            selectSub({ kind:'expense', category: cat.name, subcategory: sub.name });
-          });
-          tbody.appendChild(sr);
-        });
+      const isCatOpen = openCats.has(cat.name);
+      const hasSelectedSub = !isCatOpen && selectedSub && selectedSub.kind===kind && selectedSub.category===cat.name;
+      const tr = document.createElement('tr');
+      tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
+      tr.innerHTML = `<td><span class="catname"><span class="arrow${isCatOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
+        `<td class="num">${fmt(planVal)}</td><td class="num">${fmt(actual)}</td><td class="num">${fmtSigned(actual-planVal)}</td>`;
+      tr.addEventListener('click', ()=>{
+        if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
+        renderMid();
       });
-      const trTotal = document.createElement('tr');
-      trTotal.className = 'total-row';
-      trTotal.innerHTML = `<td>Total</td><td class="num">${fmt(totPlan)}</td><td class="num">${fmt(totActual)}</td><td class="num">${fmtSigned(totActual-totPlan)}</td>`;
-      tbody.appendChild(trTotal);
+      rows.push(tr);
+
+      cat.subcategories.forEach(sub=>{
+        const subActual = sub.monthly[mi] || 0;
+        const subPlan = (subBudgetMonthly[cat.name+'||'+sub.name]||[])[mi] || 0;
+        const isSel = selectedSub && selectedSub.kind===kind && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
+        const sr = document.createElement('tr');
+        sr.className = 'sub-row' + (isCatOpen?' open':'') + (isSel?' selected':'');
+        sr.innerHTML = rowHTML(sub.name, subActual, subPlan, true);
+        sr.addEventListener('click', (e)=>{
+          e.stopPropagation();
+          selectSub({ kind, category: cat.name, subcategory: sub.name });
+        });
+        rows.push(sr);
+      });
+    });
+    return { totActual, totPlan, rows };
+  }
+
+  const incomeGroup = buildGroup('income', mergedIncomeSubcats(), ROLL.incomeCategoryMonthly, ROLL.incomeSubMonthly, openGroups.has('income'));
+  const spendingGroup = buildGroup('expense', mergedExpenseCategories(), ROLL.expenseCategoryMonthly, ROLL.expenseSubMonthly, openGroups.has('expenses'));
+
+  // Net row — derived from both groups' totals, always visible regardless
+  // of which (if either) group is expanded; not collapsible or selectable.
+  const netActual = incomeGroup.totActual - spendingGroup.totActual;
+  const netPlan = incomeGroup.totPlan - spendingGroup.totPlan;
+  const netDiff = netActual - netPlan;
+  const netRow = document.createElement('tr');
+  netRow.className = 'net-row';
+  netRow.innerHTML = `<td><span class="catname"><span class="arrow"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">Net</span></span></td>` +
+    `<td class="num">${fmt(netPlan)}</td>` +
+    `<td class="num ${signCls(netActual)}">${fmt(netActual)}</td>` +
+    `<td class="num ${signCls(netDiff)}">${netDiff===0?'<span class="dash">–</span>':fmtSigned(netDiff)}</td>`;
+  tbody.appendChild(netRow);
+  tbody.appendChild(groupGapRow(4));
+
+  function groupHeaderRow(kind, label, group, totalColorClass){
+    const isOpen = openGroups.has(kind);
+    const tr = document.createElement('tr');
+    tr.className = 'group-row' + (isOpen?' open':'');
+    tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${label}</span></span></td>` +
+      `<td class="num">${fmt(group.totPlan)}</td>` +
+      `<td class="num ${totalColorClass}">${fmt(group.totActual)}</td>` +
+      `<td class="num">${fmtSigned(group.totActual-group.totPlan)}</td>`;
+    tr.addEventListener('click', ()=>{
+      if (openGroups.has(kind)) openGroups.delete(kind); else openGroups.add(kind);
+      renderMid();
+    });
+    return tr;
+  }
+
+  tbody.appendChild(groupHeaderRow('income', 'Income', incomeGroup, 'group-total-income'));
+  if (openGroups.has('income')){
+    if (incomeGroup.rows.length === 0){
+      tbody.appendChild(emptyGroupRow('No income categories loaded yet.', 4));
+    } else {
+      incomeGroup.rows.forEach(row=>tbody.appendChild(row));
     }
-  } else {
-    const incomeSubcats = mergedIncomeSubcats();
-    if (incomeSubcats.length === 0){
-      tbody.innerHTML = `<tr><td colspan="4" class="empty-table">No income categories loaded yet.</td></tr>`;
-    } else {
-      let totActual=0, totPlan=0;
-      incomeSubcats.forEach(cat=>{
-        const actual = cat.monthly[mi] || 0;
-        const planVal = (ROLL.incomeCategoryMonthly[cat.name]||[])[mi] || 0;
-        totActual += actual; totPlan += planVal;
-        const isOpen = openCats.has(cat.name);
-        const hasSelectedSub = !isOpen && selectedSub && selectedSub.kind==='income' && selectedSub.category===cat.name;
-        const tr = document.createElement('tr');
-        tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
-        tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
-          `<td class="num">${fmt(planVal)}</td><td class="num">${fmt(actual)}</td><td class="num">${fmtSigned(actual-planVal)}</td>`;
-        tr.addEventListener('click', ()=>{
-          if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
-          renderMid();
-        });
-        tbody.appendChild(tr);
+  }
+  tbody.appendChild(groupGapRow(4));
 
-        cat.subcategories.forEach(sub=>{
-          const subActual = sub.monthly[mi] || 0;
-          const subPlan = (ROLL.incomeSubMonthly[cat.name+'||'+sub.name]||[])[mi] || 0;
-          const isSel = selectedSub && selectedSub.kind==='income' && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
-          const sr = document.createElement('tr');
-          sr.className = 'sub-row' + (isOpen?' open':'') + (isSel?' selected':'');
-          sr.innerHTML = rowHTML(sub.name, subActual, subPlan, true);
-          sr.addEventListener('click', (e)=>{
-            e.stopPropagation();
-            selectSub({ kind:'income', category: cat.name, subcategory: sub.name });
-          });
-          tbody.appendChild(sr);
-        });
-      });
-      const trTotal = document.createElement('tr');
-      trTotal.className = 'total-row';
-      trTotal.innerHTML = `<td>Total</td><td class="num">${fmt(totPlan)}</td><td class="num">${fmt(totActual)}</td><td class="num">${fmtSigned(totActual-totPlan)}</td>`;
-      tbody.appendChild(trTotal);
+  tbody.appendChild(groupHeaderRow('expenses', 'Spending', spendingGroup, 'group-total-spending'));
+  if (openGroups.has('expenses')){
+    if (spendingGroup.rows.length === 0){
+      tbody.appendChild(emptyGroupRow('No expense categories loaded yet.', 4));
+    } else {
+      spendingGroup.rows.forEach(row=>tbody.appendChild(row));
     }
   }
 
@@ -1035,13 +1086,55 @@ function renderMonthTable(){
 }
 
 /* ---- Search results (flat, all transactions) ---- */
-function renderSearchResultsTable(){
-  const wrap = document.createElement('div');
-  wrap.className = 'mid-body';
+// ---- Transactions page — a tab (not a search-triggered overlay): it
+// defaults to showing every transaction, with the search field acting as
+// a live filter on that list. The title bar (with the search input) is
+// built once per visit to the tab; typing only rebuilds the results body
+// below it via refresh(), so the input never gets torn down and re-focused
+// mid-keystroke the way a full renderMid() would.
+function renderTransactionsPage(mid){
+  const titleBar = document.createElement('div');
+  titleBar.className = 'mid-title transactions-toolbar';
+  const titleSpan = document.createElement('span');
+  titleSpan.textContent = 'Transactions';
+  titleBar.appendChild(titleSpan);
+
+  const searchWrap = document.createElement('div');
+  searchWrap.className = 'search-wrap';
+  searchWrap.innerHTML = `<img class="search-icon" src="icons/search.svg" alt="">`;
+  const input = document.createElement('input');
+  input.type = 'search';
+  input.className = 'search-input';
+  input.placeholder = 'Search transactions…';
+  input.value = searchQuery;
+  searchWrap.appendChild(input);
+  titleBar.appendChild(searchWrap);
+  mid.appendChild(titleBar);
+
+  const body = document.createElement('div');
+  body.className = 'mid-body';
+  mid.appendChild(body);
+
+  function refresh(){
+    body.innerHTML = '';
+    body.appendChild(renderTransactionsBody(refresh));
+  }
+  input.addEventListener('input', (e)=>{
+    searchQuery = e.target.value.trim();
+    refresh();
+  });
+  refresh();
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+function renderTransactionsBody(onSortChange){
+  const wrap = document.createDocumentFragment();
   const heading = document.createElement('div');
   heading.className = 'search-heading';
   const rows = filteredSearchTxns();
-  heading.innerHTML = `<b>${rows.length}</b> transaction${rows.length===1?'':'s'} matching "<b>${escapeHTML(searchQuery)}</b>"`;
+  heading.innerHTML = searchQuery
+    ? `<b>${rows.length}</b> transaction${rows.length===1?'':'s'} matching "<b>${escapeHTML(searchQuery)}</b>"`
+    : `<b>${rows.length}</b> transaction${rows.length===1?'':'s'}`;
   wrap.appendChild(heading);
 
   const table = document.createElement('table');
@@ -1053,7 +1146,7 @@ function renderSearchResultsTable(){
     th.addEventListener('click', ()=>{
       const key = th.dataset.key;
       if (txnSort.key===key) txnSort.dir*=-1; else txnSort = { key, dir:1 };
-      renderMid();
+      onSortChange();
     });
   });
   table.appendChild(thead);
@@ -1470,8 +1563,8 @@ function renderRight(){
     return;
   }
 
-  if (searchQuery){
-    right.innerHTML = `<div class="right-body"><div class="right-empty">Search results are shown in the main panel. Clear the search to browse categories and see detail here.</div></div>`;
+  if (timeframe === 'transactions'){
+    right.innerHTML = `<div class="right-body"><div class="right-empty">Browse and filter every transaction in the main panel.</div></div>`;
     return;
   }
   if (!selectedSub){
@@ -1940,16 +2033,6 @@ function renderRightProjectedList(container){
   }
   renderRightTxnTable(container, rows);
 }
-
-/* ============================================================
-   SEARCH INPUT
-   ============================================================ */
-document.getElementById('searchInput').addEventListener('input', (e)=>{
-  searchQuery = e.target.value.trim();
-  selectedSub = null;
-  renderMid();
-  renderRight();
-});
 
 /* ============================================================
    DATA LOADING (CSV + budgets JSON)
