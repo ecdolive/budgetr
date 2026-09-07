@@ -75,7 +75,19 @@
      .table-scroll wrapper instead, which keeps sticky headers — which
      live outside that wrapper — from moving when that content is scrolled. */
   .panel{overflow-y:auto;overflow-x:hidden;border-radius:var(--radius-lg);}
-  .table-scroll{overflow-x:auto;}
+  /* The mid panel's tables need their own sticky column-header row, not
+     just the sticky title bar above them — and position:sticky can't work
+     across a scrolling ancestor boundary (any non-visible overflow, even
+     just for the horizontal axis, makes that element the sticky
+     containing block, per the CSS Overflow spec's overflow-x/-y pairing
+     rule: .table-scroll's overflow-x:auto forces its computed overflow-y
+     to auto too, which would silently strand a sticky thead inside it,
+     stuck to .table-scroll instead of the panel). So here .table-scroll
+     itself — not .mid — is made the bounded, actually-scrolling box (both
+     axes), via the flex chain below (.mid > .mid-body > .table-scroll);
+     .mid itself no longer scrolls at all. */
+  .mid.panel{overflow-y:hidden;}
+  .table-scroll{overflow-x:auto;flex:1 1 auto;min-height:0;}
   @media (max-width:1000px){
     .app{grid-template-columns:11rem 1fr 300px;min-width:0;}
   }
@@ -107,15 +119,15 @@
     font-weight:800;
     letter-spacing:0.02em;
     color:var(--accent-teal);
-    padding:0 22px;
+    padding:0 24px;
   }
   .left-body{
     flex:1 1 auto;
     min-height:0;
     display:flex;
     flex-direction:column;
-    gap:18px;
-    padding:0 18px 24px;
+    gap:16px;
+    padding:0 8px 24px;
   }
   .search-wrap{position:relative;}
   .search-wrap .search-icon{
@@ -129,7 +141,7 @@
     border:1px solid var(--border);
     border-radius:999px;
     color:var(--text-primary);
-    padding:10px 14px 10px 34px;
+    padding:12px 16px 12px 32px;
     font-size:13px;
     outline:none;
   }
@@ -139,7 +151,7 @@
   .tf-list{display:flex;flex-direction:column;gap:0.25rem;}
   .tf-item{
     display:flex;justify-content:space-between;align-items:center;
-    padding:12px 14px;
+    padding:12px 12px 12px 16px;
     border-radius:0.25rem;
     cursor:pointer;
     color:var(--text-primary);
@@ -162,7 +174,7 @@
 
   .data-io{
     margin-top:auto;
-    padding-top:14px;
+    padding-top:16px;
     border-top:1px solid var(--border-soft);
     display:flex;
     flex-direction:column;
@@ -180,7 +192,7 @@
     background:var(--bg-input);
     border:1px solid var(--border);
     color:var(--text-secondary);
-    padding:8px 10px;
+    padding:8px 12px;
     border-radius:var(--radius-sm);
     font-size:11.5px;
     cursor:pointer;
@@ -196,41 +208,53 @@
   .mid{
     background:var(--bg-mid);
     padding:0;
+    display:flex;
+    flex-direction:column;
+    min-height:0;
   }
   /* .mid-title/.pills carry their own inset — top, sides, and the
      trailing gap before .mid-body — as padding (not .mid's padding or a
      margin) so their painted box reaches the panel's true left/right/top
      edges and fully occludes content scrolling behind them, both
      vertically and (since .mid-body's table content scrolls horizontally
-     in its own .table-scroll, never the panel itself) horizontally. */
+     in its own .table-scroll, never the panel itself) horizontally.
+     position:sticky is now moot (.mid doesn't scroll — see the .panel
+     comment above) but harmless to leave; flex-shrink:0 is what actually
+     matters here, keeping this bar's height fixed so .mid-body gets
+     everything else. */
   .mid-title{
     position:sticky;
     top:0;
     z-index:2;
     background:var(--bg-mid);
     height:4rem;
+    flex-shrink:0;
     display:flex;
     align-items:center;
-    padding:0 30px;
+    padding:0 16px;
     font-size:1.25rem;
     font-weight:900;
   }
   /* Transactions tab: title bar also holds the filter field, so it needs
      its own two-ended layout instead of the single-child default above. */
-  .transactions-toolbar{justify-content:space-between;gap:20px;}
+  .transactions-toolbar{justify-content:space-between;gap:24px;}
   .transactions-toolbar .search-wrap{width:280px;flex-shrink:0;}
-  /* Budget (year) tab: title bar holds the year label next to the
-     YTD/Forecast/Budget pill group, both left-aligned with a gap between
-     them rather than spread to the bar's full width. */
-  .year-toolbar{gap:20px;}
+  /* Budget (year) tab: title bar holds the year label + YTD/Forecast/Budget
+     pill group on the left, and the Export/Edit actions on the right. */
+  .year-toolbar{justify-content:space-between;}
+  .year-toolbar-left{display:flex;align-items:center;gap:24px;}
   /* Month view: back button sits right in front of the month name, tightly
      paired rather than spread apart — returns to whichever view (Budget
      year table, eventually others) the month was opened from. The
-     prev/next month steppers live in their own group at the bar's other
-     end. */
+     prev/next month steppers and the Export/Edit actions share a group at
+     the bar's other end. */
   .month-toolbar{justify-content:space-between;}
   .month-toolbar-left{display:flex;align-items:center;gap:8px;}
   .month-toolbar-nav{display:flex;align-items:center;gap:4px;flex-shrink:0;}
+  .month-toolbar-right{display:flex;align-items:center;gap:16px;}
+  /* Export/Edit actions, top-right of the Budgets view (Year and Month
+     toolbars) — not shown on the Transactions page. */
+  .mid-title-actions{display:flex;align-items:center;gap:12px;flex-shrink:0;}
   .back-btn{
     background:transparent;
     border:none;
@@ -249,7 +273,18 @@
   .back-btn:disabled:hover{background:transparent;}
   .back-btn img{width:16px;height:16px;}
   .pills{display:flex;align-items:center;gap:8px;}
-  .mid-body{padding:0 30px 60px;}
+  /* The actual bounded, scrolling region below the fixed-height title bar
+     — a flex column so a non-scrolling child (.search-heading, on the
+     Transactions tab only) can sit above the scrolling .table-scroll
+     without being pushed off. */
+  .mid-body{
+    padding:0 8px 60px;
+    flex:1 1 auto;
+    min-height:0;
+    overflow:hidden;
+    display:flex;
+    flex-direction:column;
+  }
   .pill{
     background:var(--bg-pill-inactive);
     color:var(--text-secondary);
@@ -258,7 +293,7 @@
     display:inline-flex;
     align-items:center;
     justify-content:center;
-    padding:0 20px;
+    padding:0 24px;
     border-radius:20px;
     font-size:13px;
     font-weight:700;
@@ -267,17 +302,17 @@
   .pill.active{background:var(--bg-pill-active);color:var(--surface-page);}
   .pill:hover:not(.active){background:var(--surface-interactive-hover);color:var(--text-primary);}
 
-  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:24px;}
+  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px;}
   .card{
     background:var(--bg-card);
     border:1px solid var(--border);
     border-radius:14px;
-    padding:16px 18px;
+    padding:16px 16px;
     cursor:default;
   }
   .card.tab{cursor:pointer;}
   .card.tab.active{background:var(--bg-card-active);border-color:var(--ink-accent);}
-  .card-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;}
+  .card-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;}
   .card-label{font-size:15px;font-weight:700;color:var(--text-primary);}
   .card.tab.active .card-label{color:var(--accent-teal);}
   .card-value{font-size:20px;font-weight:700;}
@@ -285,8 +320,9 @@
   .card-sub .amt{color:var(--text-secondary);}
 
   .search-heading{
-    font-size:13px;color:var(--text-muted);margin-bottom:14px;font-weight:600;
-    padding-top:26px; /* Transactions tab is the only user of this heading;
+    flex-shrink:0; /* sits above the scrolling .table-scroll, not inside it */
+    font-size:13px;color:var(--text-muted);margin-bottom:16px;font-weight:600;
+    padding-top:24px; /* Transactions tab is the only user of this heading;
       its sticky title bar sits flush above .mid-body (which has no top
       padding of its own — see .mid-body below), so this is what actually
       separates the heading from the bar. */
@@ -296,22 +332,41 @@
   table.ledger-year th.month-link{cursor:pointer;}
   table.ledger-year th.month-link:hover{color:var(--text-primary);}
 
-  table.ledger{width:100%;border-collapse:separate;border-spacing:0 4px;}
+  /* border-collapse:separate + border-spacing puts that spacing around the
+     OUTER edge of the table too, not just between rows — including a 4px
+     gap above the thead row itself. That gap sits outside the sticky <th>
+     cells' own box, so at rest (scrollTop 0) they start 4px lower than
+     their stuck position and visibly slide up through that gap during the
+     first ~4px of scrolling before locking, reading as a few pixels of
+     play/slack. The negative margin-top pulls the whole table up by
+     exactly that gap so the thead's stuck and resting positions coincide
+     — every other row-to-row gap (what border-spacing is actually for) is
+     untouched. */
+  table.ledger{width:100%;border-collapse:separate;border-spacing:0 4px;margin-top:-4px;}
+  /* Sticky to the top of the table's own .table-scroll (the actual
+     scrolling box — see the .panel/.mid-body comments above) — position:
+     sticky on each <th> (not the <thead> itself, which isn't reliably
+     sticky-able across browsers) with an opaque background so scrolled
+     rows disappear under it instead of showing through. */
   table.ledger th{
+    position:sticky;
+    top:0;
+    z-index:1;
+    background:var(--bg-mid);
     text-align:right;
     font-size:11px;
     font-weight:600;
     text-transform:uppercase;
     letter-spacing:0.03em;
     color:var(--text-muted);
-    padding:0 10px 10px;
+    padding:0 12px 12px;
     border-bottom:1px solid var(--border);
     white-space:nowrap;
   }
   table.ledger th:first-child{text-align:left;}
   table.ledger td{
     height:2.5rem;
-    padding:0 10px;
+    padding:0 12px;
     vertical-align:middle;
     font-size:13px;
     text-align:right;
@@ -385,9 +440,9 @@
   tr.sub-row.selected td:first-child{border-radius:var(--radius-sm) 0 0 var(--radius-sm);}
   tr.sub-row:hover td:last-child,
   tr.sub-row.selected td:last-child{border-radius:0 var(--radius-sm) var(--radius-sm) 0;}
-  tr.sub-row td:first-child{padding-left:30px;}
+  tr.sub-row td:first-child{padding-left:32px;}
   table.ledger tbody tr.total-row{font-weight:700;}
-  table.ledger tbody tr.total-row td{padding-top:14px;color:var(--text-secondary);border-top:1px solid var(--border);}
+  table.ledger tbody tr.total-row td{padding-top:16px;color:var(--text-secondary);border-top:1px solid var(--border);}
   .dash{color:var(--text-muted);}
 
   /* Grouped ledger tables (Year and Month view): Net/Income/Spending
@@ -431,7 +486,16 @@
   table.ledger-grouped td.group-total-income{color:var(--positive);}
   table.ledger-grouped td.group-total-spending{color:var(--negative);}
   .diff-pos{color:var(--text-primary);}
-  .empty-table{padding:40px 0;text-align:center;color:var(--text-muted);font-size:13px;}
+  /* table.ledger td{color:var(--text-primary)} outranks a plain .empty-table
+     rule on specificity alone, so this needs the extra `table.ledger td`
+     prefix to actually win and show the muted/tertiary color it names. */
+  table.ledger td.empty-table{padding:40px 0;text-align:center;color:var(--text-muted);font-size:13px;}
+  /* "No categories loaded yet" placeholder row: same resting background as
+     a normal category row so it reads as part of the group, but with none
+     of a real row's interactive states (no pointer cursor, no hover fill,
+     no click behavior) since there's nothing to select here. */
+  table.ledger tbody tr.empty-cat-row{background:var(--bg-row);}
+  table.ledger tbody tr.empty-cat-row td.empty-table{border-radius:var(--radius-sm);}
 
   /* Search results table (flat transactions) */
   table.txn-flat th{cursor:pointer;}
@@ -455,14 +519,14 @@
     top:0;
     z-index:2;
     background:var(--bg-right);
-    padding:24px 20px 20px;
+    padding:24px 16px 24px;
   }
   .right-eyebrow{font-size:11.5px;color:var(--text-muted);font-weight:600;padding-bottom:2px;}
   .right-title{font-size:18px;font-weight:700;}
-  .right-body{padding:0 20px 24px;}
+  .right-body{padding:0 16px 24px;}
   .right-total-row{
     display:flex;justify-content:space-between;align-items:baseline;
-    margin-bottom:22px;
+    margin-bottom:24px;
   }
   .right-total-label{font-size:14px;font-weight:700;color:var(--text-primary);}
   .right-total-value{font-size:19px;font-weight:700;}
@@ -472,14 +536,23 @@
 
   table.txn-list{width:100%;border-collapse:collapse;}
   table.txn-list{table-layout:fixed;}
+  /* Sticky under .right-header — whose height varies with the selected
+     subcategory name's line count, so (unlike the mid panel's fixed-height
+     .mid-title) the offset can't just be a constant: renderRight measures
+     the rendered header and writes it to --right-sticky-top after every
+     render (see renderRight in app.js). */
   table.txn-list th{
+    position:sticky;
+    top:var(--right-sticky-top,0px);
+    z-index:1;
+    background:var(--bg-right);
     text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:0.04em;
     color:var(--text-muted);font-weight:600;padding:0 8px 8px 0;border-bottom:1px solid var(--border);
   }
   table.txn-list th:first-child{width:38px;}
   table.txn-list th:last-child{text-align:right;width:64px;padding-right:0;}
   table.txn-list td{
-    padding:10px 8px 10px 0;font-size:12.5px;border-bottom:1px solid var(--border-soft);
+    padding:12px 8px 12px 0;font-size:12.5px;border-bottom:1px solid var(--border-soft);
     vertical-align:top;overflow-wrap:break-word;
   }
   table.txn-list td:last-child{text-align:right;white-space:nowrap;padding-right:0;}
@@ -496,7 +569,7 @@
   }
 
   /* "Add to plan" quick-add control (Year tab, Plan pill, row selected) */
-  .add-plan-wrap{margin-top:18px;}
+  .add-plan-wrap{margin-top:16px;}
   /* margin-top adds to .modal-dialog's 1rem gap above this row, for 2rem
      of total space above the Cancel/Add buttons. */
   .add-plan-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:1rem;}
@@ -519,7 +592,7 @@
     background:var(--bg-mid);
     border:1px solid var(--border);
     border-radius:var(--radius-lg);
-    padding:22px;
+    padding:24px;
     display:flex;
     flex-direction:column;
     gap:1rem;
@@ -569,7 +642,7 @@
     border:1px solid var(--border);
     color:var(--text-primary);
     font-size:13px;
-    padding:0 34px 0 16px;
+    padding:0 32px 0 16px;
     border-radius:20px;
     appearance:none;
     -webkit-appearance:none;
@@ -597,9 +670,9 @@
      (same visual language as the Expenses/Income and YTD/Projection/Plan
      pills) standing in for a native multi-select. */
   .freq-section{display:flex;flex-direction:column;gap:1rem;}
-  .pill.freq-pill{height:1.75rem;padding:0 6px;font-size:12px;}
+  .pill.freq-pill{height:1.75rem;padding:0 8px;font-size:12px;}
   .freq-pill-all{width:100%;}
-  .freq-months-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;}
+  .freq-months-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
   .freq-months-grid .pill{width:100%;}
 
   /* ================= BUDGET EDITOR ================= */
@@ -612,53 +685,61 @@
     z-index:3;
     background:var(--bg-mid);
     height:4rem;
+    flex-shrink:0;
     display:flex;
     align-items:center;
     justify-content:space-between;
-    padding:0 30px;
+    padding:0 16px;
   }
   .budget-editor-title{font-size:22px;font-weight:700;}
-  .budget-editor-actions{display:flex;gap:10px;}
+  .budget-editor-actions{display:flex;gap:12px;}
   .budget-editor-toolbar{
     position:sticky;
     top:4rem;
     z-index:2;
     background:var(--bg-mid);
     height:4rem;
+    flex-shrink:0;
     display:flex;
     align-items:center;
-    justify-content:space-between;
-    padding:0 30px;
+    justify-content:flex-end;
+    padding:0 16px;
     border-bottom:1px solid var(--border-soft);
   }
-  .budget-tab-toggle{display:flex;gap:8px;}
-  .budget-editor-body{padding:24px 30px 60px;display:flex;flex-direction:column;gap:10px;}
-  .budget-empty-hint{color:var(--text-muted);font-size:13px;padding:20px 0;}
-
+  .budget-editor-body{
+    padding:24px 8px 60px;
+    display:flex;
+    flex-direction:column;
+    gap:12px;
+    flex:1 1 auto;
+    min-height:0;
+    overflow:hidden;
+  }
   .file-btn.primary{background:var(--accent-teal);border-color:var(--accent-teal);color:var(--surface-page);font-weight:700;}
   .file-btn.primary:hover{opacity:0.88;color:var(--surface-page);}
   .file-btn.ghost{background:transparent;}
   button.file-btn:disabled,
   .file-btn:has(input:disabled){opacity:0.4;pointer-events:none;cursor:not-allowed;}
 
-  .budget-cat{background:var(--bg-row);border-radius:var(--radius-sm);}
-  .budget-cat-header{display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer;}
-  .budget-cat-header .arrow{flex-shrink:0;}
+  /* Category/subcategory name editing, inline in the budget editor's
+     ledger table (see renderBudgetTable) — an <input> styled to blend in
+     as plain text at rest, matching every other row's .cell-label, with a
+     visible background/border only on hover/focus to signal it's
+     editable. */
   .budget-name-input{
     background:transparent;
     border:1px solid transparent;
     color:var(--text-primary);
     font-size:14px;
     font-weight:700;
-    padding:4px 6px;
+    padding:4px 8px;
     border-radius:var(--radius-sm);
     min-width:0;
     flex:1 1 auto;
   }
   .budget-name-input:hover,.budget-name-input:focus{background:var(--bg-input);border-color:var(--border);}
   .budget-name-input:focus{outline:none;border-color:var(--accent-teal-dim);}
-  .budget-sub .budget-name-input{font-weight:600;font-size:13px;}
-  .budget-cat-total,.budget-sub-total{font-size:13px;color:var(--text-secondary);white-space:nowrap;}
+  .budget-name-input.sub{font-weight:400;font-size:13px;color:var(--text-secondary);}
   .icon-btn{
     background:transparent;
     border:none;
@@ -674,12 +755,17 @@
     flex-shrink:0;
   }
   .icon-btn:hover{background:var(--bg-row-hover);color:var(--negative);}
+  /* Delete button on a budget editor cat/sub row — reserves no space at
+     rest (same "claims room only on hover" trick as .group-row's chevron
+     elsewhere in the ledger tables) so it never disturbs the name column's
+     fixed width. */
+  .row-delete-wrap{width:0;overflow:hidden;flex-shrink:0;transition:width 0.15s ease;}
+  tr:hover .row-delete-wrap{width:22px;}
 
-  .budget-subcats{padding:0 10px 10px 30px;display:flex;flex-direction:column;gap:8px;}
-  .budget-sub{background:var(--surface-panel);border:1px solid var(--border-soft);border-radius:var(--radius-sm);padding:8px 10px;}
-  .budget-sub-header{display:flex;align-items:center;gap:8px;}
-  .budget-items{margin-top:6px;display:flex;flex-direction:column;gap:6px;}
-  .budget-item-row{display:flex;align-items:center;gap:6px;}
+  /* Right panel's line-item editor for whichever subcategory is selected
+     in the budget editor table (see renderBudgetSelectionPanel). */
+  .budget-items{margin-top:8px;display:flex;flex-direction:column;gap:8px;}
+  .budget-item-row{display:flex;align-items:center;gap:8px;}
   .budget-item-label{
     flex:1 1 auto;
     min-width:0;
@@ -687,7 +773,7 @@
     border:1px solid var(--border);
     color:var(--text-primary);
     font-size:12.5px;
-    padding:6px 8px;
+    padding:8px 8px;
     border-radius:var(--radius-sm);
   }
   .budget-item-freq{
@@ -695,7 +781,7 @@
     border:1px solid var(--border);
     color:var(--text-secondary);
     font-size:12px;
-    padding:6px 4px;
+    padding:8px 4px;
     border-radius:var(--radius-sm);
   }
   .budget-item-amount{
@@ -705,22 +791,50 @@
     border:1px solid var(--border);
     color:var(--text-primary);
     font-size:12.5px;
-    padding:6px 8px;
+    padding:8px 8px;
     border-radius:var(--radius-sm);
     text-align:right;
   }
   .budget-item-label:focus,.budget-item-freq:focus,.budget-item-amount:focus{outline:none;border-color:var(--accent-teal-dim);}
   .budget-array-note{flex:1 1 auto;font-size:11.5px;color:var(--text-muted);display:flex;align-items:center;}
 
-  .add-row-btn,.add-sub-btn,.add-item-btn,.add-cat-btn{
+  .add-item-btn{
     align-self:flex-start;
     background:transparent;
     border:1px dashed var(--border);
     color:var(--text-secondary);
     font-size:12px;
     font-weight:600;
-    padding:6px 12px;
+    padding:8px 12px;
     border-radius:var(--radius-sm);
     cursor:pointer;
   }
-  .add-row-btn:hover,.add-sub-btn:hover,.add-item-btn:hover,.add-cat-btn:hover{border-color:var(--accent-teal-dim);color:var(--text-primary);}
+  .add-item-btn:hover{border-color:var(--accent-teal-dim);color:var(--text-primary);}
+
+  /* Budget editor table: Income/Spending header rows are permanently
+     expanded and non-interactive while editing (unlike the read-only Year
+     table's collapsible group-row) — same flush-left-at-rest arrow-hiding
+     treatment as the Net row, just under its own class name. */
+  table.ledger-grouped tr.budget-group-row{font-weight:700;cursor:default;}
+  table.ledger-grouped tr.budget-group-row .catname{gap:0;}
+  table.ledger-grouped tr.budget-group-row .arrow{width:0;margin-right:0;overflow:hidden;}
+  table.ledger-grouped tr.budget-group-row .arrow img{opacity:0;}
+  /* "+ Add income"/"+ Add expense" link rows — centered, spanning every
+     column. The nested variant (adds a subcategory) only shows while its
+     parent category is open; the top-level one (adds a category) is
+     always visible, giving the empty Income/Spending groups their "Add
+     income"/"Add expense" zero state. */
+  tr.budget-add-row td{height:auto;padding:12px;text-align:center;white-space:normal;}
+  tr.budget-add-row.nested{display:none;}
+  /* A freshly-added category has no name yet — withhold its "add
+     subcategory" row (even while open) until it's been named, so there's
+     no unnamed, ambiguous category floating around with subcategories
+     already hanging off it. */
+  tr.budget-add-row.nested.open.named{display:table-row;}
+  .budget-add-link{
+    display:inline-flex;align-items:center;gap:8px;
+    background:transparent;border:none;cursor:pointer;
+    color:var(--accent-teal);font-size:12.5px;font-weight:700;
+    padding:8px 12px;border-radius:var(--radius-sm);
+  }
+  .budget-add-link:hover{background:var(--bg-row-hover);}
