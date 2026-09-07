@@ -2753,12 +2753,22 @@ async function onBudgetPickerChange(e){
   }
 }
 
+// Default filename for a budget that's never been loaded from or exported
+// to a file yet, e.g. "Budget-20260907-14.23.05.json".
+function defaultBudgetFileName(){
+  const d = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  const yyyymmdd = `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}`;
+  const hhmmss = `${pad(d.getHours())}.${pad(d.getMinutes())}.${pad(d.getSeconds())}`;
+  return `Budget-${yyyymmdd}-${hhmmss}.json`;
+}
+
 function downloadBudgetsJSON(){
   // Re-exporting a budget that already has a name (loaded from a file, or
   // exported once before) saves back under that same name rather than
   // always resetting it to the generic default — only a budget that's
   // never been named yet falls back to it.
-  const filename = budgetFileName || 'budgets.json';
+  const filename = budgetFileName || defaultBudgetFileName();
   const blob = new Blob([JSON.stringify(BUDGETS_RAW, null, 2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
