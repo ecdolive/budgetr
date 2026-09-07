@@ -64,6 +64,10 @@
   .app{
     display:grid;
     grid-template-columns:11rem 1fr 360px;
+    grid-template-rows:1fr 3rem;
+    grid-template-areas:
+      "left mid right"
+      "status status status";
     gap:0.5rem;
     height:100vh;
     padding:0.5rem;
@@ -92,8 +96,20 @@
     .app{grid-template-columns:11rem 1fr 300px;min-width:0;}
   }
 
+  /* ================= STATUS BAR ================= */
+  .status{
+    grid-area:status;
+    background:var(--bg-left);
+    display:flex;
+    flex-direction:row;
+    align-items:center;
+    gap:12px;
+    padding:0 16px;
+  }
+
   /* ================= LEFT PANEL ================= */
   .left{
+    grid-area:left;
     background:var(--bg-left);
     padding:0;
     display:flex;
@@ -172,21 +188,6 @@
   .tf-item.future .tf-label{color:var(--text-secondary);}
   .tf-item.future .net{color:var(--text-muted);}
 
-  .data-io{
-    margin-top:auto;
-    padding-top:16px;
-    border-top:1px solid var(--border-soft);
-    display:flex;
-    flex-direction:column;
-    gap:8px;
-  }
-  .data-io label{
-    font-size:10.5px;
-    text-transform:uppercase;
-    letter-spacing:0.06em;
-    color:var(--text-muted);
-    font-weight:600;
-  }
   .file-btn{
     display:block;
     background:var(--bg-input);
@@ -206,6 +207,7 @@
 
   /* ================= MIDDLE PANEL ================= */
   .mid{
+    grid-area:mid;
     background:var(--bg-mid);
     padding:0;
     display:flex;
@@ -507,6 +509,7 @@
 
   /* ================= RIGHT PANEL ================= */
   .right{
+    grid-area:right;
     background:var(--bg-right);
     padding:0;
   }
