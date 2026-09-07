@@ -544,7 +544,7 @@ let openGroups = new Set(['income','expenses']);
 let selectedSub = null;      // { kind:'expense'|'income', category, subcategory } | null — for income, category is the
                               // top-level income source and subcategory is a rolled-up transaction description
 let searchQuery = '';
-let txnSort = { key: 'date', dir: 1 };
+let txnSort = { key: 'date', dir: -1 }; // default: newest first
 
 // Budget editor — a distinct "mode" (like search) that takes over the mid
 // and right panels. See the BUDGET EDITOR section below.
