@@ -106,6 +106,54 @@
     gap:12px;
     padding:0 16px;
   }
+  /* Rounded card holding the Transactions/Budget file state — the status
+     bar's only real content; the bar itself just gives it a full-width
+     strip to sit in (and somewhere for #ioStatus to appear alongside it). */
+  .status-chip{
+    display:flex;
+    align-items:center;
+    gap:16px;
+    background:var(--bg-input);
+    border:1px solid var(--border);
+    border-radius:999px;
+    padding:10px 20px;
+    font-size:12.5px;
+  }
+  .status-segment{display:flex;align-items:center;gap:8px;}
+  .status-divider{width:1px;align-self:stretch;background:var(--border);}
+  .status-label{color:var(--text-muted);}
+  .status-filename{color:var(--text-primary);font-weight:700;}
+  .status-edited{color:var(--text-muted);font-style:italic;}
+  /* "Open..."/"Change..." — a <label> wrapping the actual (hidden) file
+     input, same trick as .file-btn elsewhere. Open (nothing loaded yet) is
+     the primary call to action, so it reads as an accent link; Change
+     (something's already loaded) is deliberately quieter. */
+  .status-open-link,
+  .status-change-link{
+    cursor:pointer;
+    display:inline-flex;
+    align-items:center;
+  }
+  .status-open-link{color:var(--accent-teal);font-weight:700;}
+  .status-open-link:hover{opacity:0.85;}
+  .status-change-link{color:var(--text-muted);font-weight:400;}
+  .status-change-link:hover{color:var(--text-primary);}
+  .status-open-link input,
+  .status-change-link input{display:none;}
+  .status-open-link:has(input:disabled),
+  .status-change-link:has(input:disabled){opacity:0.4;pointer-events:none;cursor:not-allowed;}
+  .status-export{
+    background:var(--accent-teal);
+    border:none;
+    color:var(--surface-page);
+    height:1.75rem;
+    padding:0 14px;
+    border-radius:999px;
+    font-size:12px;
+    font-weight:700;
+    cursor:pointer;
+  }
+  .status-export:hover{opacity:0.88;}
 
   /* ================= LEFT PANEL ================= */
   .left{

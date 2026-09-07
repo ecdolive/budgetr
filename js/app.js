@@ -434,8 +434,9 @@ function enterBudgetEditor(){
   budgetSummaryEls = null;
   budgetRightSubTotalEl = null;
   searchQuery = '';
-  document.getElementById('csvPicker').disabled = true;
-  document.getElementById('budgetPicker').disabled = true;
+  // The status bar's Open/Change file inputs are disabled for the duration
+  // of edit mode (renderStatusBar reads budgetEditMode directly), so no
+  // manual enable/disable bookkeeping is needed here.
   renderAll();
 }
 function exitBudgetEditor(){
@@ -444,8 +445,6 @@ function exitBudgetEditor(){
   budgetSelection = null;
   budgetSummaryEls = null;
   budgetRightSubTotalEl = null;
-  document.getElementById('csvPicker').disabled = false;
-  document.getElementById('budgetPicker').disabled = false;
 }
 function cancelBudgetEdit(){
   exitBudgetEditor();
@@ -453,9 +452,12 @@ function cancelBudgetEdit(){
 }
 function saveBudgetEdit(){
   BUDGETS_RAW = draftToBudgetsRaw(budgetDraft);
+  // Saving only commits the draft in-memory — the status bar's "(edited)"
+  // badge and Export button (see renderStatusBar) are what tell the user
+  // it still needs exporting to a file.
+  budgetDirty = true;
   recomputeDerived();
   exitBudgetEditor();
-  setIOStatus('Budget saved.', 'ok');
   renderAll();
 }
 
@@ -531,6 +533,13 @@ let DATA = emptyData();
 let BUDGETS_RAW = emptyBudgets();
 let BUDGETS = resolveBudgets(BUDGETS_RAW, DATA.year);
 let ROLL = buildBudgetRollups(BUDGETS, DATA.categories, DATA.incomeSubcats);
+
+// Budget file identity, for the status bar (see renderStatusBar). Loaded
+// transaction filenames live on DATA.sourceFiles instead — transactions
+// have no edit/export lifecycle of their own, so they need no equivalent
+// of budgetDirty.
+let budgetFileName = null;   // name of the last-loaded/last-exported budget JSON, or null if never loaded/exported
+let budgetDirty = false;     // true once BUDGETS_RAW holds edits not yet exported to a file
 
 let timeframe = 'year';      // 'year' | 0-11 (month index) | 'transactions'
 let monthViewOrigin = 'year'; // timeframe to return to via the month view's back button
@@ -2709,33 +2718,40 @@ function loadFromCSVs(files){
     if (allRows.length === 0) throw new Error('No transaction rows found in the file(s) provided.');
     DATA = aggregate(allRows, files.map(f=>f.name));
     recomputeDerived();
-    setIOStatus(`Loaded ${DATA.transactions.length} transactions from ${files.map(f=>f.name).join(', ')}.`, 'ok');
+    // The status bar's Transactions chip (driven by DATA.sourceFiles) shows
+    // which file(s) are loaded, so no separate "Loaded N transactions..."
+    // message is needed on success — only failures get one.
+    setIOStatus('');
     renderAll();
   } catch(err){
     setIOStatus('Could not parse CSV: ' + err.message, 'err');
   }
 }
-document.getElementById('csvPicker').addEventListener('change', async (e)=>{
+async function onCSVPickerChange(e){
   const fileList = Array.from(e.target.files || []);
   if (!fileList.length) return;
   const files = await Promise.all(fileList.map(f => f.text().then(text=>({name:f.name, text}))));
   loadFromCSVs(files);
-});
+}
 
-document.getElementById('budgetPicker').addEventListener('change', async (e)=>{
+async function onBudgetPickerChange(e){
   const file = e.target.files && e.target.files[0];
   if (!file) return;
   try{
     const text = await file.text();
     const obj = JSON.parse(text);
     BUDGETS_RAW = { Expenses: obj.Expenses || {}, Income: obj.Income || {} };
+    budgetFileName = file.name;
+    budgetDirty = false;
     recomputeDerived();
-    setIOStatus(`Budgets loaded from ${file.name}.`, 'ok');
+    // Same reasoning as loadFromCSVs above — the status bar's Budget chip
+    // shows the loaded filename itself, so only failures need a message.
+    setIOStatus('');
     renderAll();
   } catch(err){
     setIOStatus('Could not read budgets file: ' + err.message, 'err');
   }
-});
+}
 
 function downloadBudgetsJSON(){
   const blob = new Blob([JSON.stringify(BUDGETS_RAW, null, 2)], {type:'application/json'});
@@ -2744,6 +2760,9 @@ function downloadBudgetsJSON(){
   a.href = url; a.download = 'budgets.json';
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
+  budgetFileName = 'budgets.json';
+  budgetDirty = false;
+  renderStatusBar();
 }
 
 async function tryAutoFetch(){
@@ -2759,6 +2778,8 @@ async function tryAutoFetch(){
     if (res.ok){
       const obj = await res.json();
       BUDGETS_RAW = { Expenses: obj.Expenses || {}, Income: obj.Income || {} };
+      budgetFileName = 'budgets.json';
+      budgetDirty = false;
       recomputeDerived();
       renderAll();
     }
@@ -2766,10 +2787,109 @@ async function tryAutoFetch(){
 }
 
 /* ============================================================
+   STATUS BAR (bottom panel) — the persistent Transactions/Budget file
+   chip. Rebuilt from scratch on every render rather than patched in
+   place: it's cheap (a handful of nodes) and, since it owns the actual
+   csvPicker/budgetPicker <input>s, rebuilding is what lets the
+   Open.../Change... labels, filenames and Export button all stay in sync
+   with DATA.sourceFiles/budgetFileName/budgetDirty without separate
+   bookkeeping.
+   ============================================================ */
+function buildFilePickerLabel(labelText, { id, accept, multiple, cssClass, onChange }){
+  const label = document.createElement('label');
+  label.className = cssClass;
+  label.textContent = labelText;
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.id = id;
+  input.accept = accept;
+  if (multiple) input.multiple = true;
+  // Disabled for the duration of budget-edit mode, same as every other
+  // data-loading control (Import CSV, etc.) — editing a draft while the
+  // underlying data shifts under it would be surprising.
+  input.disabled = budgetEditMode;
+  input.addEventListener('change', onChange);
+  label.appendChild(input);
+  return label;
+}
+
+function renderStatusBar(){
+  const chip = document.getElementById('statusChip');
+  chip.innerHTML = '';
+
+  const txnSeg = document.createElement('div');
+  txnSeg.className = 'status-segment';
+  const txnLabel = document.createElement('span');
+  txnLabel.className = 'status-label';
+  txnLabel.textContent = 'Transactions:';
+  txnSeg.appendChild(txnLabel);
+  if (!DATA.sourceFiles.length){
+    txnSeg.appendChild(buildFilePickerLabel('Open...', {
+      id:'csvPicker', accept:'.csv', multiple:true,
+      cssClass:'status-open-link', onChange:onCSVPickerChange,
+    }));
+  } else {
+    const name = document.createElement('span');
+    name.className = 'status-filename';
+    name.textContent = DATA.sourceFiles.join(', ');
+    txnSeg.appendChild(name);
+    txnSeg.appendChild(buildFilePickerLabel('Change...', {
+      id:'csvPicker', accept:'.csv', multiple:true,
+      cssClass:'status-change-link', onChange:onCSVPickerChange,
+    }));
+  }
+  chip.appendChild(txnSeg);
+
+  const divider = document.createElement('div');
+  divider.className = 'status-divider';
+  chip.appendChild(divider);
+
+  const budgetSeg = document.createElement('div');
+  budgetSeg.className = 'status-segment';
+  const budgetLabel = document.createElement('span');
+  budgetLabel.className = 'status-label';
+  budgetLabel.textContent = 'Budget:';
+  budgetSeg.appendChild(budgetLabel);
+  // A budget "counts" as loaded for display purposes once it either came
+  // from a file or has unexported edits (a from-scratch draft that's been
+  // saved at least once) — either way there's now something to Export or
+  // Change away from, so it's no longer the empty "Open..." state.
+  if (!budgetFileName && !budgetDirty){
+    budgetSeg.appendChild(buildFilePickerLabel('Open...', {
+      id:'budgetPicker', accept:'.json',
+      cssClass:'status-open-link', onChange:onBudgetPickerChange,
+    }));
+  } else {
+    const name = document.createElement('span');
+    name.className = 'status-filename';
+    name.textContent = budgetFileName || 'New budget';
+    budgetSeg.appendChild(name);
+    if (budgetDirty){
+      const edited = document.createElement('span');
+      edited.className = 'status-edited';
+      edited.textContent = '(edited)';
+      budgetSeg.appendChild(edited);
+      const exportBtn = document.createElement('button');
+      exportBtn.type = 'button';
+      exportBtn.className = 'status-export';
+      exportBtn.textContent = 'Export';
+      exportBtn.addEventListener('click', downloadBudgetsJSON);
+      budgetSeg.appendChild(exportBtn);
+    }
+    budgetSeg.appendChild(buildFilePickerLabel('Change...', {
+      id:'budgetPicker', accept:'.json',
+      cssClass:'status-change-link', onChange:onBudgetPickerChange,
+    }));
+  }
+  chip.appendChild(budgetSeg);
+}
+
+/* ============================================================
    BOOTSTRAP
    ============================================================ */
 function renderAll(){
   renderLeftNav();
+  renderStatusBar();
   // renderAll() is always a real page change (new timeframe/tab/mode, a
   // fresh CSV/budget load, ...) so — unlike an in-place update such as
   // selecting or expanding a row — it should start scrolled to the top
