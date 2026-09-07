@@ -615,6 +615,10 @@
 
   /* Category/subcategory selectors inside the "Add to plan" modal. */
   .modal-field{display:flex;flex-direction:column;gap:4px;}
+  /* Type (Income/Spending) toggle at the top of the modal — plain .pill
+     buttons (same look as the YTD/Forecast/Budget and frequency pills)
+     in a row instead of a <select>, since there are only ever two options. */
+  .modal-type-pills{display:flex;gap:8px;}
   .modal-field-label{
     font-size:10.5px;
     text-transform:uppercase;
