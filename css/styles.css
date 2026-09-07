@@ -736,6 +736,38 @@
   .budget-name-input:hover,.budget-name-input:focus{background:var(--bg-input);border-color:var(--border);}
   .budget-name-input:focus{outline:none;border-color:var(--accent-teal-dim);}
   .budget-name-input.sub{font-weight:400;font-size:13px;color:var(--text-secondary);}
+
+  /* Category/subcategory name typeahead (see bindTypeahead in app.js) —
+     appended straight to <body> and positioned with fixed coordinates
+     rather than nested under the input, so .table-scroll's own overflow
+     (see its comment further up) can't clip it. */
+  .typeahead-list{
+    position:fixed;
+    /* No explicit width: a fixed-position box with only `left`/`top` set
+       (never `right`) shrink-to-fits its content by default, so the list
+       is only ever as wide as its longest option — not the (much
+       narrower) input it hangs off of — up to max-width. app.js may
+       still tighten max-width further, for the rare case even that
+       doesn't fit before the viewport's right edge. */
+    max-width:24rem;
+    background:var(--bg-input);
+    border:1px solid var(--border);
+    border-radius:var(--radius-sm);
+    max-height:180px;
+    overflow-y:auto;
+    z-index:200;
+    box-shadow:0 12px 32px rgba(0,0,0,0.45);
+  }
+  .typeahead-option{
+    padding:8px 12px;
+    font-size:13px;
+    color:var(--text-primary);
+    cursor:pointer;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .typeahead-option:hover{background:var(--bg-row-hover);}
   .icon-btn{
     background:transparent;
     border:none;

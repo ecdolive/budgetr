@@ -1449,6 +1449,84 @@ function locateBudgetNameInput(el){
   return null;
 }
 
+// Floating suggestion list for a pending category/subcategory name input
+// — appended to <body> and positioned with `position:fixed` over the
+// input's own on-screen rect (a "portal", same reasoning as the add-item
+// modal being body-appended rather than nested in the panel: .table-
+// scroll's overflow — see its own comment — would otherwise clip a
+// dropdown taller than the remaining visible table area). Shows whatever
+// `getSuggestions()` currently returns on focus, re-filtered by the
+// input's own value (case-insensitive substring) on every keystroke;
+// picking one calls `onPick(name)` rather than writing the value here
+// directly, so the caller (bindPendingCommit) can commit it exactly like
+// an Enter/Tab keypress would. Clicking an option is a mousedown on a
+// plain, non-focusable div — without preventDefault, the browser would
+// still blur the input first (committing whatever partial text is
+// currently typed, not the option chosen), so that default is
+// suppressed and the input never actually loses focus.
+function bindTypeahead(input, getSuggestions){
+  let listEl = null;
+  function close(){
+    if (listEl){ listEl.remove(); listEl = null; }
+  }
+  function render(){
+    const q = input.value.trim().toLowerCase();
+    const options = getSuggestions().filter(name=>name.toLowerCase().includes(q));
+    if (!options.length){ close(); return; }
+    if (!listEl){
+      listEl = document.createElement('div');
+      listEl.className = 'typeahead-list';
+      document.body.appendChild(listEl);
+    } else {
+      listEl.innerHTML = '';
+    }
+    options.forEach(name=>{
+      const opt = document.createElement('div');
+      opt.className = 'typeahead-option';
+      opt.textContent = name;
+      opt.addEventListener('mousedown', (e)=>{
+        e.preventDefault();
+        close();
+        input.dispatchEvent(new CustomEvent('typeahead-pick', { detail: name }));
+      });
+      listEl.appendChild(opt);
+    });
+    const r = input.getBoundingClientRect();
+    // Left unset otherwise, the list shrink-to-fits its content up to a
+    // 24rem cap (see .typeahead-list) rather than matching the (much
+    // narrower) input it hangs off of. Only tightened here when even that
+    // wouldn't fit before the viewport's right edge.
+    listEl.style.left = r.left + 'px';
+    const remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    const viewportMax = document.documentElement.clientWidth - r.left - 8;
+    listEl.style.maxWidth = Math.min(24 * remPx, viewportMax) + 'px';
+
+    // Vertical placement: below the input by default (matching its own
+    // CSS max-height of 180px), but flipped above it when the input sits
+    // too close to the bottom of the viewport to fit that — e.g. a
+    // pending row near the bottom of the visible table — and there's more
+    // room above than below. Either way the list's own max-height is
+    // capped to whatever room that side actually has, so it's scrollable
+    // rather than spilling off-screen if a lot of options match.
+    const gap = 4, preferredHeight = 180, minHeight = 60;
+    const spaceBelow = window.innerHeight - r.bottom - gap;
+    const spaceAbove = r.top - gap;
+    const openAbove = spaceBelow < preferredHeight && spaceAbove > spaceBelow;
+    if (openAbove){
+      listEl.style.top = 'auto';
+      listEl.style.bottom = (window.innerHeight - r.top + gap) + 'px';
+      listEl.style.maxHeight = Math.max(minHeight, Math.min(preferredHeight, spaceAbove)) + 'px';
+    } else {
+      listEl.style.bottom = 'auto';
+      listEl.style.top = (r.bottom + gap) + 'px';
+      listEl.style.maxHeight = Math.max(minHeight, Math.min(preferredHeight, spaceBelow)) + 'px';
+    }
+  }
+  input.addEventListener('focus', render);
+  input.addEventListener('input', render);
+  input.addEventListener('blur', close);
+}
+
 // Wires a pending row's name input so committing it doesn't depend on
 // any one specific key — Enter, Tab, or simply clicking/tabbing away
 // (blur) all commit it, as long as there's a non-blank name typed;
@@ -1465,8 +1543,11 @@ function locateBudgetNameInput(el){
 // element) shouldn't be what stops that from happening. Enter/Tab and the
 // resulting blur (rebuilding the DOM removes this input) can both fire
 // for the same keypress, so `committed` makes sure the commit itself only
-// happens once either way.
-function bindPendingCommit(input, commit){
+// happens once either way. `getSuggestions`, if given, adds a typeahead
+// of category/subcategory names loaded transactions already establish
+// that aren't in the budget yet (see bindTypeahead) — picking one commits
+// it immediately, same as pressing Enter after typing it out by hand.
+function bindPendingCommit(input, commit, getSuggestions){
   let committed = false;
   function tryCommit(focusNext, refocus){
     if (committed) return;
@@ -1491,6 +1572,13 @@ function bindPendingCommit(input, commit){
     tryCommit(true);
   });
   input.addEventListener('blur', (e)=>tryCommit(false, locateBudgetNameInput(e.relatedTarget)));
+  if (getSuggestions){
+    bindTypeahead(input, getSuggestions);
+    input.addEventListener('typeahead-pick', (e)=>{
+      input.value = e.detail;
+      tryCommit(true);
+    });
+  }
 }
 
 // Trailing pending category row — sits at the bottom of a whole Income/
@@ -1525,6 +1613,13 @@ function buildPendingCatRow(kind, list){
     return cat.id; // Enter/Tab land focus in this category's own pending
                    // subcategory row — naming a category is almost always
                    // immediately followed by naming its first subcategory.
+  }, ()=>{
+    // Transaction-established categories of this Type not already in the
+    // draft — same source draftCategoriesFor merges in, just without the
+    // categories the draft already has (those don't need suggesting).
+    const txCats = kind === 'income' ? DATA.incomeSubcats : DATA.categories;
+    const existingNames = new Set(list.map(c=>c.name));
+    return txCats.map(c=>c.name).filter(name=>!existingNames.has(name));
   });
   tr.appendChild(td);
   tr.insertAdjacentHTML('beforeend', budgetNumCells(new Array(12).fill(0), 0));
@@ -1657,6 +1752,16 @@ function renderBudgetTable(){
         budgetSelection = { kind, catId: cat.id, subId: sub.id };
         return cat.id; // Enter/Tab land focus in the next pending row for
                         // this same category, ready for the next one.
+      }, ()=>{
+        // Transaction-established subcategories under a transaction
+        // category matching this one *by name* (there's nothing else to
+        // key off — this draft category may not even be transaction-
+        // derived at all), minus whatever's already in the draft here.
+        const txCats = kind === 'income' ? DATA.incomeSubcats : DATA.categories;
+        const txCat = txCats.find(c=>c.name===cat.name);
+        if (!txCat) return [];
+        const existingNames = new Set(cat.subcategories.map(s=>s.name));
+        return txCat.subcategories.map(s=>s.name).filter(name=>!existingNames.has(name));
       });
       pendingRow.appendChild(pendingTd);
       pendingRow.insertAdjacentHTML('beforeend', budgetNumCells(new Array(12).fill(0), 0));
@@ -2064,13 +2169,38 @@ function addDraftBudgetItem(target, freq, label, rawAmount){
 }
 
 // Category/subcategory options for the add-item modal's Type-dependent
-// dropdowns, sourced from the in-progress draft rather than the committed
-// BUDGETS_RAW/DATA (see mergedExpenseCategories/mergedIncomeSubcats,
-// the read-only-flow equivalent) — the modal only reads `.name` off each
-// entry, so the draft's {id,name,subcategories} shape maps over directly.
+// dropdowns while in the budget editor — the in-progress draft, merged
+// with whatever categories/subcategories loaded transactions already
+// establish (DATA.categories/DATA.incomeSubcats), same idea as
+// mergedExpenseCategories/mergedIncomeSubcats (the read-only flow's
+// equivalent, which merges the same transaction data with the committed
+// BUDGETS instead of the draft) — so a category a transactions CSV
+// already uses shows up here even before it's been added to this budget.
+// The modal only reads `.name` off each entry, so both sources' shapes
+// map down to the same plain {name, subcategories:[{name}]} regardless
+// of what other fields they carry.
 function draftCategoriesFor(kind){
-  const list = kind === 'income' ? budgetDraft.income : budgetDraft.expenses;
-  return list.map(c=>({ name: c.name, subcategories: c.subcategories.map(s=>({ name: s.name })) }));
+  const txCats = kind === 'income' ? DATA.incomeSubcats : DATA.categories;
+  const draftList = kind === 'income' ? budgetDraft.income : budgetDraft.expenses;
+  const result = txCats.map(c=>({ name: c.name, subcategories: c.subcategories.map(s=>({ name: s.name })) }));
+  const byName = new Map(result.map(c=>[c.name, c]));
+  draftList.forEach(cat=>{
+    let entry = byName.get(cat.name);
+    if (!entry){
+      entry = { name: cat.name, subcategories: [] };
+      byName.set(cat.name, entry);
+      result.push(entry);
+    }
+    const subByName = new Map(entry.subcategories.map(s=>[s.name, s]));
+    cat.subcategories.forEach(sub=>{
+      if (!subByName.has(sub.name)){
+        const subEntry = { name: sub.name };
+        entry.subcategories.push(subEntry);
+        subByName.set(sub.name, subEntry);
+      }
+    });
+  });
+  return result;
 }
 
 function getSelectedTxns(monthFilter){
