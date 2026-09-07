@@ -551,7 +551,13 @@ let txnSort = { key: 'date', dir: -1 }; // default: newest first
 let budgetEditMode = false;
 let budgetDraft = null;      // { expenses:[{id,name,subcategories:[{id,name,items:[{id,freq,label,amount}]}]}], income:[{id,name,subcategories:[...]}] }
 let budgetOpenCats = new Set();  // open category ids, editor-local (separate from openCats)
-let budgetFocusId = null;        // id of a newly-added row to focus after the next render
+let budgetFocusPending = null;   // { catId } — after Enter commits a pending category or
+                                  // subcategory row (see buildPendingCatRow/buildGroup),
+                                  // focus that category's own pending-subcategory row on
+                                  // the next render: naming a category flows straight into
+                                  // naming its first subcategory, and committing a
+                                  // subcategory flows straight into naming the next one —
+                                  // either way, rapid sequential entry never needs a click
 let budgetSummaryEls = null;     // right-panel live-total <span> refs while editing, when nothing is selected
 let budgetSelection = null;      // { kind:'expense'|'income', catId, subId } | null — the subcategory (if any)
                                   // currently selected in the editor's table, shown/edited in the right panel
@@ -736,13 +742,16 @@ function renderMid(opts){
 
   if (budgetEditMode){
     renderBudgetEditor(mid);
-    if (budgetFocusId){
-      const id = budgetFocusId;
-      budgetFocusId = null;
-      const el = mid.querySelector(
-        `tr[data-cat-id="${id}"] .budget-name-input, tr[data-sub-id="${id}"] .budget-name-input`
-      );
-      if (el){ el.focus(); if (el.select) el.select(); }
+    if (budgetFocusPending){
+      const catId = budgetFocusPending.catId;
+      budgetFocusPending = null;
+      // The row Enter just committed is gone from the DOM (rebuilt as a
+      // real category/subcategory row further up the list) — what we want
+      // focus on is that category's pending-subcategory row, always blank,
+      // so a plain focus() is enough (nothing to position a cursor
+      // within).
+      const el = mid.querySelector(`tr.sub-row.pending[data-cat-id="${catId}"] .budget-name-input`);
+      if (el) el.focus();
     }
     restoreScroll();
     return;
@@ -1317,24 +1326,20 @@ function renderBudgetEditor(mid){
   const header = document.createElement('div');
   header.className = 'budget-editor-header';
   const hasSaved = Object.keys(BUDGETS_RAW.Expenses||{}).length || Object.keys(BUDGETS_RAW.Income||{}).length;
-  header.innerHTML = `
-    <div class="budget-editor-title">${hasSaved ? 'Edit Budget' : 'Create Budget'}</div>
-    <div class="budget-editor-actions">
-      <button class="file-btn ghost" type="button" id="budgetCancelBtn">Cancel</button>
-      <button class="file-btn primary" type="button" id="budgetSaveBtn">Save budget</button>
-    </div>
-  `;
-  header.querySelector('#budgetCancelBtn').addEventListener('click', ()=>{
-    if (confirm('Discard changes to this budget?')) cancelBudgetEdit();
-  });
-  header.querySelector('#budgetSaveBtn').addEventListener('click', saveBudgetEdit);
-  mid.appendChild(header);
+  const title = document.createElement('div');
+  title.className = 'budget-editor-title';
+  title.textContent = hasSaved ? 'Edit Budget' : 'Create Budget';
+  header.appendChild(title);
 
-  const toolbar = document.createElement('div');
-  toolbar.className = 'budget-editor-toolbar';
+  const actions = document.createElement('div');
+  actions.className = 'budget-editor-actions';
+
+  // Import CSV sits beside Cancel/Save as a third header action rather than
+  // its own toolbar row — it's a starting-point convenience for the draft,
+  // not a distinct step in the Cancel/Save flow.
   const importLabel = document.createElement('label');
-  importLabel.className = 'file-btn';
-  importLabel.textContent = "Import last year's CSV as starting point";
+  importLabel.className = 'file-btn ghost';
+  importLabel.textContent = 'Import CSV';
   const importInput = document.createElement('input');
   importInput.type = 'file';
   importInput.accept = '.csv';
@@ -1347,8 +1352,26 @@ function renderBudgetEditor(mid){
     importLastYearCSVIntoDraft(files);
     e.target.value = '';
   });
-  toolbar.appendChild(importLabel);
-  mid.appendChild(toolbar);
+  actions.appendChild(importLabel);
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'file-btn ghost';
+  cancelBtn.type = 'button';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.addEventListener('click', ()=>{
+    if (confirm('Discard changes to this budget?')) cancelBudgetEdit();
+  });
+  actions.appendChild(cancelBtn);
+
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'file-btn primary';
+  saveBtn.type = 'button';
+  saveBtn.textContent = 'Save budget';
+  saveBtn.addEventListener('click', saveBudgetEdit);
+  actions.appendChild(saveBtn);
+
+  header.appendChild(actions);
+  mid.appendChild(header);
 
   const body = document.createElement('div');
   body.className = 'budget-editor-body';
@@ -1362,7 +1385,7 @@ function renderBudgetEditor(mid){
 // takes up space on row hover (row-delete-wrap), so it never disturbs the
 // column's fixed width. `arrow` is the category row's always-visible
 // chevron element, or null for a (leaf) subcategory row.
-function budgetNameCell({ value, placeholder, isSub, arrow, onNameInput, onDelete, deleteTitle }){
+function budgetNameCell({ value, placeholder, isSub, arrow, onNameInput, onDelete, deleteTitle, hideDelete }){
   const td = document.createElement('td');
   const catname = document.createElement('span');
   catname.className = 'catname';
@@ -1374,16 +1397,21 @@ function budgetNameCell({ value, placeholder, isSub, arrow, onNameInput, onDelet
   nameInput.addEventListener('click', e=>e.stopPropagation());
   nameInput.addEventListener('input', onNameInput);
   catname.appendChild(nameInput);
-  const delWrap = document.createElement('span');
-  delWrap.className = 'row-delete-wrap';
-  const delBtn = document.createElement('button');
-  delBtn.type = 'button';
-  delBtn.className = 'icon-btn';
-  delBtn.title = deleteTitle;
-  delBtn.textContent = '✕';
-  delBtn.addEventListener('click', (e)=>{ e.stopPropagation(); onDelete(); });
-  delWrap.appendChild(delBtn);
-  catname.appendChild(delWrap);
+  // A not-yet-real pending row (see buildGroup's trailing sub-row) has
+  // nothing to delete yet, so it skips the delete button entirely rather
+  // than wiring one up to a no-op.
+  if (!hideDelete){
+    const delWrap = document.createElement('span');
+    delWrap.className = 'row-delete-wrap';
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'icon-btn';
+    delBtn.title = deleteTitle;
+    delBtn.textContent = '✕';
+    delBtn.addEventListener('click', (e)=>{ e.stopPropagation(); onDelete(); });
+    delWrap.appendChild(delBtn);
+    catname.appendChild(delWrap);
+  }
   td.appendChild(catname);
   return { td, nameInput };
 }
@@ -1393,41 +1421,114 @@ function budgetNumCells(monthly, total){
   return cells + `<td class="num">${fmt(total)}</td>`;
 }
 
-// A centered "+ Add income"/"+ Add expense" link row spanning every
-// column — used both nested under an open category (adds a subcategory)
-// and at the bottom of a whole Income/Spending group (adds a top-level
-// category). The top-level row always uses the plain "+ Add income"/
-// "+ Add expense" label; the nested one is contextualized to its category
-// (see budgetAddSubLabel) and, per opts.named, withheld entirely until
-// that category has a name — see the 'named' toggling in buildGroup's
-// category name-input handler below for how it appears live as you type.
-function budgetAddRow(kind, onClick, opts){
-  const tr = document.createElement('tr');
-  const nested = !!(opts && opts.nested);
-  tr.className = 'budget-add-row' + (nested ? ' nested' + (opts.open ? ' open' : '') + (opts.named ? ' named' : '') : '');
-  if (nested && opts.catId) tr.dataset.catId = opts.catId;
-  const td = document.createElement('td');
-  td.colSpan = 14;
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = 'budget-add-link';
-  btn.textContent = (opts && opts.label) || (kind === 'income' ? '+ Add income' : '+ Add expense');
-  btn.addEventListener('click', onClick);
-  td.appendChild(btn);
-  tr.appendChild(td);
-  return tr;
+// Finds the category/subcategory name input `el` belongs to (real or
+// pending, category-level or subcategory-level) and returns a function
+// that re-locates the *equivalent* input in a freshly-rendered mid panel
+// — used to restore focus onto a click target that a pending row's commit
+// is about to rebuild out from under the browser's own pending focus
+// change. Returns null for anything else (a button, an input elsewhere in
+// the app, or nothing at all), which just leaves that focus change alone.
+function locateBudgetNameInput(el){
+  if (!el || !el.classList || !el.classList.contains('budget-name-input')) return null;
+  const tr = el.closest('tr');
+  if (!tr) return null;
+  const pending = tr.classList.contains('pending');
+  if (tr.classList.contains('sub-row')){
+    const catId = tr.dataset.catId;
+    const sel = pending
+      ? `tr.sub-row.pending[data-cat-id="${catId}"] .budget-name-input`
+      : `tr.sub-row[data-sub-id="${tr.dataset.subId}"] .budget-name-input`;
+    return (root)=>root.querySelector(sel);
+  }
+  if (tr.classList.contains('cat-row')){
+    const sel = pending
+      ? `tr.cat-row.pending[data-kind="${tr.dataset.kind}"] .budget-name-input`
+      : `tr.cat-row[data-cat-id="${tr.dataset.catId}"]:not(.pending) .budget-name-input`;
+    return (root)=>root.querySelector(sel);
+  }
+  return null;
 }
 
-// "+ Add {categoryName} income/expense" — contextualizes the nested add-
-// subcategory link to the category it's under, once that category has a
-// name; falls back to the plain "+ Add income"/"+ Add expense" wording
-// while it's still unnamed (though that row stays hidden until then — see
-// the 'named' class above — so in practice this branch is only reached
-// transiently, right before the row's own visibility catches up).
-function budgetAddSubLabel(cat, kind){
-  const name = (cat.name || '').trim();
-  const noun = kind === 'income' ? 'income' : 'expense';
-  return name ? `+ Add ${name} ${noun}` : `+ Add ${noun}`;
+// Wires a pending row's name input so committing it doesn't depend on
+// any one specific key — Enter, Tab, or simply clicking/tabbing away
+// (blur) all commit it, as long as there's a non-blank name typed;
+// leaving it blank just lets focus move on normally, nothing committed.
+// `commit(name)` does the actual draft mutation (push the new category/
+// subcategory, select it if applicable) and returns the id of the
+// category whose pending row should get focus next — but that auto-focus
+// only actually happens for Enter/Tab, matching the existing keyboard-
+// driven flow of rapid sequential entry. A blur commits the row without
+// forcing focus anywhere new — *unless* the blur happened because the
+// user clicked straight into another category/subcategory name field, in
+// which case that field would normally receive focus next regardless, and
+// our rebuild of the table (which replaces it with an equivalent new
+// element) shouldn't be what stops that from happening. Enter/Tab and the
+// resulting blur (rebuilding the DOM removes this input) can both fire
+// for the same keypress, so `committed` makes sure the commit itself only
+// happens once either way.
+function bindPendingCommit(input, commit){
+  let committed = false;
+  function tryCommit(focusNext, refocus){
+    if (committed) return;
+    const name = input.value;
+    if (!name.trim()) return;
+    committed = true;
+    const catId = commit(name);
+    if (focusNext) budgetFocusPending = { catId };
+    renderMid(); renderRight();
+    if (!focusNext && refocus){
+      const el = refocus(document.getElementById('midPanel'));
+      if (el) el.focus();
+    }
+  }
+  input.addEventListener('keydown', (e)=>{
+    if (e.key !== 'Enter' && e.key !== 'Tab') return;
+    // Only preempt the key's default action (Enter's implicit submit,
+    // Tab's focus-to-next-element) when there's actually something to
+    // commit — a blank pending row lets Tab fall through to normal
+    // browser focus navigation instead.
+    if (input.value.trim()) e.preventDefault();
+    tryCommit(true);
+  });
+  input.addEventListener('blur', (e)=>tryCommit(false, locateBudgetNameInput(e.relatedTarget)));
+}
+
+// Trailing pending category row — sits at the bottom of a whole Income/
+// Spending group, styled and laid out exactly like a real (but blank)
+// category row, complete with the always-visible chevron for alignment.
+// Same mechanism as buildGroup's pending subcategory row: it has no id of
+// its own and isn't in the draft yet; typing into it just types, and
+// pressing Enter is what commits it as a real top-level category (added
+// to `list`, opened). Focus then lands in *that* category's own pending
+// subcategory row (see budgetFocusPending) rather than back on this
+// group's next pending category row — naming a category flows straight
+// into naming its first subcategory. Unlike the nested pending row,
+// there's no "named" gating here — nothing above a top-level category to
+// withhold it on.
+function buildPendingCatRow(kind, list){
+  const label = `New ${kind} category`;
+  const tr = document.createElement('tr');
+  tr.className = 'cat-row nested pending';
+  tr.dataset.kind = kind; // lets locateBudgetNameInput re-find this row's
+                          // input by group after a blur-triggered re-render
+  const arrow = document.createElement('span');
+  arrow.className = 'arrow';
+  arrow.innerHTML = `<img src="icons/chevron-right.svg" alt="">`;
+  const { td, nameInput } = budgetNameCell({
+    value: '', placeholder: label, arrow, hideDelete: true,
+    onNameInput: ()=>{},
+  });
+  bindPendingCommit(nameInput, (name)=>{
+    const cat = { id: nextBudgetId(), name, subcategories: [] };
+    list.push(cat);
+    budgetOpenCats.add(cat.id);
+    return cat.id; // Enter/Tab land focus in this category's own pending
+                   // subcategory row — naming a category is almost always
+                   // immediately followed by naming its first subcategory.
+  });
+  tr.appendChild(td);
+  tr.insertAdjacentHTML('beforeend', budgetNumCells(new Array(12).fill(0), 0));
+  return tr;
 }
 
 /* ---- Budget editor table (Net/Income/Spending, editable) ---- */
@@ -1443,10 +1544,12 @@ function renderBudgetTable(){
   // Builds one Income or Spending group's rows: a bold category row per
   // draft category (always-visible chevron, editable name, delete-on-
   // hover), its subcategory rows nested underneath when open (selectable —
-  // clicking one shows its line items in the right panel), a nested
-  // "+ Add income/expense" link to append another subcategory, and monthly/
-  // grand totals rolled up from budgetCatDisplayMonthly regardless of
-  // whether the category is currently open.
+  // clicking one shows its line items in the right panel), a trailing
+  // blank/pending subcategory row that turns into a real one as soon as
+  // you start typing a name into it (see the pending row below — no
+  // separate "add subcategory" button to click first), and monthly/grand
+  // totals rolled up from budgetCatDisplayMonthly regardless of whether
+  // the category is currently open.
   function buildGroup(kind, list){
     const monthTotals = new Array(12).fill(0);
     let grandTotal = 0;
@@ -1470,15 +1573,15 @@ function renderBudgetTable(){
         value: cat.name, placeholder: label, arrow,
         onNameInput: (e)=>{
           cat.name = e.target.value;
-          // Live-update the nested "+ Add ..." row's visibility/label as
-          // the category is named, without a full renderMid() (which
-          // would drop focus out of this input on every keystroke).
-          const addRow = tbody.querySelector(`tr.budget-add-row.nested[data-cat-id="${cat.id}"]`);
-          if (addRow){
-            const hasName = !!cat.name.trim();
-            addRow.classList.toggle('named', hasName);
-            const btn = addRow.querySelector('.budget-add-link');
-            if (btn) btn.textContent = budgetAddSubLabel(cat, kind);
+          // Live-update the pending subcategory row's visibility and
+          // "New {category}" placeholder as the category is named/renamed,
+          // without a full renderMid() (which would drop focus out of this
+          // input on every keystroke).
+          const pendingRow = tbody.querySelector(`tr.sub-row.pending[data-cat-id="${cat.id}"]`);
+          if (pendingRow){
+            pendingRow.classList.toggle('named', !!cat.name.trim());
+            const pendingInput = pendingRow.querySelector('.budget-name-input');
+            if (pendingInput) pendingInput.placeholder = `New ${cat.name.trim()}`;
           }
         },
         onDelete: ()=>{
@@ -1526,12 +1629,38 @@ function renderBudgetTable(){
         rows.push(sr);
       });
 
-      rows.push(budgetAddRow(kind, ()=>{
-        const sub = { id: nextBudgetId(), name:'', items: [] };
+      // Trailing pending row: looks and sits exactly like a subcategory
+      // row, but isn't one yet — it has no id of its own and isn't in
+      // cat.subcategories. Typing into it just types, same as any text
+      // input; pressing Enter is what commits it (added to the draft as a
+      // real subcategory), at which point a fresh pending row takes its
+      // place and gets focus, ready for the next one. A new pending row
+      // never appears before that — there's only ever one open "build"
+      // slot per category at a time. Hidden until the category itself has
+      // a name, same reasoning as the old add-subcategory button: no
+      // ambiguous, unnamed category with subcategories already hanging
+      // off it.
+      const pendingRow = document.createElement('tr');
+      pendingRow.className = 'sub-row pending' + (isOpen ? ' open' : '') + (cat.name.trim() ? ' named' : '');
+      pendingRow.dataset.catId = cat.id;
+      const { td: pendingTd, nameInput: pendingInput } = budgetNameCell({
+        value: '', placeholder: `New ${cat.name.trim()}`, isSub: true, hideDelete: true,
+        onNameInput: ()=>{},
+      });
+      bindPendingCommit(pendingInput, (name)=>{
+        const sub = { id: nextBudgetId(), name, items: [] };
         cat.subcategories.push(sub);
-        budgetFocusId = sub.id;
-        renderMid(); renderRight();
-      }, { nested: true, open: isOpen, named: !!cat.name.trim(), label: budgetAddSubLabel(cat, kind), catId: cat.id }));
+        // Select the newly-committed subcategory (as if it had been
+        // clicked) so its line items are right there in the right panel
+        // to start filling in — this happens regardless of how the row
+        // was committed, unlike the Enter/Tab-only focus-forwarding below.
+        budgetSelection = { kind, catId: cat.id, subId: sub.id };
+        return cat.id; // Enter/Tab land focus in the next pending row for
+                        // this same category, ready for the next one.
+      });
+      pendingRow.appendChild(pendingTd);
+      pendingRow.insertAdjacentHTML('beforeend', budgetNumCells(new Array(12).fill(0), 0));
+      rows.push(pendingRow);
     });
 
     return { monthTotals, grandTotal, rows };
@@ -1567,24 +1696,12 @@ function renderBudgetTable(){
 
   tbody.appendChild(groupHeaderRow('Income', incomeGroup, 'group-total-income'));
   incomeGroup.rows.forEach(row=>tbody.appendChild(row));
-  tbody.appendChild(budgetAddRow('income', ()=>{
-    const cat = { id: nextBudgetId(), name:'', subcategories: [] };
-    budgetDraft.income.push(cat);
-    budgetOpenCats.add(cat.id);
-    budgetFocusId = cat.id;
-    renderMid(); renderRight();
-  }));
+  tbody.appendChild(buildPendingCatRow('income', budgetDraft.income));
   tbody.appendChild(groupGapRow(14));
 
   tbody.appendChild(groupHeaderRow('Spending', spendingGroup, 'group-total-spending'));
   spendingGroup.rows.forEach(row=>tbody.appendChild(row));
-  tbody.appendChild(budgetAddRow('expense', ()=>{
-    const cat = { id: nextBudgetId(), name:'', subcategories: [] };
-    budgetDraft.expenses.push(cat);
-    budgetOpenCats.add(cat.id);
-    budgetFocusId = cat.id;
-    renderMid(); renderRight();
-  }));
+  tbody.appendChild(buildPendingCatRow('expense', budgetDraft.expenses));
 
   return table;
 }

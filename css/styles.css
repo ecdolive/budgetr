@@ -127,7 +127,7 @@
     display:flex;
     flex-direction:column;
     gap:16px;
-    padding:0 8px 24px;
+    padding:0 8px 16px;
   }
   .search-wrap{position:relative;}
   .search-wrap .search-icon{
@@ -278,7 +278,7 @@
      Transactions tab only) can sit above the scrolling .table-scroll
      without being pushed off. */
   .mid-body{
-    padding:0 8px 60px;
+    padding:16px 8px 0;
     flex:1 1 auto;
     min-height:0;
     overflow:hidden;
@@ -293,7 +293,7 @@
     display:inline-flex;
     align-items:center;
     justify-content:center;
-    padding:0 24px;
+    padding:0 12px;
     border-radius:20px;
     font-size:13px;
     font-weight:700;
@@ -342,7 +342,7 @@
      exactly that gap so the thead's stuck and resting positions coincide
      — every other row-to-row gap (what border-spacing is actually for) is
      untouched. */
-  table.ledger{width:100%;border-collapse:separate;border-spacing:0 4px;margin-top:-4px;}
+  table.ledger{width:100%;border-collapse:separate;border-spacing:0 4px;margin-top:-4px;padding-bottom:16px;}
   /* Sticky to the top of the table's own .table-scroll (the actual
      scrolling box — see the .panel/.mid-body comments above) — position:
      sticky on each <th> (not the <thead> itself, which isn't reliably
@@ -519,11 +519,17 @@
     top:0;
     z-index:2;
     background:var(--bg-right);
-    padding:24px 16px 24px;
+    /* height:4rem; */
+    flex-shrink: 0;
+    flex-flow:column;
+    display: flex;
+    align-items: start;
+    justify-content: center;
+    padding:16px;
   }
   .right-eyebrow{font-size:11.5px;color:var(--text-muted);font-weight:600;padding-bottom:2px;}
   .right-title{font-size:18px;font-weight:700;}
-  .right-body{padding:0 16px 24px;}
+  .right-body{padding:0 16px 16px;}
   .right-total-row{
     display:flex;justify-content:space-between;align-items:baseline;
     margin-bottom:24px;
@@ -534,8 +540,7 @@
   .right-total-value.pos{color:var(--positive);}
   .right-sub{font-size:11px;color:var(--text-muted);}
 
-  table.txn-list{width:100%;border-collapse:collapse;}
-  table.txn-list{table-layout:fixed;}
+  table.txn-list{width:100%;border-collapse:collapse;table-layout:fixed;}
   /* Sticky under .right-header — whose height varies with the selected
      subcategory name's line count, so (unlike the mid panel's fixed-height
      .mid-title) the offset can't just be a constant: renderRight measures
@@ -676,9 +681,9 @@
   .freq-months-grid .pill{width:100%;}
 
   /* ================= BUDGET EDITOR ================= */
-  /* .budget-editor-header/.budget-editor-toolbar own their inset as
-     padding/height (not margin), same reasoning as .mid-title/.pills —
-     see the header comment above them. */
+  /* .budget-editor-header owns its inset as padding/height (not margin),
+     same reasoning as .mid-title/.pills — see the header comment above
+     them. */
   .budget-editor-header{
     position:sticky;
     top:0;
@@ -693,21 +698,8 @@
   }
   .budget-editor-title{font-size:22px;font-weight:700;}
   .budget-editor-actions{display:flex;gap:12px;}
-  .budget-editor-toolbar{
-    position:sticky;
-    top:4rem;
-    z-index:2;
-    background:var(--bg-mid);
-    height:4rem;
-    flex-shrink:0;
-    display:flex;
-    align-items:center;
-    justify-content:flex-end;
-    padding:0 16px;
-    border-bottom:1px solid var(--border-soft);
-  }
   .budget-editor-body{
-    padding:24px 8px 60px;
+    padding:16px 8px 0;
     display:flex;
     flex-direction:column;
     gap:12px;
@@ -819,22 +811,18 @@
   table.ledger-grouped tr.budget-group-row .catname{gap:0;}
   table.ledger-grouped tr.budget-group-row .arrow{width:0;margin-right:0;overflow:hidden;}
   table.ledger-grouped tr.budget-group-row .arrow img{opacity:0;}
-  /* "+ Add income"/"+ Add expense" link rows — centered, spanning every
-     column. The nested variant (adds a subcategory) only shows while its
-     parent category is open; the top-level one (adds a category) is
-     always visible, giving the empty Income/Spending groups their "Add
-     income"/"Add expense" zero state. */
-  tr.budget-add-row td{height:auto;padding:12px;text-align:center;white-space:normal;}
-  tr.budget-add-row.nested{display:none;}
-  /* A freshly-added category has no name yet — withhold its "add
-     subcategory" row (even while open) until it's been named, so there's
-     no unnamed, ambiguous category floating around with subcategories
-     already hanging off it. */
-  tr.budget-add-row.nested.open.named{display:table-row;}
-  .budget-add-link{
-    display:inline-flex;align-items:center;gap:8px;
-    background:transparent;border:none;cursor:pointer;
-    color:var(--accent-teal);font-size:12.5px;font-weight:700;
-    padding:8px 12px;border-radius:var(--radius-sm);
-  }
-  .budget-add-link:hover{background:var(--bg-row-hover);}
+  /* Trailing pending subcategory row (see buildGroup in app.js) — looks
+     and sits exactly like a real sub-row (same indent, placeholder-style
+     empty name) and follows the same open/closed visibility as one, but
+     stays hidden until its category has a name, same reasoning as the old
+     add-subcategory button it replaced: no unnamed, ambiguous category
+     with subcategories already hanging off it. */
+  tr.sub-row.pending{display:none;}
+  tr.sub-row.pending.open.named{display:table-row;}
+  /* Trailing pending category row (see buildPendingCatRow in app.js) —
+     looks and sits exactly like a real (but blank) category row, always
+     visible at the bottom of its group; giving the empty Income/Spending
+     groups their zero state without a separate add button. Unlike a real
+     category row it isn't collapsible, so it keeps the plain cursor
+     instead of tr.cat-row's pointer. */
+  tr.cat-row.pending{cursor:default;}
