@@ -372,14 +372,45 @@ function draftToBudgetsRaw(draft){
 // else BUDGETS is consumed (see buildBudgetRollups above). The editor UI
 // always displays/accepts positive numbers for expenses and flips the
 // sign on read/write so users never have to think about it.
+function budgetItemMonthly(item){
+  return resolveLineItem({ freq: item.freq, amount: item.amount }, DATA.year);
+}
 function budgetItemYearTotal(item){
-  return resolveLineItem({ freq: item.freq, amount: item.amount }, DATA.year).reduce((a, b) => a + b, 0);
+  return budgetItemMonthly(item).reduce((a, b) => a + b, 0);
+}
+function budgetSubMonthly(sub){
+  const out = new Array(12).fill(0);
+  sub.items.forEach(it => budgetItemMonthly(it).forEach((v,i)=>out[i]+=v));
+  return out.map(v=>Math.round(v*100)/100);
 }
 function budgetSubYearTotal(sub){
   return sub.items.reduce((a, it) => a + budgetItemYearTotal(it), 0);
 }
 function budgetCatYearTotal(cat){
   return cat.subcategories.reduce((a, s) => a + budgetSubYearTotal(s), 0);
+}
+// Per-month display arrays for the budget editor's ledger table — computed
+// straight from the draft's own category/subcategory objects (by reference,
+// via budgetSubMonthly above) rather than by round-tripping through
+// draftToBudgetsRaw/resolveBudgets/buildBudgetRollups, so two categories or
+// subcategories that happen to share a name (e.g. both freshly added and
+// still blank) never collide the way a name-keyed rollup would. Expense
+// amounts are stored negative (spend) same as everywhere else in the app;
+// flipped here to a positive "planned spend" magnitude for display, matching
+// buildBudgetRollups' sign convention for every other ledger table.
+function budgetSubDisplayMonthly(sub, kind){
+  const raw = budgetSubMonthly(sub);
+  return kind === 'expense' ? raw.map(v=>-v) : raw;
+}
+function budgetCatDisplayMonthly(cat, kind){
+  const out = new Array(12).fill(0);
+  cat.subcategories.forEach(sub => budgetSubDisplayMonthly(sub, kind).forEach((v,i)=>out[i]+=v));
+  return out.map(v=>Math.round(v*100)/100);
+}
+function budgetGroupDisplayMonthly(list, kind){
+  const out = new Array(12).fill(0);
+  list.forEach(cat => budgetCatDisplayMonthly(cat, kind).forEach((v,i)=>out[i]+=v));
+  return out.map(v=>Math.round(v*100)/100);
 }
 function draftAnnualTotals(draft){
   const incomeTotal = draft.income.reduce((a, c) => a + budgetCatYearTotal(c), 0);
@@ -398,22 +429,23 @@ function updateBudgetRightSummary(){
 function enterBudgetEditor(){
   budgetDraft = budgetsRawToDraft(BUDGETS_RAW);
   budgetEditMode = true;
-  budgetEditTab = 'expenses';
   budgetOpenCats = new Set();
+  budgetSelection = null;
+  budgetSummaryEls = null;
+  budgetRightSubTotalEl = null;
   searchQuery = '';
-  document.getElementById('searchInput').value = '';
   document.getElementById('csvPicker').disabled = true;
   document.getElementById('budgetPicker').disabled = true;
-  document.getElementById('editBudgetBtn').disabled = true;
   renderAll();
 }
 function exitBudgetEditor(){
   budgetEditMode = false;
   budgetDraft = null;
+  budgetSelection = null;
   budgetSummaryEls = null;
+  budgetRightSubTotalEl = null;
   document.getElementById('csvPicker').disabled = false;
   document.getElementById('budgetPicker').disabled = false;
-  document.getElementById('editBudgetBtn').disabled = false;
 }
 function cancelBudgetEdit(){
   exitBudgetEditor();
@@ -500,23 +532,36 @@ let BUDGETS_RAW = emptyBudgets();
 let BUDGETS = resolveBudgets(BUDGETS_RAW, DATA.year);
 let ROLL = buildBudgetRollups(BUDGETS, DATA.categories, DATA.incomeSubcats);
 
-let timeframe = 'year';      // 'year' | 0-11 (month index)
+let timeframe = 'year';      // 'year' | 0-11 (month index) | 'transactions'
+let monthViewOrigin = 'year'; // timeframe to return to via the month view's back button
 let pill = 'ytd';            // 'ytd' | 'projection' | 'plan'  (Year view only)
-let activeTab = 'expenses';  // 'income' | 'expenses'
 let openCats = new Set();
+// Which of the Year/Month tables' Income/Spending groups are expanded,
+// revealing their category rows. Both start open so the breakdown is
+// visible right away; independent from openCats, which tracks individual
+// category rows within an already-expanded group.
+let openGroups = new Set(['income','expenses']);
 let selectedSub = null;      // { kind:'expense'|'income', category, subcategory } | null — for income, category is the
                               // top-level income source and subcategory is a rolled-up transaction description
 let searchQuery = '';
-let txnSort = { key: 'date', dir: 1 };
+let txnSort = { key: 'date', dir: -1 }; // default: newest first
 
 // Budget editor — a distinct "mode" (like search) that takes over the mid
 // and right panels. See the BUDGET EDITOR section below.
 let budgetEditMode = false;
-let budgetDraft = null;      // { expenses:[{id,name,subcategories:[{id,name,items:[{id,freq,label,amount}]}]}], income:[{id,name,items:[...]}] }
-let budgetEditTab = 'expenses';  // 'expenses' | 'income', within the editor
+let budgetDraft = null;      // { expenses:[{id,name,subcategories:[{id,name,items:[{id,freq,label,amount}]}]}], income:[{id,name,subcategories:[...]}] }
 let budgetOpenCats = new Set();  // open category ids, editor-local (separate from openCats)
-let budgetFocusId = null;        // id of a newly-added row to focus after the next render
-let budgetSummaryEls = null;     // right-panel live-total <span> refs while editing
+let budgetFocusPending = null;   // { catId } — after Enter commits a pending category or
+                                  // subcategory row (see buildPendingCatRow/buildGroup),
+                                  // focus that category's own pending-subcategory row on
+                                  // the next render: naming a category flows straight into
+                                  // naming its first subcategory, and committing a
+                                  // subcategory flows straight into naming the next one —
+                                  // either way, rapid sequential entry never needs a click
+let budgetSummaryEls = null;     // right-panel live-total <span> refs while editing, when nothing is selected
+let budgetSelection = null;      // { kind:'expense'|'income', catId, subId } | null — the subcategory (if any)
+                                  // currently selected in the editor's table, shown/edited in the right panel
+let budgetRightSubTotalEl = null; // right-panel live-total <span> ref for the selected subcategory
 
 /* ============================================================
    HELPERS
@@ -626,26 +671,28 @@ function renderLeftNav(){
   const wrap = document.getElementById('tfList');
   wrap.innerHTML = '';
 
-  const yearNet = DATA.net.reduce((a,b)=>a+b,0);
-  wrap.appendChild(tfItem('Year', yearNet, 'year'));
+  // The Budget tab stays selected while viewing a month, too — a month
+  // view is reached from (and its back button returns to) the Budget tab,
+  // so it reads as a drill-down within Budget rather than a separate page.
+  wrap.appendChild(navItem('Budget', 'year', timeframe === 'year' || typeof timeframe === 'number'));
+  wrap.appendChild(navItem('Transactions', 'transactions'));
 
-  const cmi = DATA.currentMonthIndex;
-  for (let i=0;i<12;i++){
-    const hasData = DATA.monthsPresent.includes(i);
-    const val = hasData ? DATA.net[i] : monthPlanNet(i);
-    const isFuture = cmi === null ? true : i > cmi;
-    wrap.appendChild(tfItem(monthName(i), val, i, isFuture));
-  }
+  // Individual month tabs used to live here, each showing that month's net
+  // value (via monthPlanNet/DATA.net) — a month view is now reached by
+  // clicking that month's column header in the Year table instead, and the
+  // remaining left-nav tabs no longer show a net dollar figure at all.
+  // monthPlanNet is kept for that per-month net figure, since it'll be
+  // needed again once the month view (or its header) surfaces it elsewhere.
 }
-function tfItem(label, value, key, isFuture){
+function navItem(label, key, isActive){
   const div = document.createElement('div');
-  div.className = 'tf-item' + (timeframe===key ? ' active' : '') + (isFuture ? ' future' : '');
-  const cls = value>0?'pos':(value<0?'neg':'zero');
-  div.innerHTML = `<span class="tf-label">${label}</span><span class="net ${isFuture?'':cls}">${value===0?'–':fmtSigned(value)}</span>`;
+  div.className = 'tf-item' + ((isActive ?? timeframe===key) ? ' active' : '');
+  div.innerHTML = `<span class="tf-label">${label}</span>`;
   div.addEventListener('click', ()=>{
     timeframe = key;
+    // The transactions filter is local to that tab — leaving it resets the
+    // filter so Transactions is back to showing everything next time.
     searchQuery = '';
-    document.getElementById('searchInput').value = '';
     renderAll();
   });
   return div;
@@ -664,25 +711,55 @@ function wrapScroll(el){
   return wrap;
 }
 
-function renderMid(){
+// opts.resetScroll: renderMid() rebuilds the table (and its .table-scroll
+// wrapper) from scratch on every call, which would otherwise always reset
+// scroll position to the top — fine for an actual page change (a new
+// timeframe/tab/mode, always routed through renderAll(), which passes
+// resetScroll:true), but wrong for an in-place update that should leave
+// you exactly where you were (selecting/expanding a row, editing a budget
+// item, deleting a category, ...) — every OTHER caller of renderMid()
+// preserves scroll by default.
+function renderMid(opts){
+  const preserveScroll = !(opts && opts.resetScroll);
   const mid = document.getElementById('midPanel');
+  let savedScrollTop = 0, savedScrollLeft = 0;
+  if (preserveScroll){
+    const prevScroll = mid.querySelector('.table-scroll');
+    if (prevScroll){ savedScrollTop = prevScroll.scrollTop; savedScrollLeft = prevScroll.scrollLeft; }
+  }
+  // Applying scrollTop/scrollLeft only needs layout (which the browser
+  // computes synchronously on demand), not an actual painted frame, so
+  // this runs synchronously right before each of this function's exit
+  // points below rather than being deferred — no flash of "scrolled to
+  // top" first, and no dependency on a rAF callback actually getting
+  // scheduled (e.g. while the tab is backgrounded).
+  function restoreScroll(){
+    if (!savedScrollTop && !savedScrollLeft) return;
+    const ts = mid.querySelector('.table-scroll');
+    if (ts){ ts.scrollTop = savedScrollTop; ts.scrollLeft = savedScrollLeft; }
+  }
   mid.innerHTML = '';
 
   if (budgetEditMode){
     renderBudgetEditor(mid);
-    if (budgetFocusId){
-      const id = budgetFocusId;
-      budgetFocusId = null;
-      const el = mid.querySelector(
-        `[data-cat-id="${id}"] > .budget-cat-header .budget-name-input, [data-sub-id="${id}"] > .budget-sub-header .budget-name-input`
-      );
-      if (el){ el.focus(); if (el.select) el.select(); }
+    if (budgetFocusPending){
+      const catId = budgetFocusPending.catId;
+      budgetFocusPending = null;
+      // The row Enter just committed is gone from the DOM (rebuilt as a
+      // real category/subcategory row further up the list) — what we want
+      // focus on is that category's pending-subcategory row, always blank,
+      // so a plain focus() is enough (nothing to position a cursor
+      // within).
+      const el = mid.querySelector(`tr.sub-row.pending[data-cat-id="${catId}"] .budget-name-input`);
+      if (el) el.focus();
     }
+    restoreScroll();
     return;
   }
 
-  if (searchQuery){
-    mid.appendChild(renderSearchResultsTable());
+  if (timeframe === 'transactions'){
+    renderTransactionsPage(mid);
+    restoreScroll();
     return;
   }
 
@@ -690,28 +767,124 @@ function renderMid(){
   body.className = 'mid-body';
 
   if (timeframe === 'year'){
-    mid.appendChild(renderPills());
-    body.appendChild(renderCards());
+    const bar = document.createElement('div');
+    bar.className = 'mid-title year-toolbar';
+    const left = document.createElement('div');
+    left.className = 'year-toolbar-left';
+    const yearLabel = document.createElement('span');
+    // DATA.year is derived from the loaded CSV (the year with the most
+    // transactions) — for now every transaction is assumed to fall in the
+    // same year, so this is just that year. Once multi-year data is
+    // supported this title will need to reflect that instead.
+    yearLabel.textContent = String(DATA.year);
+    left.appendChild(yearLabel);
+    left.appendChild(renderPills());
+    bar.appendChild(left);
+    // Export/Edit only make sense while looking at the plan itself, not
+    // the YTD/Forecast actuals-driven views.
+    if (pill === 'plan') bar.appendChild(renderBudgetActions());
+    mid.appendChild(bar);
+    // No summary cards here — the Net/Income/Spending rows built into the
+    // table below (see renderYearTable) replace them.
     body.appendChild(wrapScroll(renderYearTable()));
   } else {
-    const title = document.createElement('div');
-    title.className = 'mid-title';
-    title.textContent = monthFullName(timeframe);
-    mid.appendChild(title);
-    body.appendChild(renderCards());
+    const bar = document.createElement('div');
+    bar.className = 'mid-title month-toolbar';
+
+    const left = document.createElement('div');
+    left.className = 'month-toolbar-left';
+    const backBtn = document.createElement('button');
+    backBtn.type = 'button';
+    backBtn.className = 'back-btn';
+    backBtn.title = 'Back to Budget';
+    backBtn.innerHTML = `<img src="icons/chevron-left.svg" alt="Back to Budget">`;
+    // Always returns to whatever view the month was opened from — prev/next
+    // month navigation below only ever changes timeframe, never
+    // monthViewOrigin, so this keeps working the same regardless of how
+    // many months the user has stepped through.
+    backBtn.addEventListener('click', ()=>{
+      timeframe = monthViewOrigin;
+      renderAll();
+    });
+    left.appendChild(backBtn);
+    const titleText = document.createElement('span');
+    titleText.textContent = `${monthFullName(timeframe)} ${DATA.year}`;
+    left.appendChild(titleText);
+    bar.appendChild(left);
+
+    const nav = document.createElement('div');
+    nav.className = 'month-toolbar-nav';
+    const prevBtn = document.createElement('button');
+    prevBtn.type = 'button';
+    prevBtn.className = 'back-btn';
+    prevBtn.title = 'Previous month';
+    prevBtn.innerHTML = `<img src="icons/chevron-left.svg" alt="Previous month">`;
+    prevBtn.disabled = timeframe === 0;
+    prevBtn.addEventListener('click', ()=>{
+      timeframe = timeframe - 1;
+      renderAll();
+    });
+    const nextBtn = document.createElement('button');
+    nextBtn.type = 'button';
+    nextBtn.className = 'back-btn';
+    nextBtn.title = 'Next month';
+    nextBtn.innerHTML = `<img src="icons/chevron-right.svg" alt="Next month">`;
+    nextBtn.disabled = timeframe === 11;
+    nextBtn.addEventListener('click', ()=>{
+      timeframe = timeframe + 1;
+      renderAll();
+    });
+    nav.appendChild(prevBtn);
+    nav.appendChild(nextBtn);
+
+    const right = document.createElement('div');
+    right.className = 'month-toolbar-right';
+    right.appendChild(nav);
+    bar.appendChild(right);
+
+    mid.appendChild(bar);
+    // No summary cards here — same as the Year view, the Net/Income/
+    // Spending rows built into the table below replace them.
     body.appendChild(wrapScroll(renderMonthTable()));
   }
   mid.appendChild(body);
+  restoreScroll();
+}
+
+// Export/Edit actions — shown top-right of the Year toolbar, but only
+// while the "Budget" pill (the plan itself) is active; hidden on the
+// YTD/Forecast pills, the month drill-down, and the Transactions page,
+// none of which are viewing the plan directly.
+function renderBudgetActions(){
+  const wrap = document.createElement('div');
+  wrap.className = 'mid-title-actions';
+  const exportBtn = document.createElement('button');
+  exportBtn.type = 'button';
+  exportBtn.className = 'file-btn';
+  exportBtn.textContent = 'Export';
+  exportBtn.addEventListener('click', downloadBudgetsJSON);
+  const editBtn = document.createElement('button');
+  editBtn.type = 'button';
+  editBtn.className = 'file-btn primary';
+  editBtn.textContent = 'Edit';
+  editBtn.addEventListener('click', enterBudgetEditor);
+  wrap.appendChild(exportBtn);
+  wrap.appendChild(editBtn);
+  return wrap;
 }
 
 function renderPills(){
   const wrap = document.createElement('div');
   wrap.className = 'pills';
-  [['ytd','YTD'],['projection','Projection'],['plan','Plan']].forEach(([key,label])=>{
+  [['ytd','YTD'],['projection','Forecast'],['plan','Budget']].forEach(([key,label])=>{
     const b = document.createElement('button');
     b.className = 'pill' + (pill===key?' active':'');
     b.textContent = label;
-    b.addEventListener('click', ()=>{ pill = key; renderAll(); });
+    // renderMid() directly (not renderAll()) — switching YTD/Forecast/
+    // Budget is an in-place update of the same table's numbers, not a
+    // page change, so it should leave scroll position alone the same way
+    // selecting/expanding a row does (see renderMid's resetScroll comment).
+    b.addEventListener('click', ()=>{ pill = key; renderMid(); renderRight(); });
     wrap.appendChild(b);
   });
   return wrap;
@@ -730,67 +903,39 @@ function projectedMonthly(actualMonthly, budgetMonthly){
   return out;
 }
 
-/* ---- Cards ---- */
-function renderCards(){
-  const wrap = document.createElement('div');
-  wrap.className = 'cards';
-
-  let incomeActual, expensesActual;
-  if (timeframe === 'year'){
-    if (pill === 'ytd'){
-      incomeActual = DATA.monthsPresent.reduce((a,i)=>a+DATA.income[i],0);
-      expensesActual = DATA.monthsPresent.reduce((a,i)=>a+DATA.expenses[i],0);
-    } else if (pill === 'plan'){
-      incomeActual = ROLL.incomeTotalMonthly.reduce((a,b)=>a+b,0);
-      expensesActual = ROLL.expenseTotalMonthly.reduce((a,b)=>a+b,0);
-    } else { // projection
-      incomeActual = projectedMonthly(DATA.income, ROLL.incomeTotalMonthly).reduce((a,b)=>a+b,0);
-      expensesActual = projectedMonthly(DATA.expenses, ROLL.expenseTotalMonthly).reduce((a,b)=>a+b,0);
-    }
-  } else {
-    incomeActual = DATA.income[timeframe] || 0;
-    expensesActual = DATA.expenses[timeframe] || 0;
-  }
-  const netActual = incomeActual - expensesActual;
-
-  // On the YTD pill, "Plan" should read as "planned through the months
-  // we actually have data for" — not the full year — so it's a fair
-  // comparison against the actual value shown above it.
-  const yearPlanSum = (monthly) => timeframe==='year' && pill==='ytd'
-    ? DATA.monthsPresent.reduce((a,i)=>a+monthly[i],0)
-    : monthly.reduce((a,b)=>a+b,0);
-  const incomePlan = timeframe==='year' ? yearPlanSum(ROLL.incomeTotalMonthly) : ROLL.incomeTotalMonthly[timeframe];
-  const expensesPlan = timeframe==='year' ? yearPlanSum(ROLL.expenseTotalMonthly) : ROLL.expenseTotalMonthly[timeframe];
-  const netPlan = incomePlan - expensesPlan;
-
-  wrap.appendChild(card('Income', incomeActual, incomePlan, 'income', false));
-  wrap.appendChild(card('Expenses', expensesActual, expensesPlan, 'expenses', false));
-  wrap.appendChild(card('Net', netActual, netPlan, null, true));
-
-  return wrap;
+// A blank spacer row between a grouped ledger table's Net/Income/Spending
+// sections — wider than the table's normal row-to-row border-spacing, to
+// read as a section break rather than just another row. colspan must match
+// the table's column count (14 for the Year table, 4 for the Month table).
+function groupGapRow(colspan){
+  const tr = document.createElement('tr');
+  tr.className = 'group-gap';
+  tr.innerHTML = `<td colspan="${colspan}"></td>`;
+  return tr;
 }
-function card(label, actual, plan, tabKey, colorBySign){
-  const div = document.createElement('div');
-  div.className = 'card' + (tabKey ? ' tab' : '') + (tabKey && activeTab===tabKey ? ' active' : '');
-  const valCls = colorBySign ? ('card-value num '+signCls(actual)) : 'card-value num';
-  const valText = colorBySign ? fmtSigned(actual) : fmt(actual);
-  const planText = colorBySign ? fmtSigned(plan) : fmt(plan);
-  div.innerHTML = `
-    <div class="card-head"><span class="card-label">${label}</span><span class="${valCls}">${valText}</span></div>
-    <div class="card-sub"><span>Plan</span><span class="amt num">${planText}</span></div>
-  `;
-  if (tabKey){
-    div.addEventListener('click', ()=>{ activeTab = tabKey; selectedSub = null; renderAll(); });
-  }
-  return div;
+function emptyGroupRow(message, colspan){
+  const tr = document.createElement('tr');
+  tr.className = 'empty-cat-row';
+  tr.innerHTML = `<td colspan="${colspan}" class="empty-table">${message}</td>`;
+  return tr;
 }
 
 /* ---- Year table ---- */
 function renderYearTable(){
   const table = document.createElement('table');
-  table.className = 'ledger ledger-year';
+  table.className = 'ledger ledger-year ledger-grouped';
   const thead = document.createElement('thead');
-  thead.innerHTML = `<tr><th>Category</th>${MONTHS.map(m=>`<th>${m}</th>`).join('')}<th>Total</th></tr>`;
+  // Each month header is the entry point into that month's Plan/Actual/
+  // Difference view — the individual month tabs that used to live in the
+  // left nav were removed in favor of clicking the column here.
+  thead.innerHTML = `<tr><th></th>${MONTHS.map((m,i)=>`<th class="month-link" data-month="${i}">${m}</th>`).join('')}<th>Total</th></tr>`;
+  thead.querySelectorAll('th.month-link').forEach(th=>{
+    th.addEventListener('click', ()=>{
+      monthViewOrigin = timeframe;
+      timeframe = Number(th.dataset.month);
+      renderAll();
+    });
+  });
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   table.appendChild(tbody);
@@ -798,103 +943,109 @@ function renderYearTable(){
   const noDash = new Array(12).fill(false);
   const numCell = (v, i, dashMask) => `<td class="num${plannedMask[i]?' planned':''}">${dashMask[i]?'<span class="dash">–</span>':fmt(v)}</td>`;
 
-  if (activeTab === 'expenses'){
-    const categories = mergedExpenseCategories();
-    if (categories.length === 0){
-      tbody.innerHTML = `<tr><td colspan="14" class="empty-table">No expense categories loaded yet.</td></tr>`;
-    } else {
-      let grandTotal = 0;
-      const monthTotals = new Array(12).fill(0);
-      categories.forEach(cat=>{
-        const { values, dashMask } = yearRowValues(cat.monthly, ROLL.expenseCategoryMonthly[cat.name] || new Array(12).fill(0));
-        values.forEach((v,i)=>monthTotals[i]+=v);
-        const total = values.reduce((a,b)=>a+b,0);
-        grandTotal += total;
-        const isOpen = openCats.has(cat.name);
-        const hasSelectedSub = !isOpen && selectedSub && selectedSub.kind==='expense' && selectedSub.category===cat.name;
-        const tr = document.createElement('tr');
-        tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
-        tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
-          values.map((v,i)=>numCell(v,i,dashMask)).join('') +
-          `<td class="num">${fmt(total)}</td>`;
-        tr.addEventListener('click', ()=>{
-          if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
-          renderMid();
-        });
-        tbody.appendChild(tr);
+  // Income and Spending render as two collapsible groups within the same
+  // table (rather than the old Income/Expenses tab-switched single table),
+  // topped by a non-interactive Net row summarizing both. Group totals are
+  // needed for Net regardless of whether a group is currently expanded, so
+  // buildGroup always computes them and only builds the detail <tr>s when
+  // open — see buildGroup below.
+  function buildGroup(kind, categories, catBudgetMonthly, subBudgetMonthly, isOpen){
+    const monthTotals = new Array(12).fill(0);
+    let grandTotal = 0;
+    const rows = [];
+    categories.forEach(cat=>{
+      const { values, dashMask } = yearRowValues(cat.monthly, catBudgetMonthly[cat.name] || new Array(12).fill(0));
+      values.forEach((v,i)=>monthTotals[i]+=v);
+      const total = values.reduce((a,b)=>a+b,0);
+      grandTotal += total;
+      if (!isOpen) return;
 
-        cat.subcategories.forEach(sub=>{
-          const subBudget = ROLL.expenseSubMonthly[cat.name+'||'+sub.name] || new Array(12).fill(0);
-          const { values: subVals, dashMask: subDash } = yearRowValues(sub.monthly, subBudget);
-          const subTotal = subVals.reduce((a,b)=>a+b,0);
-          const isSel = selectedSub && selectedSub.kind==='expense' && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
-          const sr = document.createElement('tr');
-          sr.className = 'sub-row' + (isOpen?' open':'') + (isSel?' selected':'');
-          sr.innerHTML = `<td><span class="cell-label">${sub.name}</span></td>` +
-            subVals.map((v,i)=>numCell(v,i,subDash)).join('') +
-            `<td class="num">${fmt(subTotal)}</td>`;
-          sr.addEventListener('click', (e)=>{
-            e.stopPropagation();
-            selectSub({ kind:'expense', category: cat.name, subcategory: sub.name });
-          });
-          tbody.appendChild(sr);
-        });
+      const isCatOpen = openCats.has(cat.name);
+      const hasSelectedSub = !isCatOpen && selectedSub && selectedSub.kind===kind && selectedSub.category===cat.name;
+      const tr = document.createElement('tr');
+      tr.className = 'cat-row nested' + (hasSelectedSub?' has-selection':'');
+      tr.innerHTML = `<td><span class="catname"><span class="arrow${isCatOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
+        values.map((v,i)=>numCell(v,i,dashMask)).join('') +
+        `<td class="num">${fmt(total)}</td>`;
+      tr.addEventListener('click', ()=>{
+        if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
+        renderMid();
       });
-      const trTotal = document.createElement('tr');
-      trTotal.className = 'total-row';
-      trTotal.innerHTML = `<td>Total</td>` + monthTotals.map((v,i)=>numCell(v,i,noDash)).join('') + `<td class="num">${fmt(grandTotal)}</td>`;
-      tbody.appendChild(trTotal);
+      rows.push(tr);
+
+      cat.subcategories.forEach(sub=>{
+        const subBudget = subBudgetMonthly[cat.name+'||'+sub.name] || new Array(12).fill(0);
+        const { values: subVals, dashMask: subDash } = yearRowValues(sub.monthly, subBudget);
+        const subTotal = subVals.reduce((a,b)=>a+b,0);
+        const isSel = selectedSub && selectedSub.kind===kind && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
+        const sr = document.createElement('tr');
+        sr.className = 'sub-row' + (isCatOpen?' open':'') + (isSel?' selected':'');
+        sr.innerHTML = `<td><span class="cell-label">${sub.name}</span></td>` +
+          subVals.map((v,i)=>numCell(v,i,subDash)).join('') +
+          `<td class="num">${fmt(subTotal)}</td>`;
+        sr.addEventListener('click', (e)=>{
+          e.stopPropagation();
+          selectSub({ kind, category: cat.name, subcategory: sub.name });
+        });
+        rows.push(sr);
+      });
+    });
+    return { monthTotals, grandTotal, rows };
+  }
+
+  const incomeGroup = buildGroup('income', mergedIncomeSubcats(), ROLL.incomeCategoryMonthly, ROLL.incomeSubMonthly, openGroups.has('income'));
+  const spendingGroup = buildGroup('expense', mergedExpenseCategories(), ROLL.expenseCategoryMonthly, ROLL.expenseSubMonthly, openGroups.has('expenses'));
+
+  // Net row — derived from both groups' totals, always visible regardless
+  // of which (if either) group is expanded; not collapsible or selectable.
+  const netMonthTotals = incomeGroup.monthTotals.map((v,i)=>v - spendingGroup.monthTotals[i]);
+  const netGrandTotal = incomeGroup.grandTotal - spendingGroup.grandTotal;
+  const netCell = (v, i) => `<td class="num${plannedMask[i]?' planned':' '+signCls(v)}">${fmt(v)}</td>`;
+  const netRow = document.createElement('tr');
+  netRow.className = 'net-row';
+  // First cell reuses the exact .catname/.arrow/.cell-label structure the
+  // Income/Spending rows use (arrow permanently collapsed via CSS, never
+  // interactive) so "Net" lands in precisely the same spot their label
+  // sits at rest, keeping every column aligned across all three rows.
+  netRow.innerHTML = `<td><span class="catname"><span class="arrow"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">Net</span></span></td>` +
+    netMonthTotals.map((v,i)=>netCell(v,i)).join('') +
+    `<td class="num ${signCls(netGrandTotal)}">${fmt(netGrandTotal)}</td>`;
+  tbody.appendChild(netRow);
+  tbody.appendChild(groupGapRow(14));
+
+  // Group header row — bold summary line for Income or Spending, with a
+  // chevron that only shows on hover (see .group-row CSS) since — unlike
+  // a category row's chevron — it isn't the row's primary content.
+  function groupHeaderRow(kind, label, group, totalColorClass){
+    const isOpen = openGroups.has(kind);
+    const tr = document.createElement('tr');
+    tr.className = 'group-row' + (isOpen?' open':'');
+    tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${label}</span></span></td>` +
+      group.monthTotals.map((v,i)=>numCell(v,i,noDash)).join('') +
+      `<td class="num ${totalColorClass}">${fmt(group.grandTotal)}</td>`;
+    tr.addEventListener('click', ()=>{
+      if (openGroups.has(kind)) openGroups.delete(kind); else openGroups.add(kind);
+      renderMid();
+    });
+    return tr;
+  }
+
+  tbody.appendChild(groupHeaderRow('income', 'Income', incomeGroup, 'group-total-income'));
+  if (openGroups.has('income')){
+    if (incomeGroup.rows.length === 0){
+      tbody.appendChild(emptyGroupRow('No income categories loaded yet.', 14));
+    } else {
+      incomeGroup.rows.forEach(row=>tbody.appendChild(row));
     }
-  } else {
-    // Income — top-level rows (income sources) expand to reveal
-    // transactions rolled up by identical description; only those
-    // description rows are selectable, same pattern as expenses.
-    const incomeSubcats = mergedIncomeSubcats();
-    if (incomeSubcats.length === 0){
-      tbody.innerHTML = `<tr><td colspan="14" class="empty-table">No income categories loaded yet.</td></tr>`;
-    } else {
-      let grandTotal = 0;
-      const monthTotals = new Array(12).fill(0);
-      incomeSubcats.forEach(cat=>{
-        const budget = ROLL.incomeCategoryMonthly[cat.name] || new Array(12).fill(0);
-        const { values, dashMask } = yearRowValues(cat.monthly, budget);
-        values.forEach((v,i)=>monthTotals[i]+=v);
-        const total = values.reduce((a,b)=>a+b,0);
-        grandTotal += total;
-        const isOpen = openCats.has(cat.name);
-        const hasSelectedSub = !isOpen && selectedSub && selectedSub.kind==='income' && selectedSub.category===cat.name;
-        const tr = document.createElement('tr');
-        tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
-        tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
-          values.map((v,i)=>numCell(v,i,dashMask)).join('') +
-          `<td class="num">${fmt(total)}</td>`;
-        tr.addEventListener('click', ()=>{
-          if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
-          renderMid();
-        });
-        tbody.appendChild(tr);
+  }
+  tbody.appendChild(groupGapRow(14));
 
-        cat.subcategories.forEach(sub=>{
-          const subBudget = ROLL.incomeSubMonthly[cat.name+'||'+sub.name] || new Array(12).fill(0);
-          const { values: subVals, dashMask: subDash } = yearRowValues(sub.monthly, subBudget);
-          const subTotal = subVals.reduce((a,b)=>a+b,0);
-          const isSel = selectedSub && selectedSub.kind==='income' && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
-          const sr = document.createElement('tr');
-          sr.className = 'sub-row' + (isOpen?' open':'') + (isSel?' selected':'');
-          sr.innerHTML = `<td><span class="cell-label">${sub.name}</span></td>` +
-            subVals.map((v,i)=>numCell(v,i,subDash)).join('') +
-            `<td class="num">${fmt(subTotal)}</td>`;
-          sr.addEventListener('click', (e)=>{
-            e.stopPropagation();
-            selectSub({ kind:'income', category: cat.name, subcategory: sub.name });
-          });
-          tbody.appendChild(sr);
-        });
-      });
-      const trTotal = document.createElement('tr');
-      trTotal.className = 'total-row';
-      trTotal.innerHTML = `<td>Total</td>` + monthTotals.map((v,i)=>numCell(v,i,noDash)).join('') + `<td class="num">${fmt(grandTotal)}</td>`;
-      tbody.appendChild(trTotal);
+  tbody.appendChild(groupHeaderRow('expenses', 'Spending', spendingGroup, 'group-total-spending'));
+  if (openGroups.has('expenses')){
+    if (spendingGroup.rows.length === 0){
+      tbody.appendChild(emptyGroupRow('No expense categories loaded yet.', 14));
+    } else {
+      spendingGroup.rows.forEach(row=>tbody.appendChild(row));
     }
   }
 
@@ -932,9 +1083,9 @@ function yearRowValues(actualMonthly, budgetMonthly){
 function renderMonthTable(){
   const mi = timeframe;
   const table = document.createElement('table');
-  table.className = 'ledger ledger-month';
+  table.className = 'ledger ledger-month ledger-grouped';
   const thead = document.createElement('thead');
-  thead.innerHTML = `<tr><th>Category</th><th>Plan</th><th>Actual</th><th>Difference</th></tr>`;
+  thead.innerHTML = `<tr><th></th><th>Budget</th><th>Actual</th><th>Difference</th></tr>`;
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   table.appendChild(tbody);
@@ -947,87 +1098,96 @@ function renderMonthTable(){
       `<td class="num">${diff===0?'<span class="dash">–</span>':fmtSigned(diff)}</td>`;
   }
 
-  if (activeTab === 'expenses'){
-    const categories = mergedExpenseCategories();
-    if (categories.length === 0){
-      tbody.innerHTML = `<tr><td colspan="4" class="empty-table">No expense categories loaded yet.</td></tr>`;
-    } else {
-      let totActual=0, totPlan=0;
-      categories.forEach(cat=>{
-        const actual = cat.monthly[mi] || 0;
-        const planVal = (ROLL.expenseCategoryMonthly[cat.name]||[])[mi] || 0;
-        totActual += actual; totPlan += planVal;
-        const isOpen = openCats.has(cat.name);
-        const hasSelectedSub = !isOpen && selectedSub && selectedSub.kind==='expense' && selectedSub.category===cat.name;
-        const tr = document.createElement('tr');
-        tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
-        tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
-          `<td class="num">${fmt(planVal)}</td><td class="num">${fmt(actual)}</td><td class="num">${fmtSigned(actual-planVal)}</td>`;
-        tr.addEventListener('click', ()=>{
-          if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
-          renderMid();
-        });
-        tbody.appendChild(tr);
+  // Same Net/Income/Spending grouped format as the Year table (see
+  // renderYearTable), just with Plan/Actual/Difference columns instead of
+  // 12 months + Total. Both groups always render (no more activeTab-driven
+  // single-table switch), topped by a non-interactive Net row.
+  function buildGroup(kind, categories, catBudgetMonthly, subBudgetMonthly, isOpen){
+    let totActual = 0, totPlan = 0;
+    const rows = [];
+    categories.forEach(cat=>{
+      const actual = cat.monthly[mi] || 0;
+      const planVal = (catBudgetMonthly[cat.name]||[])[mi] || 0;
+      totActual += actual; totPlan += planVal;
+      if (!isOpen) return;
 
-        cat.subcategories.forEach(sub=>{
-          const subActual = sub.monthly[mi] || 0;
-          const subPlan = (ROLL.expenseSubMonthly[cat.name+'||'+sub.name]||[])[mi] || 0;
-          const isSel = selectedSub && selectedSub.kind==='expense' && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
-          const sr = document.createElement('tr');
-          sr.className = 'sub-row' + (isOpen?' open':'') + (isSel?' selected':'');
-          sr.innerHTML = rowHTML(sub.name, subActual, subPlan, true);
-          sr.addEventListener('click', (e)=>{
-            e.stopPropagation();
-            selectSub({ kind:'expense', category: cat.name, subcategory: sub.name });
-          });
-          tbody.appendChild(sr);
-        });
+      const isCatOpen = openCats.has(cat.name);
+      const hasSelectedSub = !isCatOpen && selectedSub && selectedSub.kind===kind && selectedSub.category===cat.name;
+      const tr = document.createElement('tr');
+      tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
+      tr.innerHTML = `<td><span class="catname"><span class="arrow${isCatOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
+        `<td class="num">${fmt(planVal)}</td><td class="num">${fmt(actual)}</td><td class="num">${fmtSigned(actual-planVal)}</td>`;
+      tr.addEventListener('click', ()=>{
+        if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
+        renderMid();
       });
-      const trTotal = document.createElement('tr');
-      trTotal.className = 'total-row';
-      trTotal.innerHTML = `<td>Total</td><td class="num">${fmt(totPlan)}</td><td class="num">${fmt(totActual)}</td><td class="num">${fmtSigned(totActual-totPlan)}</td>`;
-      tbody.appendChild(trTotal);
+      rows.push(tr);
+
+      cat.subcategories.forEach(sub=>{
+        const subActual = sub.monthly[mi] || 0;
+        const subPlan = (subBudgetMonthly[cat.name+'||'+sub.name]||[])[mi] || 0;
+        const isSel = selectedSub && selectedSub.kind===kind && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
+        const sr = document.createElement('tr');
+        sr.className = 'sub-row' + (isCatOpen?' open':'') + (isSel?' selected':'');
+        sr.innerHTML = rowHTML(sub.name, subActual, subPlan, true);
+        sr.addEventListener('click', (e)=>{
+          e.stopPropagation();
+          selectSub({ kind, category: cat.name, subcategory: sub.name });
+        });
+        rows.push(sr);
+      });
+    });
+    return { totActual, totPlan, rows };
+  }
+
+  const incomeGroup = buildGroup('income', mergedIncomeSubcats(), ROLL.incomeCategoryMonthly, ROLL.incomeSubMonthly, openGroups.has('income'));
+  const spendingGroup = buildGroup('expense', mergedExpenseCategories(), ROLL.expenseCategoryMonthly, ROLL.expenseSubMonthly, openGroups.has('expenses'));
+
+  // Net row — derived from both groups' totals, always visible regardless
+  // of which (if either) group is expanded; not collapsible or selectable.
+  const netActual = incomeGroup.totActual - spendingGroup.totActual;
+  const netPlan = incomeGroup.totPlan - spendingGroup.totPlan;
+  const netDiff = netActual - netPlan;
+  const netRow = document.createElement('tr');
+  netRow.className = 'net-row';
+  netRow.innerHTML = `<td><span class="catname"><span class="arrow"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">Net</span></span></td>` +
+    `<td class="num">${fmt(netPlan)}</td>` +
+    `<td class="num ${signCls(netActual)}">${fmt(netActual)}</td>` +
+    `<td class="num ${signCls(netDiff)}">${netDiff===0?'<span class="dash">–</span>':fmtSigned(netDiff)}</td>`;
+  tbody.appendChild(netRow);
+  tbody.appendChild(groupGapRow(4));
+
+  function groupHeaderRow(kind, label, group, totalColorClass){
+    const isOpen = openGroups.has(kind);
+    const tr = document.createElement('tr');
+    tr.className = 'group-row' + (isOpen?' open':'');
+    tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${label}</span></span></td>` +
+      `<td class="num">${fmt(group.totPlan)}</td>` +
+      `<td class="num ${totalColorClass}">${fmt(group.totActual)}</td>` +
+      `<td class="num">${fmtSigned(group.totActual-group.totPlan)}</td>`;
+    tr.addEventListener('click', ()=>{
+      if (openGroups.has(kind)) openGroups.delete(kind); else openGroups.add(kind);
+      renderMid();
+    });
+    return tr;
+  }
+
+  tbody.appendChild(groupHeaderRow('income', 'Income', incomeGroup, 'group-total-income'));
+  if (openGroups.has('income')){
+    if (incomeGroup.rows.length === 0){
+      tbody.appendChild(emptyGroupRow('No income categories loaded yet.', 4));
+    } else {
+      incomeGroup.rows.forEach(row=>tbody.appendChild(row));
     }
-  } else {
-    const incomeSubcats = mergedIncomeSubcats();
-    if (incomeSubcats.length === 0){
-      tbody.innerHTML = `<tr><td colspan="4" class="empty-table">No income categories loaded yet.</td></tr>`;
-    } else {
-      let totActual=0, totPlan=0;
-      incomeSubcats.forEach(cat=>{
-        const actual = cat.monthly[mi] || 0;
-        const planVal = (ROLL.incomeCategoryMonthly[cat.name]||[])[mi] || 0;
-        totActual += actual; totPlan += planVal;
-        const isOpen = openCats.has(cat.name);
-        const hasSelectedSub = !isOpen && selectedSub && selectedSub.kind==='income' && selectedSub.category===cat.name;
-        const tr = document.createElement('tr');
-        tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
-        tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
-          `<td class="num">${fmt(planVal)}</td><td class="num">${fmt(actual)}</td><td class="num">${fmtSigned(actual-planVal)}</td>`;
-        tr.addEventListener('click', ()=>{
-          if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
-          renderMid();
-        });
-        tbody.appendChild(tr);
+  }
+  tbody.appendChild(groupGapRow(4));
 
-        cat.subcategories.forEach(sub=>{
-          const subActual = sub.monthly[mi] || 0;
-          const subPlan = (ROLL.incomeSubMonthly[cat.name+'||'+sub.name]||[])[mi] || 0;
-          const isSel = selectedSub && selectedSub.kind==='income' && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
-          const sr = document.createElement('tr');
-          sr.className = 'sub-row' + (isOpen?' open':'') + (isSel?' selected':'');
-          sr.innerHTML = rowHTML(sub.name, subActual, subPlan, true);
-          sr.addEventListener('click', (e)=>{
-            e.stopPropagation();
-            selectSub({ kind:'income', category: cat.name, subcategory: sub.name });
-          });
-          tbody.appendChild(sr);
-        });
-      });
-      const trTotal = document.createElement('tr');
-      trTotal.className = 'total-row';
-      trTotal.innerHTML = `<td>Total</td><td class="num">${fmt(totPlan)}</td><td class="num">${fmt(totActual)}</td><td class="num">${fmtSigned(totActual-totPlan)}</td>`;
-      tbody.appendChild(trTotal);
+  tbody.appendChild(groupHeaderRow('expenses', 'Spending', spendingGroup, 'group-total-spending'));
+  if (openGroups.has('expenses')){
+    if (spendingGroup.rows.length === 0){
+      tbody.appendChild(emptyGroupRow('No expense categories loaded yet.', 4));
+    } else {
+      spendingGroup.rows.forEach(row=>tbody.appendChild(row));
     }
   }
 
@@ -1035,13 +1195,55 @@ function renderMonthTable(){
 }
 
 /* ---- Search results (flat, all transactions) ---- */
-function renderSearchResultsTable(){
-  const wrap = document.createElement('div');
-  wrap.className = 'mid-body';
+// ---- Transactions page — a tab (not a search-triggered overlay): it
+// defaults to showing every transaction, with the search field acting as
+// a live filter on that list. The title bar (with the search input) is
+// built once per visit to the tab; typing only rebuilds the results body
+// below it via refresh(), so the input never gets torn down and re-focused
+// mid-keystroke the way a full renderMid() would.
+function renderTransactionsPage(mid){
+  const titleBar = document.createElement('div');
+  titleBar.className = 'mid-title transactions-toolbar';
+  const titleSpan = document.createElement('span');
+  titleSpan.textContent = 'Transactions';
+  titleBar.appendChild(titleSpan);
+
+  const searchWrap = document.createElement('div');
+  searchWrap.className = 'search-wrap';
+  searchWrap.innerHTML = `<img class="search-icon" src="icons/search.svg" alt="">`;
+  const input = document.createElement('input');
+  input.type = 'search';
+  input.className = 'search-input';
+  input.placeholder = 'Search transactions…';
+  input.value = searchQuery;
+  searchWrap.appendChild(input);
+  titleBar.appendChild(searchWrap);
+  mid.appendChild(titleBar);
+
+  const body = document.createElement('div');
+  body.className = 'mid-body';
+  mid.appendChild(body);
+
+  function refresh(){
+    body.innerHTML = '';
+    body.appendChild(renderTransactionsBody(refresh));
+  }
+  input.addEventListener('input', (e)=>{
+    searchQuery = e.target.value.trim();
+    refresh();
+  });
+  refresh();
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+function renderTransactionsBody(onSortChange){
+  const wrap = document.createDocumentFragment();
   const heading = document.createElement('div');
   heading.className = 'search-heading';
   const rows = filteredSearchTxns();
-  heading.innerHTML = `<b>${rows.length}</b> transaction${rows.length===1?'':'s'} matching "<b>${escapeHTML(searchQuery)}</b>"`;
+  heading.innerHTML = searchQuery
+    ? `<b>${rows.length}</b> transaction${rows.length===1?'':'s'} matching "<b>${escapeHTML(searchQuery)}</b>"`
+    : `<b>${rows.length}</b> transaction${rows.length===1?'':'s'}`;
   wrap.appendChild(heading);
 
   const table = document.createElement('table');
@@ -1053,7 +1255,7 @@ function renderSearchResultsTable(){
     th.addEventListener('click', ()=>{
       const key = th.dataset.key;
       if (txnSort.key===key) txnSort.dir*=-1; else txnSort = { key, dir:1 };
-      renderMid();
+      onSortChange();
     });
   });
   table.appendChild(thead);
@@ -1105,47 +1307,39 @@ function selectSub(sub){
 
 /* ============================================================
    BUDGET EDITOR — mid-panel UI. A distinct mode (like search): while
-   active it fully replaces the mid/right panel content. Text/number
-   field edits mutate budgetDraft in place and patch just the affected
-   total <span>s (no full re-render, so focus/cursor position survives
-   typing); structural changes (add/remove category, subcategory, or
-   line item; expand/collapse) call renderMid() to rebuild from
-   budgetDraft, since row DOM has to change shape anyway.
+   active it fully replaces the mid/right panel content. The table itself
+   mirrors the read-only Year table's Net/Income/Spending layout (see
+   renderYearTable) so the two always look and align the same way, but
+   every category/subcategory row is editable in place and a category's
+   chevron is always visible (not hover-only) since, while editing, you
+   need the expand affordance to always be legible. Selecting a
+   subcategory row shows its line items — the only place amounts/frequency
+   are actually edited — in the right panel instead of inline, since the
+   month-by-month table has no room for that; see renderBudgetItemRow.
+   Renaming/adding/removing a category or subcategory always rebuilds the
+   whole table (renderMid()), since row DOM has to change shape anyway;
+   editing a line item's amount/frequency instead patches just the
+   affected cells (see refreshBudgetLiveTotals) so typing doesn't lose
+   focus on every keystroke.
    ============================================================ */
 function renderBudgetEditor(mid){
   const header = document.createElement('div');
   header.className = 'budget-editor-header';
   const hasSaved = Object.keys(BUDGETS_RAW.Expenses||{}).length || Object.keys(BUDGETS_RAW.Income||{}).length;
-  header.innerHTML = `
-    <div class="budget-editor-title">${hasSaved ? 'Edit Budget' : 'Create Budget'}</div>
-    <div class="budget-editor-actions">
-      <button class="file-btn ghost" type="button" id="budgetCancelBtn">Cancel</button>
-      <button class="file-btn primary" type="button" id="budgetSaveBtn">Save budget</button>
-    </div>
-  `;
-  header.querySelector('#budgetCancelBtn').addEventListener('click', ()=>{
-    if (confirm('Discard changes to this budget?')) cancelBudgetEdit();
-  });
-  header.querySelector('#budgetSaveBtn').addEventListener('click', saveBudgetEdit);
-  mid.appendChild(header);
+  const title = document.createElement('div');
+  title.className = 'budget-editor-title';
+  title.textContent = hasSaved ? 'Edit Budget' : 'Create Budget';
+  header.appendChild(title);
 
-  const toolbar = document.createElement('div');
-  toolbar.className = 'budget-editor-toolbar';
-  const toggle = document.createElement('div');
-  toggle.className = 'budget-tab-toggle';
-  [['expenses','Expenses'],['income','Income']].forEach(([key,label])=>{
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'pill' + (budgetEditTab===key ? ' active' : '');
-    b.textContent = label;
-    b.addEventListener('click', ()=>{ budgetEditTab = key; renderMid(); renderRight(); });
-    toggle.appendChild(b);
-  });
-  toolbar.appendChild(toggle);
+  const actions = document.createElement('div');
+  actions.className = 'budget-editor-actions';
 
+  // Import CSV sits beside Cancel/Save as a third header action rather than
+  // its own toolbar row — it's a starting-point convenience for the draft,
+  // not a distinct step in the Cancel/Save flow.
   const importLabel = document.createElement('label');
-  importLabel.className = 'file-btn';
-  importLabel.textContent = "Import last year's CSV as starting point";
+  importLabel.className = 'file-btn ghost';
+  importLabel.textContent = 'Import CSV';
   const importInput = document.createElement('input');
   importInput.type = 'file';
   importInput.accept = '.csv';
@@ -1158,209 +1352,521 @@ function renderBudgetEditor(mid){
     importLastYearCSVIntoDraft(files);
     e.target.value = '';
   });
-  toolbar.appendChild(importLabel);
-  mid.appendChild(toolbar);
+  actions.appendChild(importLabel);
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'file-btn ghost';
+  cancelBtn.type = 'button';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.addEventListener('click', ()=>{
+    if (confirm('Discard changes to this budget?')) cancelBudgetEdit();
+  });
+  actions.appendChild(cancelBtn);
+
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'file-btn primary';
+  saveBtn.type = 'button';
+  saveBtn.textContent = 'Save budget';
+  saveBtn.addEventListener('click', saveBudgetEdit);
+  actions.appendChild(saveBtn);
+
+  header.appendChild(actions);
+  mid.appendChild(header);
 
   const body = document.createElement('div');
   body.className = 'budget-editor-body';
-  if (budgetEditTab === 'expenses') renderBudgetExpensesBody(body);
-  else renderBudgetIncomeBody(body);
+  body.appendChild(wrapScroll(renderBudgetTable()));
   mid.appendChild(body);
 }
 
-function renderBudgetExpensesBody(container){
-  if (budgetDraft.expenses.length === 0){
-    const hint = document.createElement('div');
-    hint.className = 'budget-empty-hint';
-    hint.textContent = 'No expense categories yet. Click "+ Add category" below, or import last year’s CSV as a starting point.';
-    container.appendChild(hint);
-  }
-  budgetDraft.expenses.forEach(cat=>{
-    container.appendChild(renderBudgetCategoryBlock(cat, { kind:'expense' }));
-  });
-  const addCatBtn = document.createElement('button');
-  addCatBtn.type = 'button';
-  addCatBtn.className = 'add-cat-btn';
-  addCatBtn.textContent = '+ Add category';
-  addCatBtn.addEventListener('click', ()=>{
-    const cat = { id: nextBudgetId(), name:'', subcategories: [] };
-    budgetDraft.expenses.push(cat);
-    budgetOpenCats.add(cat.id);
-    budgetFocusId = cat.id;
-    renderMid();
-    renderRight();
-  });
-  container.appendChild(addCatBtn);
-}
-
-function renderBudgetIncomeBody(container){
-  if (budgetDraft.income.length === 0){
-    const hint = document.createElement('div');
-    hint.className = 'budget-empty-hint';
-    hint.textContent = 'No income sources yet. Click "+ Add income source" below, or import last year’s CSV as a starting point.';
-    container.appendChild(hint);
-  }
-  budgetDraft.income.forEach(cat=>{
-    container.appendChild(renderBudgetCategoryBlock(cat, { kind:'income' }));
-  });
-  const addBtn = document.createElement('button');
-  addBtn.type = 'button';
-  addBtn.className = 'add-cat-btn';
-  addBtn.textContent = '+ Add income source';
-  addBtn.addEventListener('click', ()=>{
-    const cat = { id: nextBudgetId(), name:'', subcategories: [] };
-    budgetDraft.income.push(cat);
-    budgetOpenCats.add(cat.id);
-    budgetFocusId = cat.id;
-    renderMid();
-    renderRight();
-  });
-  container.appendChild(addBtn);
-}
-
-// opts: { kind: 'expense' | 'income' } — income sources and expense
-// categories are both Category -> Subcategory -> line items now, so this
-// one block (and renderBudgetSubBlock below) renders both, with only the
-// wording and which budgetDraft array is written to differing by kind.
-function renderBudgetCategoryBlock(cat, opts){
-  const kind = opts.kind;
-  const wrap = document.createElement('div');
-  wrap.className = 'budget-cat';
-  wrap.dataset.catId = cat.id;
-  const isOpen = budgetOpenCats.has(cat.id);
-
-  const header = document.createElement('div');
-  header.className = 'budget-cat-header';
-
-  const arrow = document.createElement('span');
-  arrow.className = 'arrow' + (isOpen ? ' open' : '');
-  arrow.innerHTML = `<img src="icons/chevron-right.svg" alt="">`;
-  header.appendChild(arrow);
-
+// Builds the name+delete <td> shared by category and subcategory rows —
+// an editable name input (blends into plain text at rest, same as the old
+// card editor's .budget-name-input) plus a delete icon-button that only
+// takes up space on row hover (row-delete-wrap), so it never disturbs the
+// column's fixed width. `arrow` is the category row's always-visible
+// chevron element, or null for a (leaf) subcategory row.
+function budgetNameCell({ value, placeholder, isSub, arrow, onNameInput, onDelete, deleteTitle, hideDelete }){
+  const td = document.createElement('td');
+  const catname = document.createElement('span');
+  catname.className = 'catname';
+  if (arrow) catname.appendChild(arrow);
   const nameInput = document.createElement('input');
-  nameInput.className = 'budget-name-input';
-  nameInput.placeholder = kind==='income' ? 'Income source name' : 'Category name';
-  nameInput.value = cat.name;
-  nameInput.addEventListener('input', ()=>{ cat.name = nameInput.value; });
+  nameInput.className = 'budget-name-input' + (isSub ? ' sub' : '');
+  nameInput.placeholder = placeholder;
+  nameInput.value = value;
   nameInput.addEventListener('click', e=>e.stopPropagation());
-  header.appendChild(nameInput);
+  nameInput.addEventListener('input', onNameInput);
+  catname.appendChild(nameInput);
+  // A not-yet-real pending row (see buildGroup's trailing sub-row) has
+  // nothing to delete yet, so it skips the delete button entirely rather
+  // than wiring one up to a no-op.
+  if (!hideDelete){
+    const delWrap = document.createElement('span');
+    delWrap.className = 'row-delete-wrap';
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'icon-btn';
+    delBtn.title = deleteTitle;
+    delBtn.textContent = '✕';
+    delBtn.addEventListener('click', (e)=>{ e.stopPropagation(); onDelete(); });
+    delWrap.appendChild(delBtn);
+    catname.appendChild(delWrap);
+  }
+  td.appendChild(catname);
+  return { td, nameInput };
+}
 
-  const totalEl = document.createElement('span');
-  totalEl.className = 'budget-cat-total num';
-  totalEl.textContent = fmt(Math.abs(budgetCatYearTotal(cat)));
-  header.appendChild(totalEl);
+function budgetNumCells(monthly, total){
+  const cells = monthly.map(v=>`<td class="num">${fmt(v)}</td>`).join('');
+  return cells + `<td class="num">${fmt(total)}</td>`;
+}
 
-  const removeBtn = document.createElement('button');
-  removeBtn.type = 'button';
-  removeBtn.className = 'icon-btn';
-  removeBtn.title = kind==='income' ? 'Delete income source' : 'Delete category';
-  removeBtn.textContent = '✕';
-  removeBtn.addEventListener('click', (e)=>{
-    e.stopPropagation();
-    const label = kind==='income' ? 'income source' : 'category';
-    if (!confirm(`Delete ${label} "${cat.name || '(unnamed)'}" and all its subcategories?`)) return;
-    if (kind==='income') budgetDraft.income = budgetDraft.income.filter(c=>c.id!==cat.id);
-    else budgetDraft.expenses = budgetDraft.expenses.filter(c=>c.id!==cat.id);
-    renderMid();
-    renderRight();
-  });
-  header.appendChild(removeBtn);
+// Finds the category/subcategory name input `el` belongs to (real or
+// pending, category-level or subcategory-level) and returns a function
+// that re-locates the *equivalent* input in a freshly-rendered mid panel
+// — used to restore focus onto a click target that a pending row's commit
+// is about to rebuild out from under the browser's own pending focus
+// change. Returns null for anything else (a button, an input elsewhere in
+// the app, or nothing at all), which just leaves that focus change alone.
+function locateBudgetNameInput(el){
+  if (!el || !el.classList || !el.classList.contains('budget-name-input')) return null;
+  const tr = el.closest('tr');
+  if (!tr) return null;
+  const pending = tr.classList.contains('pending');
+  if (tr.classList.contains('sub-row')){
+    const catId = tr.dataset.catId;
+    const sel = pending
+      ? `tr.sub-row.pending[data-cat-id="${catId}"] .budget-name-input`
+      : `tr.sub-row[data-sub-id="${tr.dataset.subId}"] .budget-name-input`;
+    return (root)=>root.querySelector(sel);
+  }
+  if (tr.classList.contains('cat-row')){
+    const sel = pending
+      ? `tr.cat-row.pending[data-kind="${tr.dataset.kind}"] .budget-name-input`
+      : `tr.cat-row[data-cat-id="${tr.dataset.catId}"]:not(.pending) .budget-name-input`;
+    return (root)=>root.querySelector(sel);
+  }
+  return null;
+}
 
-  header.addEventListener('click', ()=>{
-    if (budgetOpenCats.has(cat.id)) budgetOpenCats.delete(cat.id); else budgetOpenCats.add(cat.id);
-    renderMid();
-  });
-  wrap.appendChild(header);
-
-  if (isOpen){
-    const subsWrap = document.createElement('div');
-    subsWrap.className = 'budget-subcats';
-    cat.subcategories.forEach(sub=>{
-      subsWrap.appendChild(renderBudgetSubBlock(sub, { kind, cat, catTotalEl: totalEl }));
+// Floating suggestion list for a pending category/subcategory name input
+// — appended to <body> and positioned with `position:fixed` over the
+// input's own on-screen rect (a "portal", same reasoning as the add-item
+// modal being body-appended rather than nested in the panel: .table-
+// scroll's overflow — see its own comment — would otherwise clip a
+// dropdown taller than the remaining visible table area). Shows whatever
+// `getSuggestions()` currently returns on focus, re-filtered by the
+// input's own value (case-insensitive substring) on every keystroke;
+// picking one calls `onPick(name)` rather than writing the value here
+// directly, so the caller (bindPendingCommit) can commit it exactly like
+// an Enter/Tab keypress would. Clicking an option is a mousedown on a
+// plain, non-focusable div — without preventDefault, the browser would
+// still blur the input first (committing whatever partial text is
+// currently typed, not the option chosen), so that default is
+// suppressed and the input never actually loses focus.
+function bindTypeahead(input, getSuggestions){
+  let listEl = null;
+  function close(){
+    if (listEl){ listEl.remove(); listEl = null; }
+  }
+  function render(){
+    const q = input.value.trim().toLowerCase();
+    const options = getSuggestions().filter(name=>name.toLowerCase().includes(q));
+    if (!options.length){ close(); return; }
+    if (!listEl){
+      listEl = document.createElement('div');
+      listEl.className = 'typeahead-list';
+      document.body.appendChild(listEl);
+    } else {
+      listEl.innerHTML = '';
+    }
+    options.forEach(name=>{
+      const opt = document.createElement('div');
+      opt.className = 'typeahead-option';
+      opt.textContent = name;
+      opt.addEventListener('mousedown', (e)=>{
+        e.preventDefault();
+        close();
+        input.dispatchEvent(new CustomEvent('typeahead-pick', { detail: name }));
+      });
+      listEl.appendChild(opt);
     });
-    const addSubBtn = document.createElement('button');
-    addSubBtn.type = 'button';
-    addSubBtn.className = 'add-sub-btn';
-    addSubBtn.textContent = '+ Add subcategory';
-    addSubBtn.addEventListener('click', ()=>{
-      const sub = { id: nextBudgetId(), name:'', items: [] };
-      cat.subcategories.push(sub);
-      budgetFocusId = sub.id;
-      renderMid();
-      renderRight();
+    const r = input.getBoundingClientRect();
+    // Left unset otherwise, the list shrink-to-fits its content up to a
+    // 24rem cap (see .typeahead-list) rather than matching the (much
+    // narrower) input it hangs off of. Only tightened here when even that
+    // wouldn't fit before the viewport's right edge.
+    listEl.style.left = r.left + 'px';
+    const remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    const viewportMax = document.documentElement.clientWidth - r.left - 8;
+    listEl.style.maxWidth = Math.min(24 * remPx, viewportMax) + 'px';
+
+    // Vertical placement: below the input by default (matching its own
+    // CSS max-height of 180px), but flipped above it when the input sits
+    // too close to the bottom of the viewport to fit that — e.g. a
+    // pending row near the bottom of the visible table — and there's more
+    // room above than below. Either way the list's own max-height is
+    // capped to whatever room that side actually has, so it's scrollable
+    // rather than spilling off-screen if a lot of options match.
+    const gap = 4, preferredHeight = 180, minHeight = 60;
+    const spaceBelow = window.innerHeight - r.bottom - gap;
+    const spaceAbove = r.top - gap;
+    const openAbove = spaceBelow < preferredHeight && spaceAbove > spaceBelow;
+    if (openAbove){
+      listEl.style.top = 'auto';
+      listEl.style.bottom = (window.innerHeight - r.top + gap) + 'px';
+      listEl.style.maxHeight = Math.max(minHeight, Math.min(preferredHeight, spaceAbove)) + 'px';
+    } else {
+      listEl.style.bottom = 'auto';
+      listEl.style.top = (r.bottom + gap) + 'px';
+      listEl.style.maxHeight = Math.max(minHeight, Math.min(preferredHeight, spaceBelow)) + 'px';
+    }
+  }
+  input.addEventListener('focus', render);
+  input.addEventListener('input', render);
+  input.addEventListener('blur', close);
+}
+
+// Wires a pending row's name input so committing it doesn't depend on
+// any one specific key — Enter, Tab, or simply clicking/tabbing away
+// (blur) all commit it, as long as there's a non-blank name typed;
+// leaving it blank just lets focus move on normally, nothing committed.
+// `commit(name)` does the actual draft mutation (push the new category/
+// subcategory, select it if applicable) and returns the id of the
+// category whose pending row should get focus next — but that auto-focus
+// only actually happens for Enter/Tab, matching the existing keyboard-
+// driven flow of rapid sequential entry. A blur commits the row without
+// forcing focus anywhere new — *unless* the blur happened because the
+// user clicked straight into another category/subcategory name field, in
+// which case that field would normally receive focus next regardless, and
+// our rebuild of the table (which replaces it with an equivalent new
+// element) shouldn't be what stops that from happening. Enter/Tab and the
+// resulting blur (rebuilding the DOM removes this input) can both fire
+// for the same keypress, so `committed` makes sure the commit itself only
+// happens once either way. `getSuggestions`, if given, adds a typeahead
+// of category/subcategory names loaded transactions already establish
+// that aren't in the budget yet (see bindTypeahead) — picking one commits
+// it immediately, same as pressing Enter after typing it out by hand.
+function bindPendingCommit(input, commit, getSuggestions){
+  let committed = false;
+  function tryCommit(focusNext, refocus){
+    if (committed) return;
+    const name = input.value;
+    if (!name.trim()) return;
+    committed = true;
+    const catId = commit(name);
+    if (focusNext) budgetFocusPending = { catId };
+    renderMid(); renderRight();
+    if (!focusNext && refocus){
+      const el = refocus(document.getElementById('midPanel'));
+      if (el) el.focus();
+    }
+  }
+  input.addEventListener('keydown', (e)=>{
+    if (e.key !== 'Enter' && e.key !== 'Tab') return;
+    // Only preempt the key's default action (Enter's implicit submit,
+    // Tab's focus-to-next-element) when there's actually something to
+    // commit — a blank pending row lets Tab fall through to normal
+    // browser focus navigation instead.
+    if (input.value.trim()) e.preventDefault();
+    tryCommit(true);
+  });
+  input.addEventListener('blur', (e)=>tryCommit(false, locateBudgetNameInput(e.relatedTarget)));
+  if (getSuggestions){
+    bindTypeahead(input, getSuggestions);
+    input.addEventListener('typeahead-pick', (e)=>{
+      input.value = e.detail;
+      tryCommit(true);
     });
-    subsWrap.appendChild(addSubBtn);
-    wrap.appendChild(subsWrap);
+  }
+}
+
+// Trailing pending category row — sits at the bottom of a whole Income/
+// Spending group, styled and laid out exactly like a real (but blank)
+// category row, complete with the always-visible chevron for alignment.
+// Same mechanism as buildGroup's pending subcategory row: it has no id of
+// its own and isn't in the draft yet; typing into it just types, and
+// pressing Enter is what commits it as a real top-level category (added
+// to `list`, opened). Focus then lands in *that* category's own pending
+// subcategory row (see budgetFocusPending) rather than back on this
+// group's next pending category row — naming a category flows straight
+// into naming its first subcategory. Unlike the nested pending row,
+// there's no "named" gating here — nothing above a top-level category to
+// withhold it on.
+function buildPendingCatRow(kind, list){
+  const label = `New ${kind} category`;
+  const tr = document.createElement('tr');
+  tr.className = 'cat-row nested pending';
+  tr.dataset.kind = kind; // lets locateBudgetNameInput re-find this row's
+                          // input by group after a blur-triggered re-render
+  const arrow = document.createElement('span');
+  arrow.className = 'arrow';
+  arrow.innerHTML = `<img src="icons/chevron-right.svg" alt="">`;
+  const { td, nameInput } = budgetNameCell({
+    value: '', placeholder: label, arrow, hideDelete: true,
+    onNameInput: ()=>{},
+  });
+  bindPendingCommit(nameInput, (name)=>{
+    const cat = { id: nextBudgetId(), name, subcategories: [] };
+    list.push(cat);
+    budgetOpenCats.add(cat.id);
+    return cat.id; // Enter/Tab land focus in this category's own pending
+                   // subcategory row — naming a category is almost always
+                   // immediately followed by naming its first subcategory.
+  }, ()=>{
+    // Transaction-established categories of this Type not already in the
+    // draft — same source draftCategoriesFor merges in, just without the
+    // categories the draft already has (those don't need suggesting).
+    const txCats = kind === 'income' ? DATA.incomeSubcats : DATA.categories;
+    const existingNames = new Set(list.map(c=>c.name));
+    return txCats.map(c=>c.name).filter(name=>!existingNames.has(name));
+  });
+  tr.appendChild(td);
+  tr.insertAdjacentHTML('beforeend', budgetNumCells(new Array(12).fill(0), 0));
+  return tr;
+}
+
+/* ---- Budget editor table (Net/Income/Spending, editable) ---- */
+function renderBudgetTable(){
+  const table = document.createElement('table');
+  table.className = 'ledger ledger-year ledger-grouped budget-editor-ledger';
+  const thead = document.createElement('thead');
+  thead.innerHTML = `<tr><th></th>${MONTHS.map(m=>`<th>${m}</th>`).join('')}<th>Total</th></tr>`;
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  table.appendChild(tbody);
+
+  // Builds one Income or Spending group's rows: a bold category row per
+  // draft category (always-visible chevron, editable name, delete-on-
+  // hover), its subcategory rows nested underneath when open (selectable —
+  // clicking one shows its line items in the right panel), a trailing
+  // blank/pending subcategory row that turns into a real one as soon as
+  // you start typing a name into it (see the pending row below — no
+  // separate "add subcategory" button to click first), and monthly/grand
+  // totals rolled up from budgetCatDisplayMonthly regardless of whether
+  // the category is currently open.
+  function buildGroup(kind, list){
+    const monthTotals = new Array(12).fill(0);
+    let grandTotal = 0;
+    const rows = [];
+    const label = kind === 'income' ? 'Income source name' : 'Category name';
+
+    list.forEach(cat=>{
+      const monthly = budgetCatDisplayMonthly(cat, kind);
+      monthly.forEach((v,i)=>monthTotals[i]+=v);
+      const total = monthly.reduce((a,b)=>a+b,0);
+      grandTotal += total;
+
+      const isOpen = budgetOpenCats.has(cat.id);
+      const tr = document.createElement('tr');
+      tr.className = 'cat-row nested';
+      tr.dataset.catId = cat.id;
+      const arrow = document.createElement('span');
+      arrow.className = 'arrow' + (isOpen ? ' open' : '');
+      arrow.innerHTML = `<img src="icons/chevron-right.svg" alt="">`;
+      const { td } = budgetNameCell({
+        value: cat.name, placeholder: label, arrow,
+        onNameInput: (e)=>{
+          cat.name = e.target.value;
+          // Live-update the pending subcategory row's visibility and
+          // "New {category}" placeholder as the category is named/renamed,
+          // without a full renderMid() (which would drop focus out of this
+          // input on every keystroke).
+          const pendingRow = tbody.querySelector(`tr.sub-row.pending[data-cat-id="${cat.id}"]`);
+          if (pendingRow){
+            pendingRow.classList.toggle('named', !!cat.name.trim());
+            const pendingInput = pendingRow.querySelector('.budget-name-input');
+            if (pendingInput) pendingInput.placeholder = `New ${cat.name.trim()}`;
+          }
+        },
+        onDelete: ()=>{
+          const kindLabel = kind === 'income' ? 'income source' : 'category';
+          if (!confirm(`Delete ${kindLabel} "${cat.name || '(unnamed)'}" and all its subcategories?`)) return;
+          if (kind === 'income') budgetDraft.income = budgetDraft.income.filter(c=>c.id!==cat.id);
+          else budgetDraft.expenses = budgetDraft.expenses.filter(c=>c.id!==cat.id);
+          if (budgetSelection && budgetSelection.catId === cat.id) budgetSelection = null;
+          renderMid(); renderRight();
+        },
+        deleteTitle: kind === 'income' ? 'Delete income source' : 'Delete category',
+      });
+      tr.appendChild(td);
+      tr.insertAdjacentHTML('beforeend', budgetNumCells(monthly, total));
+      tr.addEventListener('click', ()=>{
+        if (budgetOpenCats.has(cat.id)) budgetOpenCats.delete(cat.id); else budgetOpenCats.add(cat.id);
+        renderMid();
+      });
+      rows.push(tr);
+
+      cat.subcategories.forEach(sub=>{
+        const subMonthly = budgetSubDisplayMonthly(sub, kind);
+        const subTotal = subMonthly.reduce((a,b)=>a+b,0);
+        const isSel = !!(budgetSelection && budgetSelection.kind===kind && budgetSelection.subId===sub.id);
+        const sr = document.createElement('tr');
+        sr.className = 'sub-row' + (isOpen ? ' open' : '') + (isSel ? ' selected' : '');
+        sr.dataset.subId = sub.id;
+        const { td: subTd } = budgetNameCell({
+          value: sub.name, placeholder: 'Subcategory name', isSub: true,
+          onNameInput: (e)=>{ sub.name = e.target.value; },
+          onDelete: ()=>{
+            if (!confirm(`Delete "${sub.name || '(unnamed)'}"?`)) return;
+            cat.subcategories = cat.subcategories.filter(s=>s.id!==sub.id);
+            if (budgetSelection && budgetSelection.subId === sub.id) budgetSelection = null;
+            renderMid(); renderRight();
+          },
+          deleteTitle: 'Delete subcategory',
+        });
+        sr.appendChild(subTd);
+        sr.insertAdjacentHTML('beforeend', budgetNumCells(subMonthly, subTotal));
+        sr.addEventListener('click', (e)=>{
+          e.stopPropagation();
+          selectBudgetSub({ kind, catId: cat.id, subId: sub.id });
+        });
+        rows.push(sr);
+      });
+
+      // Trailing pending row: looks and sits exactly like a subcategory
+      // row, but isn't one yet — it has no id of its own and isn't in
+      // cat.subcategories. Typing into it just types, same as any text
+      // input; pressing Enter is what commits it (added to the draft as a
+      // real subcategory), at which point a fresh pending row takes its
+      // place and gets focus, ready for the next one. A new pending row
+      // never appears before that — there's only ever one open "build"
+      // slot per category at a time. Hidden until the category itself has
+      // a name, same reasoning as the old add-subcategory button: no
+      // ambiguous, unnamed category with subcategories already hanging
+      // off it.
+      const pendingRow = document.createElement('tr');
+      pendingRow.className = 'sub-row pending' + (isOpen ? ' open' : '') + (cat.name.trim() ? ' named' : '');
+      pendingRow.dataset.catId = cat.id;
+      const { td: pendingTd, nameInput: pendingInput } = budgetNameCell({
+        value: '', placeholder: `New ${cat.name.trim()}`, isSub: true, hideDelete: true,
+        onNameInput: ()=>{},
+      });
+      bindPendingCommit(pendingInput, (name)=>{
+        const sub = { id: nextBudgetId(), name, items: [] };
+        cat.subcategories.push(sub);
+        // Select the newly-committed subcategory (as if it had been
+        // clicked) so its line items are right there in the right panel
+        // to start filling in — this happens regardless of how the row
+        // was committed, unlike the Enter/Tab-only focus-forwarding below.
+        budgetSelection = { kind, catId: cat.id, subId: sub.id };
+        return cat.id; // Enter/Tab land focus in the next pending row for
+                        // this same category, ready for the next one.
+      }, ()=>{
+        // Transaction-established subcategories under a transaction
+        // category matching this one *by name* (there's nothing else to
+        // key off — this draft category may not even be transaction-
+        // derived at all), minus whatever's already in the draft here.
+        const txCats = kind === 'income' ? DATA.incomeSubcats : DATA.categories;
+        const txCat = txCats.find(c=>c.name===cat.name);
+        if (!txCat) return [];
+        const existingNames = new Set(cat.subcategories.map(s=>s.name));
+        return txCat.subcategories.map(s=>s.name).filter(name=>!existingNames.has(name));
+      });
+      pendingRow.appendChild(pendingTd);
+      pendingRow.insertAdjacentHTML('beforeend', budgetNumCells(new Array(12).fill(0), 0));
+      rows.push(pendingRow);
+    });
+
+    return { monthTotals, grandTotal, rows };
   }
 
-  return wrap;
-}
+  const incomeGroup = buildGroup('income', budgetDraft.income);
+  const spendingGroup = buildGroup('expense', budgetDraft.expenses);
 
-// opts: { kind: 'expense' | 'income', cat, catTotalEl }
-function renderBudgetSubBlock(sub, opts){
-  const wrap = document.createElement('div');
-  wrap.className = 'budget-sub';
-  wrap.dataset.subId = sub.id;
+  // Net row — same markup/CSS as the read-only Year table's, permanently
+  // non-interactive and non-collapsible.
+  const netMonthTotals = incomeGroup.monthTotals.map((v,i)=>v - spendingGroup.monthTotals[i]);
+  const netGrandTotal = incomeGroup.grandTotal - spendingGroup.grandTotal;
+  const netRow = document.createElement('tr');
+  netRow.className = 'net-row';
+  netRow.innerHTML = `<td><span class="catname"><span class="arrow"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">Net</span></span></td>` +
+    netMonthTotals.map((v,i)=>`<td class="num ${signCls(v)}">${fmt(v)}</td>`).join('') +
+    `<td class="num ${signCls(netGrandTotal)}">${fmt(netGrandTotal)}</td>`;
+  tbody.appendChild(netRow);
+  tbody.appendChild(groupGapRow(14));
 
-  const header = document.createElement('div');
-  header.className = 'budget-sub-header';
-
-  const nameInput = document.createElement('input');
-  nameInput.className = 'budget-name-input';
-  nameInput.placeholder = 'Subcategory name';
-  nameInput.value = sub.name;
-  nameInput.addEventListener('input', ()=>{ sub.name = nameInput.value; });
-  header.appendChild(nameInput);
-
-  const totalEl = document.createElement('span');
-  totalEl.className = 'budget-sub-total num';
-  totalEl.textContent = fmt(Math.abs(budgetSubYearTotal(sub)));
-  header.appendChild(totalEl);
-
-  const removeBtn = document.createElement('button');
-  removeBtn.type = 'button';
-  removeBtn.className = 'icon-btn';
-  removeBtn.title = 'Delete';
-  removeBtn.textContent = '✕';
-  removeBtn.addEventListener('click', ()=>{
-    if (!confirm(`Delete "${sub.name || '(unnamed)'}"?`)) return;
-    opts.cat.subcategories = opts.cat.subcategories.filter(s=>s.id!==sub.id);
-    renderMid();
-    renderRight();
-  });
-  header.appendChild(removeBtn);
-  wrap.appendChild(header);
-
-  const itemsWrap = document.createElement('div');
-  itemsWrap.className = 'budget-items';
-  sub.items.forEach(item=>{
-    itemsWrap.appendChild(renderBudgetItemRow(item, sub, opts, totalEl));
-  });
-  wrap.appendChild(itemsWrap);
-
-  const addItemBtn = document.createElement('button');
-  addItemBtn.type = 'button';
-  addItemBtn.className = 'add-item-btn';
-  addItemBtn.textContent = '+ Add line item';
-  addItemBtn.addEventListener('click', ()=>{
-    sub.items.push({ id: nextBudgetId(), freq:'monthly', label: sub.name||'', amount: 0 });
-    renderMid();
-    renderRight();
-  });
-  wrap.appendChild(addItemBtn);
-
-  return wrap;
-}
-
-function onBudgetItemChanged(sub, opts, subTotalEl){
-  subTotalEl.textContent = fmt(Math.abs(budgetSubYearTotal(sub)));
-  if (opts.catTotalEl){
-    opts.catTotalEl.textContent = fmt(Math.abs(budgetCatYearTotal(opts.cat)));
+  // Income/Spending header rows — bold and permanently expanded (no
+  // collapse chevron at all while editing: budget-group-row zeroes the
+  // arrow out exactly like the Net row, rather than hiding it until hover
+  // like the read-only table's group-row).
+  function groupHeaderRow(label, group, totalColorClass){
+    const tr = document.createElement('tr');
+    tr.className = 'budget-group-row';
+    tr.innerHTML = `<td><span class="catname"><span class="arrow"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${label}</span></span></td>` +
+      group.monthTotals.map(v=>`<td class="num">${fmt(v)}</td>`).join('') +
+      `<td class="num ${totalColorClass}">${fmt(group.grandTotal)}</td>`;
+    return tr;
   }
-  updateBudgetRightSummary();
+
+  tbody.appendChild(groupHeaderRow('Income', incomeGroup, 'group-total-income'));
+  incomeGroup.rows.forEach(row=>tbody.appendChild(row));
+  tbody.appendChild(buildPendingCatRow('income', budgetDraft.income));
+  tbody.appendChild(groupGapRow(14));
+
+  tbody.appendChild(groupHeaderRow('Spending', spendingGroup, 'group-total-spending'));
+  spendingGroup.rows.forEach(row=>tbody.appendChild(row));
+  tbody.appendChild(buildPendingCatRow('expense', budgetDraft.expenses));
+
+  return table;
 }
 
-function renderBudgetItemRow(item, sub, opts, subTotalEl){
+function selectBudgetSub(sel){
+  if (budgetSelection && budgetSelection.kind===sel.kind && budgetSelection.catId===sel.catId && budgetSelection.subId===sel.subId){
+    budgetSelection = null;
+  } else {
+    budgetSelection = sel;
+  }
+  renderMid();
+  renderRight();
+}
+
+// Patches just the cells whose numbers can have changed after an item's
+// amount/frequency edit (the selected subcategory's own row, its parent
+// category row, that group's header row, and the Net row) — see the
+// renderBudgetEditor comment for why this avoids a full renderMid().
+function updateLedgerRowCells(tr, monthly, total){
+  if (!tr) return;
+  const cells = tr.querySelectorAll('td.num');
+  monthly.forEach((v,i)=>{ if (cells[i]) cells[i].textContent = fmt(v); });
+  const totalCell = tr.querySelector('td:last-child');
+  if (totalCell) totalCell.textContent = fmt(total);
+}
+function refreshBudgetLiveTotals(kind, cat, sub){
+  const table = document.querySelector('.budget-editor-ledger');
+  if (!table) return;
+
+  const subMonthly = budgetSubDisplayMonthly(sub, kind);
+  updateLedgerRowCells(table.querySelector(`tr.sub-row[data-sub-id="${sub.id}"]`), subMonthly, subMonthly.reduce((a,b)=>a+b,0));
+
+  const catMonthly = budgetCatDisplayMonthly(cat, kind);
+  updateLedgerRowCells(table.querySelector(`tr.cat-row[data-cat-id="${cat.id}"]`), catMonthly, catMonthly.reduce((a,b)=>a+b,0));
+
+  const incomeMonthly = budgetGroupDisplayMonthly(budgetDraft.income, 'income');
+  const expenseMonthly = budgetGroupDisplayMonthly(budgetDraft.expenses, 'expense');
+  const groupRows = table.querySelectorAll('tr.budget-group-row');
+  const groupMonthly = kind === 'income' ? incomeMonthly : expenseMonthly;
+  updateLedgerRowCells(groupRows[kind==='income'?0:1], groupMonthly, groupMonthly.reduce((a,b)=>a+b,0));
+
+  const netMonthly = incomeMonthly.map((v,i)=>v - expenseMonthly[i]);
+  const netTotal = netMonthly.reduce((a,b)=>a+b,0);
+  const netRow = table.querySelector('tr.net-row');
+  if (netRow){
+    const cells = netRow.querySelectorAll('td.num');
+    netMonthly.forEach((v,i)=>{
+      if (!cells[i]) return;
+      cells[i].textContent = fmt(v);
+      cells[i].className = 'num ' + signCls(v);
+    });
+    const totalCell = netRow.querySelector('td:last-child');
+    if (totalCell){ totalCell.textContent = fmt(netTotal); totalCell.className = 'num ' + signCls(netTotal); }
+  }
+}
+
+// Editable line-item row — label/frequency/amount inputs plus a remove
+// button. Lives only in the right panel now (see renderBudgetSelectionPanel
+// below), for whichever subcategory is currently selected in the table.
+function renderBudgetItemRow(item, sub, cat, kind){
   const row = document.createElement('div');
   row.className = 'budget-item-row';
 
@@ -1407,22 +1913,31 @@ function renderBudgetItemRow(item, sub, opts, subTotalEl){
     amountInput.type = 'number';
     amountInput.step = '1';
     amountInput.className = 'budget-item-amount num';
-    const displayVal = opts.kind==='expense' ? Math.abs(Number(item.amount)||0) : (Number(item.amount)||0);
+    const displayVal = kind==='expense' ? Math.abs(Number(item.amount)||0) : (Number(item.amount)||0);
     amountInput.value = displayVal || '';
     amountInput.placeholder = '0';
     row.appendChild(amountInput);
   }
 
+  function onChanged(){
+    if (budgetRightSubTotalEl){
+      const v = budgetSubYearTotal(sub);
+      budgetRightSubTotalEl.textContent = fmtSigned(v);
+      budgetRightSubTotalEl.className = 'right-total-value num ' + signCls(v);
+    }
+    refreshBudgetLiveTotals(kind, cat, sub);
+    updateBudgetRightSummary();
+  }
   freqSelect.addEventListener('change', ()=>{
     item.freq = freqSelect.value;
-    onBudgetItemChanged(sub, opts, subTotalEl);
+    onChanged();
   });
   if (amountInput){
     amountInput.addEventListener('input', ()=>{
       const raw = parseFloat(amountInput.value);
       const v = isNaN(raw) ? 0 : raw;
-      item.amount = opts.kind==='expense' ? -Math.abs(v) : Math.abs(v);
-      onBudgetItemChanged(sub, opts, subTotalEl);
+      item.amount = kind==='expense' ? -Math.abs(v) : Math.abs(v);
+      onChanged();
     });
   }
 
@@ -1441,37 +1956,107 @@ function renderBudgetItemRow(item, sub, opts, subTotalEl){
   return row;
 }
 
+// Default right-panel content while editing a budget and nothing is
+// selected in the table — overall Income/Expenses/Net draft totals, live-
+// updated (via updateBudgetRightSummary) as items change elsewhere.
+function renderBudgetSummaryPanel(right){
+  const t = draftAnnualTotals(budgetDraft);
+  right.innerHTML = `
+    <div class="right-header">
+      <div class="right-eyebrow">Annual Plan Preview</div>
+      <div class="right-title">Budget draft</div>
+    </div>
+    <div class="right-body">
+      <div class="right-total-row"><span class="right-total-label">Income</span><span class="right-total-value num" id="budgetSumIncome">${fmt(t.incomeTotal)}</span></div>
+      <div class="right-total-row"><span class="right-total-label">Expenses</span><span class="right-total-value num" id="budgetSumExpenses">${fmt(t.expenseTotal)}</span></div>
+      <div class="right-total-row"><span class="right-total-label">Net</span><span class="right-total-value num ${signCls(t.net)}" id="budgetSumNet">${fmtSigned(t.net)}</span></div>
+      <div class="right-empty">Select a subcategory to edit its line items. Nothing is saved until you click <b>Save budget</b>.</div>
+    </div>
+  `;
+  budgetSummaryEls = {
+    income: document.getElementById('budgetSumIncome'),
+    expenses: document.getElementById('budgetSumExpenses'),
+    net: document.getElementById('budgetSumNet'),
+  };
+}
+
+// Right-panel content while a subcategory is selected in the budget
+// editor's table — its annual total plus its editable line items (see
+// renderBudgetItemRow), with an add-line-item button at the bottom (same
+// "+ Add income"/"+ Add expense" wording as the table's own add rows)
+// that opens the shared add-item modal — see openAddDraftItemModal.
+function renderBudgetSelectionPanel(right){
+  const { kind, catId, subId } = budgetSelection;
+  const list = kind === 'income' ? budgetDraft.income : budgetDraft.expenses;
+  const cat = list.find(c=>c.id===catId);
+  const sub = cat && cat.subcategories.find(s=>s.id===subId);
+  if (!cat || !sub){
+    budgetSelection = null;
+    renderBudgetSummaryPanel(right);
+    return;
+  }
+
+  const header = document.createElement('div');
+  header.className = 'right-header';
+  header.innerHTML = `<div class="right-eyebrow">${kind==='income'?'Income':'Spending'}</div><div class="right-title">${escapeHTML(sub.name || '(unnamed subcategory)')}</div>`;
+  right.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'right-body';
+  right.appendChild(body);
+
+  const totalVal = budgetSubYearTotal(sub);
+  const totalRow = document.createElement('div');
+  totalRow.className = 'right-total-row';
+  totalRow.innerHTML = `<span class="right-total-label">${DATA.year} Budget</span><span class="right-total-value num ${signCls(totalVal)}" id="budgetSubTotalEl">${fmtSigned(totalVal)}</span>`;
+  body.appendChild(totalRow);
+  budgetRightSubTotalEl = totalRow.querySelector('#budgetSubTotalEl');
+
+  const itemsWrap = document.createElement('div');
+  itemsWrap.className = 'budget-items';
+  sub.items.forEach(item=>{
+    itemsWrap.appendChild(renderBudgetItemRow(item, sub, cat, kind));
+  });
+  body.appendChild(itemsWrap);
+
+  const addItemBtn = document.createElement('button');
+  addItemBtn.type = 'button';
+  addItemBtn.className = 'add-item-btn';
+  addItemBtn.textContent = kind === 'income' ? '+ Add income' : '+ Add expense';
+  // Same modal as the read-only "Add to plan" quick-add (Year tab, Plan
+  // pill) — see openAddDraftItemModal — rather than dropping a blank,
+  // inline-edited row straight into the table.
+  addItemBtn.addEventListener('click', openAddDraftItemModal);
+  body.appendChild(addItemBtn);
+}
+
 /* ============================================================
    RIGHT PANEL
    ============================================================ */
 function renderRight(){
   const right = document.getElementById('rightPanel');
   right.innerHTML = '';
+  // .right-header's height varies (a long subcategory name can wrap to a
+  // second line), unlike the mid panel's fixed-height .mid-title, so any
+  // sticky table thead underneath it (table.txn-list, see styles.css)
+  // can't just use a constant offset — measure the header actually
+  // rendered below and publish it as a CSS var for that thead's `top`.
+  // Scheduled for next frame so it runs after every branch below has
+  // finished mutating `right`, regardless of which one ran.
+  requestAnimationFrame(()=>{
+    const headerEl = right.querySelector('.right-header');
+    right.style.setProperty('--right-sticky-top', (headerEl ? headerEl.getBoundingClientRect().height : 0) + 'px');
+  });
 
   if (budgetEditMode){
-    const t = draftAnnualTotals(budgetDraft);
-    right.innerHTML = `
-      <div class="right-header">
-        <div class="right-eyebrow">Annual Plan Preview</div>
-        <div class="right-title">${budgetEditTab==='expenses'?'Expenses':'Income'} draft</div>
-      </div>
-      <div class="right-body">
-        <div class="right-total-row"><span class="right-total-label">Income</span><span class="right-total-value num" id="budgetSumIncome">${fmt(t.incomeTotal)}</span></div>
-        <div class="right-total-row"><span class="right-total-label">Expenses</span><span class="right-total-value num" id="budgetSumExpenses">${fmt(t.expenseTotal)}</span></div>
-        <div class="right-total-row"><span class="right-total-label">Net</span><span class="right-total-value num ${signCls(t.net)}" id="budgetSumNet">${fmtSigned(t.net)}</span></div>
-        <div class="right-empty">Totals update as you edit. Nothing is saved until you click <b>Save budget</b>.</div>
-      </div>
-    `;
-    budgetSummaryEls = {
-      income: document.getElementById('budgetSumIncome'),
-      expenses: document.getElementById('budgetSumExpenses'),
-      net: document.getElementById('budgetSumNet'),
-    };
+    budgetRightSubTotalEl = null;
+    if (budgetSelection) renderBudgetSelectionPanel(right);
+    else renderBudgetSummaryPanel(right);
     return;
   }
 
-  if (searchQuery){
-    right.innerHTML = `<div class="right-body"><div class="right-empty">Search results are shown in the main panel. Clear the search to browse categories and see detail here.</div></div>`;
+  if (timeframe === 'transactions'){
+    right.innerHTML = `<div class="right-body"><div class="right-empty">Browse and filter every transaction in the main panel.</div></div>`;
     return;
   }
   if (!selectedSub){
@@ -1549,6 +2134,75 @@ function addSelectedBudgetItem(freq, label, rawAmount, target){
   recomputeDerived();
   return true;
 }
+
+// The budget editor's equivalent of addSelectedBudgetItem — same shape of
+// target ({kind,category,subcategory}) and the same category/subcategory-
+// name-based find-or-create behavior (so the modal's own "+ New" option
+// works identically either way), but writes into budgetDraft instead of
+// straight into BUDGETS_RAW, since nothing in the editor is real until
+// Save. Selects the (possibly newly-created) subcategory afterward, same
+// as clicking it directly, so the added item is right there in the right
+// panel.
+function addDraftBudgetItem(target, freq, label, rawAmount){
+  const amt = Math.abs(Number(rawAmount) || 0);
+  if (amt === 0) return false;
+  const list = target.kind === 'income' ? budgetDraft.income : budgetDraft.expenses;
+  let cat = list.find(c=>c.name === target.category);
+  if (!cat){
+    cat = { id: nextBudgetId(), name: target.category, subcategories: [] };
+    list.push(cat);
+  }
+  let sub = cat.subcategories.find(s=>s.name === target.subcategory);
+  if (!sub){
+    sub = { id: nextBudgetId(), name: target.subcategory, items: [] };
+    cat.subcategories.push(sub);
+  }
+  sub.items.push({
+    id: nextBudgetId(),
+    freq,
+    label: (label && label.trim()) || target.subcategory,
+    amount: target.kind==='expense' ? -amt : amt,
+  });
+  budgetOpenCats.add(cat.id);
+  budgetSelection = { kind: target.kind, catId: cat.id, subId: sub.id };
+  return true;
+}
+
+// Category/subcategory options for the add-item modal's Type-dependent
+// dropdowns while in the budget editor — the in-progress draft, merged
+// with whatever categories/subcategories loaded transactions already
+// establish (DATA.categories/DATA.incomeSubcats), same idea as
+// mergedExpenseCategories/mergedIncomeSubcats (the read-only flow's
+// equivalent, which merges the same transaction data with the committed
+// BUDGETS instead of the draft) — so a category a transactions CSV
+// already uses shows up here even before it's been added to this budget.
+// The modal only reads `.name` off each entry, so both sources' shapes
+// map down to the same plain {name, subcategories:[{name}]} regardless
+// of what other fields they carry.
+function draftCategoriesFor(kind){
+  const txCats = kind === 'income' ? DATA.incomeSubcats : DATA.categories;
+  const draftList = kind === 'income' ? budgetDraft.income : budgetDraft.expenses;
+  const result = txCats.map(c=>({ name: c.name, subcategories: c.subcategories.map(s=>({ name: s.name })) }));
+  const byName = new Map(result.map(c=>[c.name, c]));
+  draftList.forEach(cat=>{
+    let entry = byName.get(cat.name);
+    if (!entry){
+      entry = { name: cat.name, subcategories: [] };
+      byName.set(cat.name, entry);
+      result.push(entry);
+    }
+    const subByName = new Map(entry.subcategories.map(s=>[s.name, s]));
+    cat.subcategories.forEach(sub=>{
+      if (!subByName.has(sub.name)){
+        const subEntry = { name: sub.name };
+        entry.subcategories.push(subEntry);
+        subByName.set(sub.name, subEntry);
+      }
+    });
+  });
+  return result;
+}
+
 function getSelectedTxns(monthFilter){
   return DATA.transactions.filter(t=>{
     if (selectedSub.kind==='expense'){
@@ -1583,7 +2237,13 @@ function renderRightTxnTable(container, rows){
     });
   }
   table.appendChild(tbody);
-  container.appendChild(wrapScroll(table));
+  // Not wrapScroll()-wrapped like the mid panel's wide ledger tables — its
+  // fixed Date/Description/Amount columns always fit the 360px right
+  // panel, so it never needs its own horizontal scroll, and skipping the
+  // wrapper means its sticky thead (see table.txn-list th in styles.css)
+  // binds correctly to .right (the panel that actually scrolls) instead
+  // of being stranded inside a redundant nested scroll container.
+  container.appendChild(table);
 }
 
 function renderRightActualList(container, monthFilter){
@@ -1629,15 +2289,24 @@ function renderAddToPlanControl(container){
   container.appendChild(wrap);
 }
 
-// Centered modal (with a scrim behind it) for the "Add to plan" quick-add
-// form — built fresh and appended to <body> each time it opens, so it
-// overlays the whole app rather than being scoped to the right panel.
-function openAddToPlanModal(){
-  if (!selectedSub) return;
-  const kind = selectedSub.kind;
-  // Expenses and income both live at Category -> Subcategory -> items, so
-  // both kinds show the same category + subcategory pair of selectors below.
-  const mergedCatsFn = kind==='expense' ? mergedExpenseCategories : mergedIncomeSubcats;
+// Centered modal (with a scrim behind it) for the "Add to plan"/budget-
+// editor quick-add form — built fresh and appended to <body> each time it
+// opens, so it overlays the whole app rather than being scoped to the
+// right panel. Shared by both places a single line item gets added
+// without opening/being inside the full budget editor table:
+//   - openAddToPlanModal(): Year tab, Plan pill, row selected — writes
+//     straight into BUDGETS_RAW (see addSelectedBudgetItem).
+//   - openAddDraftItemModal(): budget editor, subcategory selected —
+//     writes into budgetDraft instead (see addDraftBudgetItem), since
+//     nothing there is real until Save.
+// `opts`: { kind, category, subcategory } is the initial selection (all
+// changeable in the form itself); `getCategories(kind)` returns that
+// caller's category/subcategory option list for a given Type; `onAdd
+// (target, freq, label, amount)` performs the actual write for whichever
+// data model that caller owns.
+function openAddBudgetItemModal(opts){
+  let currentKind = opts.kind;
+  const categoriesFor = (k) => opts.getCategories(k);
 
   const scrim = document.createElement('div');
   scrim.className = 'modal-scrim';
@@ -1651,6 +2320,35 @@ function openAddToPlanModal(){
   title.className = 'modal-title';
   title.textContent = 'Add line item to budget';
   dialog.appendChild(title);
+
+  // Type — Income vs. Spending, at the top since it decides which
+  // category/subcategory options the fields below offer.
+  const typeField = document.createElement('div');
+  typeField.className = 'modal-field';
+  const typeLabel = document.createElement('div');
+  typeLabel.className = 'modal-field-label';
+  typeLabel.textContent = 'Type';
+  const typeRow = document.createElement('div');
+  typeRow.className = 'modal-type-pills';
+  typeField.appendChild(typeLabel);
+  typeField.appendChild(typeRow);
+  dialog.appendChild(typeField);
+
+  const incomeTypePill = document.createElement('button');
+  incomeTypePill.type = 'button';
+  incomeTypePill.className = 'pill';
+  incomeTypePill.textContent = 'Income';
+  const expenseTypePill = document.createElement('button');
+  expenseTypePill.type = 'button';
+  expenseTypePill.className = 'pill';
+  expenseTypePill.textContent = 'Spending';
+  typeRow.appendChild(incomeTypePill);
+  typeRow.appendChild(expenseTypePill);
+  const syncTypePills = () => {
+    incomeTypePill.classList.toggle('active', currentKind==='income');
+    expenseTypePill.classList.toggle('active', currentKind==='expense');
+  };
+  syncTypePills();
 
   // Category / subcategory — default to whatever's currently selected in
   // the ledger, but changeable here so the new item can be filed elsewhere
@@ -1709,14 +2407,6 @@ function openAddToPlanModal(){
   catRow.className = 'modal-inline-row';
   const catSelect = document.createElement('select');
   catSelect.className = 'modal-select';
-  mergedCatsFn().forEach(c=>{
-    const opt = document.createElement('option');
-    opt.value = c.name;
-    opt.textContent = c.name;
-    if (c.name === selectedSub.category) opt.selected = true;
-    catSelect.appendChild(opt);
-  });
-  addNewOption(catSelect);
   catField.appendChild(catLabel);
   catField.appendChild(catRow);
   catRow.appendChild(wrapSelect(catSelect));
@@ -1725,7 +2415,6 @@ function openAddToPlanModal(){
   const catNewInput = makeNewNameInput('Category name');
   catRow.appendChild(catNewInput);
   const syncCatNew = () => { catNewInput.hidden = catSelect.value !== NEW_OPTION; };
-  syncCatNew();
 
   const subField = document.createElement('div');
   subField.className = 'modal-field';
@@ -1748,7 +2437,7 @@ function openAddToPlanModal(){
   const populateSubs = (catName, preferredSub) => {
     subSelect.innerHTML = '';
     if (catName !== NEW_OPTION){
-      const cat = mergedCatsFn().find(c=>c.name===catName);
+      const cat = categoriesFor(currentKind).find(c=>c.name===catName);
       (cat ? cat.subcategories : []).forEach(s=>{
         const opt = document.createElement('option');
         opt.value = s.name;
@@ -1763,12 +2452,37 @@ function openAddToPlanModal(){
     if (catName === NEW_OPTION) newOpt.selected = true;
     syncSubNew();
   };
-  populateSubs(selectedSub.category, selectedSub.subcategory);
+  const populateCats = (preferredCat, preferredSub) => {
+    catSelect.innerHTML = '';
+    categoriesFor(currentKind).forEach(c=>{
+      const opt = document.createElement('option');
+      opt.value = c.name;
+      opt.textContent = c.name;
+      if (c.name === preferredCat) opt.selected = true;
+      catSelect.appendChild(opt);
+    });
+    addNewOption(catSelect);
+    syncCatNew();
+    populateSubs(catSelect.value, preferredSub);
+  };
+  populateCats(opts.category, opts.subcategory);
   subSelect.addEventListener('change', syncSubNew);
   catSelect.addEventListener('change', () => {
     populateSubs(catSelect.value, null);
     syncCatNew();
   });
+  function selectType(kind){
+    if (kind === currentKind) return;
+    currentKind = kind;
+    syncTypePills();
+    // Switching Type has no notion of a "same" category/subcategory to
+    // carry over — Income and Spending are disjoint lists — so this
+    // starts over at that Type's first category (or "+ New" if it has
+    // none yet) rather than trying to preserve the old selection.
+    populateCats(null, null);
+  }
+  incomeTypePill.addEventListener('click', ()=>selectType('income'));
+  expenseTypePill.addEventListener('click', ()=>selectType('expense'));
 
   const descAmountGroup = document.createElement('div');
   descAmountGroup.className = 'modal-group';
@@ -1892,10 +2606,10 @@ function openAddToPlanModal(){
       subcategoryName = subNewInput.value.trim();
       if (!subcategoryName){ subNewInput.focus(); return; }
     }
-    const target = { kind, category: categoryName, subcategory: subcategoryName };
+    const target = { kind: currentKind, category: categoryName, subcategory: subcategoryName };
     let anyAdded = false;
     selectedFreqs.forEach(freq=>{
-      if (addSelectedBudgetItem(freq, labelInput.value, amountInput.value, target)) anyAdded = true;
+      if (opts.onAdd(target, freq, labelInput.value, amountInput.value)) anyAdded = true;
     });
     if (!anyAdded){
       amountInput.focus();
@@ -1909,6 +2623,39 @@ function openAddToPlanModal(){
 
   document.body.appendChild(scrim);
   labelInput.focus();
+}
+
+// "+ Add to plan" (Year tab, Plan pill, row selected): writes straight
+// into BUDGETS_RAW via addSelectedBudgetItem, same as before.
+function openAddToPlanModal(){
+  if (!selectedSub) return;
+  openAddBudgetItemModal({
+    kind: selectedSub.kind,
+    category: selectedSub.category,
+    subcategory: selectedSub.subcategory,
+    getCategories: (k)=> k==='income' ? mergedIncomeSubcats() : mergedExpenseCategories(),
+    onAdd: (target, freq, label, amount) => addSelectedBudgetItem(freq, label, amount, target),
+  });
+}
+
+// Budget editor's "+ Add income"/"+ Add expense" (right panel, a
+// subcategory selected in the table): same modal, but writes into
+// budgetDraft via addDraftBudgetItem instead, since nothing here is real
+// until Save.
+function openAddDraftItemModal(){
+  if (!budgetSelection) return;
+  const { kind, catId, subId } = budgetSelection;
+  const list = kind === 'income' ? budgetDraft.income : budgetDraft.expenses;
+  const cat = list.find(c=>c.id===catId);
+  const sub = cat && cat.subcategories.find(s=>s.id===subId);
+  if (!cat || !sub) return;
+  openAddBudgetItemModal({
+    kind,
+    category: cat.name,
+    subcategory: sub.name,
+    getCategories: draftCategoriesFor,
+    onAdd: addDraftBudgetItem,
+  });
 }
 
 function renderRightProjectedList(container){
@@ -1940,16 +2687,6 @@ function renderRightProjectedList(container){
   }
   renderRightTxnTable(container, rows);
 }
-
-/* ============================================================
-   SEARCH INPUT
-   ============================================================ */
-document.getElementById('searchInput').addEventListener('input', (e)=>{
-  searchQuery = e.target.value.trim();
-  selectedSub = null;
-  renderMid();
-  renderRight();
-});
 
 /* ============================================================
    DATA LOADING (CSV + budgets JSON)
@@ -2000,16 +2737,14 @@ document.getElementById('budgetPicker').addEventListener('change', async (e)=>{
   }
 });
 
-document.getElementById('downloadBudgets').addEventListener('click', ()=>{
+function downloadBudgetsJSON(){
   const blob = new Blob([JSON.stringify(BUDGETS_RAW, null, 2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = 'budgets.json';
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
-});
-
-document.getElementById('editBudgetBtn').addEventListener('click', enterBudgetEditor);
+}
 
 async function tryAutoFetch(){
   try{
@@ -2035,7 +2770,11 @@ async function tryAutoFetch(){
    ============================================================ */
 function renderAll(){
   renderLeftNav();
-  renderMid();
+  // renderAll() is always a real page change (new timeframe/tab/mode, a
+  // fresh CSV/budget load, ...) so — unlike an in-place update such as
+  // selecting or expanding a row — it should start scrolled to the top
+  // rather than preserving wherever the previous view happened to be.
+  renderMid({ resetScroll: true });
   renderRight();
 }
 renderAll();
