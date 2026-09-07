@@ -321,8 +321,8 @@
 
   .search-heading{
     flex-shrink:0; /* sits above the scrolling .table-scroll, not inside it */
-    font-size:13px;color:var(--text-muted);margin-bottom:16px;font-weight:600;
-    padding-top:24px; /* Transactions tab is the only user of this heading;
+    font-size:13px;color:var(--text-muted);margin-bottom:24px;font-weight:600;
+    padding:0 12px; /* Transactions tab is the only user of this heading;
       its sticky title bar sits flush above .mid-body (which has no top
       padding of its own — see .mid-body below), so this is what actually
       separates the heading from the bar. */
