@@ -117,6 +117,12 @@ function aggregate(allRows, sourceFiles){
   rows.forEach(r => monthsPresentSet.add(r.date.getMonth()));
   const monthsPresent = [...monthsPresentSet].sort((a,b)=>a-b);
   const currentMonthIndex = monthsPresent.length ? monthsPresent[monthsPresent.length-1] : null;
+  // "Today", for per-diem forecasting (see itemCurrentMonthSplit) — the
+  // latest day-of-month among transactions actually falling in
+  // currentMonthIndex, not just the single latest date overall, so it
+  // stays consistent with how currentMonthIndex itself is derived above.
+  const currentDay = currentMonthIndex === null ? null :
+    rows.reduce((max,r)=> r.date.getMonth()===currentMonthIndex ? Math.max(max, r.date.getDate()) : max, 0);
 
   const income = new Array(12).fill(0);
   rows.filter(r=>r.type==='Income').forEach(r=>{ income[r.date.getMonth()] += r.amount; });
@@ -196,7 +202,7 @@ function aggregate(allRows, sourceFiles){
   }));
 
   return {
-    year, months: MONTHS, monthsPresent, currentMonthIndex,
+    year, months: MONTHS, monthsPresent, currentMonthIndex, currentDay,
     income: income.map(v=>Math.round(v*100)/100),
     incomeSubcats,
     expenses: expenses.map(v=>Math.round(v*100)/100),
@@ -206,7 +212,7 @@ function aggregate(allRows, sourceFiles){
 
 function emptyData(){
   return {
-    year: new Date().getFullYear(), months: MONTHS, monthsPresent: [], currentMonthIndex: null,
+    year: new Date().getFullYear(), months: MONTHS, monthsPresent: [], currentMonthIndex: null, currentDay: null,
     income: new Array(12).fill(0), incomeSubcats: [],
     expenses: new Array(12).fill(0), net: new Array(12).fill(0), categories: [],
     transactions: [], sourceFiles: [],
@@ -216,35 +222,91 @@ function emptyData(){
 /* ============================================================
    BUDGETS — line-item schema + resolver
    {
-     "Expenses": { "<Category>": { "<Subcategory>": [ {freq,label,amount}, ... ] } },
-     "Income":   { "<Subcategory>": [ {freq,label,amount}, ... ] }
+     "Expenses": { "<Category>": { "<Subcategory>": [ {freq,amountType,label,amount}, ... ] } },
+     "Income":   { "<Subcategory>": [ {freq,amountType,label,amount}, ... ] }
    }
-   freq: "monthly" (scalar or 12-array) | "daily" (scalar, x days-in-month) |
-         3-letter month code ("jan".."dec", scalar, one-time).
+   freq: "monthly" (scalar or 12-array) | 3-letter month code ("jan".."dec",
+         scalar, one-time). "daily" is also still accepted when reading —
+         see isPerDiemItem below — but the editor no longer writes it.
+   amountType: "monthly" (default — amount is the flat total for whichever
+         month(s) freq applies to) | "perDiem" (amount is a per-day rate,
+         scaled by the number of days in each of those months).
    ============================================================ */
 function daysInMonth(year, monthIndex){ return new Date(year, monthIndex+1, 0).getDate(); }
+// Days left in a month counting from (and including) currentDay+1 through
+// the end of the month — e.g. August (31 days) with currentDay 17 leaves
+// 14. Clamped to 0 so a month already fully behind "today" never goes
+// negative.
+function remainingDaysInMonth(year, monthIndex, currentDay){
+  if (currentDay == null) return 0;
+  return Math.max(0, daysInMonth(year, monthIndex) - currentDay);
+}
+
+// A line item counts as per diem either via the current amountType field,
+// or — for line items saved before that field existed — via the legacy
+// freq:"daily" value, which meant exactly the same thing (a per-day rate,
+// applied every month). Budget-editor items get freq:"daily" normalized
+// away on load (see budgetsRawToDraft), but raw BUDGETS_RAW read directly
+// off disk (the read-only Plan/YTD/Forecast views, until the file is
+// re-exported) can still carry it, so both forms are checked everywhere a
+// line item's amount type matters.
+function isPerDiemItem(item){
+  return item.amountType === 'perDiem' || (item.freq||'').toLowerCase() === 'daily';
+}
 
 function resolveLineItem(item, year){
   const arr = new Array(12).fill(0);
   const freq = (item.freq||'').toLowerCase();
-  if (freq === 'monthly'){
+  const effectiveFreq = freq === 'daily' ? 'monthly' : freq;
+  const perDiem = isPerDiemItem(item);
+  const monthValue = (monthIndex) => {
+    const v = Number(item.amount)||0;
+    return perDiem ? v * daysInMonth(year, monthIndex) : v;
+  };
+  if (effectiveFreq === 'monthly'){
     if (Array.isArray(item.amount)){
+      // An explicit 12-value array is already a literal total per month —
+      // amountType doesn't apply to it.
       for (let i=0;i<12;i++) arr[i] = item.amount[i] || 0;
     } else {
-      const v = Number(item.amount)||0;
-      for (let i=0;i<12;i++) arr[i] = v;
+      for (let i=0;i<12;i++) arr[i] = monthValue(i);
     }
-  } else if (freq === 'daily'){
-    const v = Number(item.amount)||0;
-    for (let i=0;i<12;i++) arr[i] = v * daysInMonth(year, i);
   } else {
-    const mi = MONTH_ABBR.indexOf(freq);
-    if (mi !== -1) arr[mi] = Number(item.amount)||0;
+    const mi = MONTH_ABBR.indexOf(effectiveFreq);
+    if (mi !== -1) arr[mi] = monthValue(mi);
   }
   return arr.map(v=>Math.round(v*100)/100);
 }
 
-function resolveBudgets(raw, year){
+// This line item's contribution to the CURRENT (possibly partial) month
+// specifically, split into two pieces that combine differently with actual
+// spend in the Forecast pill (see projectedMonthly):
+//   - flat: a per-month (non-per-diem) item's ordinary full-month value,
+//     which merges into the existing actual-vs-full-month-plan comparison.
+//   - perDiemRemaining: a per diem item's rate times only the days left in
+//     the month, always added on top of that comparison — e.g. a $10/day
+//     item with 14 days left in August contributes $140 here, regardless
+//     of what's already been spent this month.
+// Returns zeros when there's no current month to speak of, when the item
+// doesn't apply to it, or (for an explicit per-month array amount, which
+// has no meaningful per diem interpretation) always via the flat side.
+function itemCurrentMonthSplit(item, year, cmi, currentDay){
+  if (cmi == null) return { flat: 0, perDiemRemaining: 0 };
+  const freq = (item.freq||'').toLowerCase();
+  const effectiveFreq = freq === 'daily' ? 'monthly' : freq;
+  const appliesToCmi = effectiveFreq === 'monthly' || MONTH_ABBR.indexOf(effectiveFreq) === cmi;
+  if (!appliesToCmi) return { flat: 0, perDiemRemaining: 0 };
+  if (Array.isArray(item.amount)){
+    return { flat: item.amount[cmi] || 0, perDiemRemaining: 0 };
+  }
+  const v = Number(item.amount) || 0;
+  if (isPerDiemItem(item)){
+    return { flat: 0, perDiemRemaining: v * remainingDaysInMonth(year, cmi, currentDay) };
+  }
+  return { flat: v, perDiemRemaining: 0 };
+}
+
+function resolveBudgets(raw, year, cmi, currentDay){
   // Expenses and Income share the same Category -> Subcategory -> items
   // shape, so both groups resolve through the same logic.
   const resolveGroup = (groupRaw) => {
@@ -253,10 +315,25 @@ function resolveBudgets(raw, year){
       out[catName] = {};
       Object.entries(subs||{}).forEach(([subName, items])=>{
         const list = Array.isArray(items) ? items : [];
-        const resolvedItems = list.map(it=>({ freq: it.freq, label: it.label||subName, amount: it.amount, monthly: resolveLineItem(it, year) }));
+        const resolvedItems = list.map(it=>({
+          freq: it.freq, amountType: it.amountType, label: it.label||subName, amount: it.amount,
+          monthly: resolveLineItem(it, year),
+        }));
         const monthly = new Array(12).fill(0);
         resolvedItems.forEach(it=>it.monthly.forEach((v,i)=>monthly[i]+=v));
-        out[catName][subName] = { monthly: monthly.map(v=>Math.round(v*100)/100), items: resolvedItems };
+        // Current-month split (see itemCurrentMonthSplit) — only ever
+        // meaningful for cmi, so kept as two scalars rather than 12-arrays.
+        let flatCmi = 0, perDiemRemainingCmi = 0;
+        list.forEach(it=>{
+          const split = itemCurrentMonthSplit(it, year, cmi, currentDay);
+          flatCmi += split.flat;
+          perDiemRemainingCmi += split.perDiemRemaining;
+        });
+        out[catName][subName] = {
+          monthly: monthly.map(v=>Math.round(v*100)/100), items: resolvedItems,
+          flatCmi: Math.round(flatCmi*100)/100,
+          perDiemRemainingCmi: Math.round(perDiemRemainingCmi*100)/100,
+        };
       });
     });
     return out;
@@ -273,37 +350,75 @@ function buildBudgetRollups(resolved, categories, incomeSubcats){
   // positive "planned spend" magnitude (matches Actual sign convention).
   const expenseCategoryMonthly = {}; // catName -> [12] positive
   const expenseSubMonthly = {};      // "cat||sub" -> [12] positive
+  // Current-month flat/per-diem-remaining split (see itemCurrentMonthSplit),
+  // rolled up the same bottom-up way and sign-flipped alongside monthly —
+  // catName/"cat||sub" -> scalar positive, used only by the Forecast pill's
+  // current-month blending (see projectedMonthly).
+  const expenseCategoryFlatCmi = {};
+  const expenseCategoryPerDiemRemainingCmi = {};
+  const expenseSubFlatCmi = {};
+  const expenseSubPerDiemRemainingCmi = {};
   Object.entries(resolved.expenses).forEach(([catName, subs])=>{
     const catArr = new Array(12).fill(0);
+    let catFlat = 0, catPerDiemRemaining = 0;
     Object.entries(subs).forEach(([subName, subData])=>{
       const posArr = subData.monthly.map(v=>-v);
-      expenseSubMonthly[catName+'||'+subName] = posArr;
+      const key = catName+'||'+subName;
+      expenseSubMonthly[key] = posArr;
       posArr.forEach((v,i)=>catArr[i]+=v);
+      expenseSubFlatCmi[key] = -subData.flatCmi;
+      expenseSubPerDiemRemainingCmi[key] = -subData.perDiemRemainingCmi;
+      catFlat += expenseSubFlatCmi[key];
+      catPerDiemRemaining += expenseSubPerDiemRemainingCmi[key];
     });
     expenseCategoryMonthly[catName] = catArr.map(v=>Math.round(v*100)/100);
+    expenseCategoryFlatCmi[catName] = Math.round(catFlat*100)/100;
+    expenseCategoryPerDiemRemainingCmi[catName] = Math.round(catPerDiemRemaining*100)/100;
   });
   const expenseTotalMonthly = new Array(12).fill(0);
   Object.values(expenseCategoryMonthly).forEach(arr=>arr.forEach((v,i)=>expenseTotalMonthly[i]+=v));
+  const expenseTotalFlatCmi = Object.values(expenseCategoryFlatCmi).reduce((a,b)=>a+b,0);
+  const expenseTotalPerDiemRemainingCmi = Object.values(expenseCategoryPerDiemRemainingCmi).reduce((a,b)=>a+b,0);
 
   // Income category (source) monthly = sum of its subcategories' (rolled-up
   // description) monthly — already positive, no sign flip needed. Same
   // bottom-up shape as expenses above.
   const incomeCategoryMonthly = {}; // catName -> [12] positive
   const incomeSubMonthly = {};      // "cat||sub" -> [12] positive
+  const incomeCategoryFlatCmi = {};
+  const incomeCategoryPerDiemRemainingCmi = {};
+  const incomeSubFlatCmi = {};
+  const incomeSubPerDiemRemainingCmi = {};
   Object.entries(resolved.income).forEach(([catName, subs])=>{
     const catArr = new Array(12).fill(0);
+    let catFlat = 0, catPerDiemRemaining = 0;
     Object.entries(subs).forEach(([subName, subData])=>{
-      incomeSubMonthly[catName+'||'+subName] = subData.monthly.slice();
+      const key = catName+'||'+subName;
+      incomeSubMonthly[key] = subData.monthly.slice();
       subData.monthly.forEach((v,i)=>catArr[i]+=v);
+      incomeSubFlatCmi[key] = subData.flatCmi;
+      incomeSubPerDiemRemainingCmi[key] = subData.perDiemRemainingCmi;
+      catFlat += incomeSubFlatCmi[key];
+      catPerDiemRemaining += incomeSubPerDiemRemainingCmi[key];
     });
     incomeCategoryMonthly[catName] = catArr.map(v=>Math.round(v*100)/100);
+    incomeCategoryFlatCmi[catName] = Math.round(catFlat*100)/100;
+    incomeCategoryPerDiemRemainingCmi[catName] = Math.round(catPerDiemRemaining*100)/100;
   });
   const incomeTotalMonthly = new Array(12).fill(0);
   Object.values(incomeCategoryMonthly).forEach(arr=>arr.forEach((v,i)=>incomeTotalMonthly[i]+=v));
+  const incomeTotalFlatCmi = Object.values(incomeCategoryFlatCmi).reduce((a,b)=>a+b,0);
+  const incomeTotalPerDiemRemainingCmi = Object.values(incomeCategoryPerDiemRemainingCmi).reduce((a,b)=>a+b,0);
 
   return {
     expenseCategoryMonthly, expenseSubMonthly, expenseTotalMonthly,
     incomeCategoryMonthly, incomeSubMonthly, incomeTotalMonthly,
+    expenseCategoryFlatCmi, expenseCategoryPerDiemRemainingCmi,
+    expenseSubFlatCmi, expenseSubPerDiemRemainingCmi,
+    expenseTotalFlatCmi, expenseTotalPerDiemRemainingCmi,
+    incomeCategoryFlatCmi, incomeCategoryPerDiemRemainingCmi,
+    incomeSubFlatCmi, incomeSubPerDiemRemainingCmi,
+    incomeTotalFlatCmi, incomeTotalPerDiemRemainingCmi,
   };
 }
 
@@ -319,12 +434,21 @@ let _budgetIdSeq = 1;
 function nextBudgetId(){ return 'b' + (_budgetIdSeq++); }
 
 function budgetsRawToDraft(raw){
-  const toItems = (items, fallbackLabel) => (Array.isArray(items) ? items : []).map(it => ({
-    id: nextBudgetId(),
-    freq: it.freq || 'monthly',
-    label: it.label != null ? it.label : fallbackLabel,
-    amount: it.amount,
-  }));
+  // Normalizes the legacy freq:"daily" value (see isPerDiemItem) into the
+  // current freq/amountType pair as soon as a raw item enters the editor,
+  // so the editor's two dropdowns always agree with what's actually
+  // stored — resolveLineItem/itemCurrentMonthSplit still accept the
+  // legacy form directly for files that never get re-opened here.
+  const toItems = (items, fallbackLabel) => (Array.isArray(items) ? items : []).map(it => {
+    const legacyDaily = (it.freq||'').toLowerCase() === 'daily';
+    return {
+      id: nextBudgetId(),
+      freq: legacyDaily ? 'monthly' : (it.freq || 'monthly'),
+      amountType: it.amountType || (legacyDaily ? 'perDiem' : 'monthly'),
+      label: it.label != null ? it.label : fallbackLabel,
+      amount: it.amount,
+    };
+  });
   // Expenses and Income share the same Category -> Subcategory -> items
   // shape, so both groups convert through the same logic.
   const toCategories = (groupRaw) => Object.entries(groupRaw || {}).map(([catName, subs]) => ({
@@ -345,7 +469,7 @@ function budgetsRawToDraft(raw){
 function draftToBudgetsRaw(draft){
   const serializeItems = (items) => items
     .filter(it => (it.label && it.label.trim()) || it.amount)
-    .map(it => ({ freq: it.freq, label: it.label, amount: it.amount }));
+    .map(it => ({ freq: it.freq, amountType: it.amountType || 'monthly', label: it.label, amount: it.amount }));
   const serializeCategories = (list) => {
     const out = {};
     list.forEach(cat => {
@@ -373,7 +497,7 @@ function draftToBudgetsRaw(draft){
 // always displays/accepts positive numbers for expenses and flips the
 // sign on read/write so users never have to think about it.
 function budgetItemMonthly(item){
-  return resolveLineItem({ freq: item.freq, amount: item.amount }, DATA.year);
+  return resolveLineItem({ freq: item.freq, amountType: item.amountType, amount: item.amount }, DATA.year);
 }
 function budgetItemYearTotal(item){
   return budgetItemMonthly(item).reduce((a, b) => a + b, 0);
@@ -492,7 +616,7 @@ function importLastYearCSVIntoDraft(files){
         }
         const avgMonthly = Math.round(sub.yearly / 12);
         if (avgMonthly !== 0){
-          draftSub.items.push({ id: nextBudgetId(), freq: 'monthly', label: `${sub.name} (last year avg)`, amount: -avgMonthly });
+          draftSub.items.push({ id: nextBudgetId(), freq: 'monthly', amountType: 'monthly', label: `${sub.name} (last year avg)`, amount: -avgMonthly });
         }
       });
       budgetOpenCats.add(draftCat.id);
@@ -512,7 +636,7 @@ function importLastYearCSVIntoDraft(files){
         }
         const avgMonthly = Math.round(sub.yearly / 12);
         if (avgMonthly !== 0){
-          draftSub.items.push({ id: nextBudgetId(), freq: 'monthly', label: `${sub.name} (last year avg)`, amount: avgMonthly });
+          draftSub.items.push({ id: nextBudgetId(), freq: 'monthly', amountType: 'monthly', label: `${sub.name} (last year avg)`, amount: avgMonthly });
         }
       });
       budgetOpenCats.add(draftCat.id);
@@ -531,7 +655,7 @@ function importLastYearCSVIntoDraft(files){
    ============================================================ */
 let DATA = emptyData();
 let BUDGETS_RAW = emptyBudgets();
-let BUDGETS = resolveBudgets(BUDGETS_RAW, DATA.year);
+let BUDGETS = resolveBudgets(BUDGETS_RAW, DATA.year, DATA.currentMonthIndex, DATA.currentDay);
 let ROLL = buildBudgetRollups(BUDGETS, DATA.categories, DATA.incomeSubcats);
 
 // Budget file identity, for the status bar (see renderStatusBar). Loaded
@@ -896,13 +1020,28 @@ function renderPills(){
 }
 
 /* ---- Blended (Projection) monthly value for a subcategory ---- */
-function projectedMonthly(actualMonthly, budgetMonthly){
+// flatCmi/perDiemRemainingCmi (see itemCurrentMonthSplit/buildBudgetRollups)
+// refine the current month's figure only: flatCmi is the ordinary
+// per-month items' full-month plan, compared against actual-so-far the
+// same "whichever's bigger" way budgetMonthly[cmi] always was; per diem
+// items are pulled out of that comparison entirely and their
+// remaining-days amount is always added on top instead, since a per diem
+// item's plan isn't "the whole month" to compare against — it's just
+// whatever's left of the month from here. Both default to budgetMonthly's
+// own current-month value / 0 so callers that don't have the split handy
+// (there currently are none) still get the old behavior.
+function projectedMonthly(actualMonthly, budgetMonthly, flatCmi, perDiemRemainingCmi){
   const cmi = DATA.currentMonthIndex;
   const out = new Array(12).fill(0);
   for (let i=0;i<12;i++){
     if (cmi === null){ out[i] = budgetMonthly[i]; continue; }
     if (i < cmi) out[i] = actualMonthly[i];
-    else if (i === cmi) out[i] = Math.abs(actualMonthly[i]) > Math.abs(budgetMonthly[i]) ? actualMonthly[i] : budgetMonthly[i];
+    else if (i === cmi){
+      const flatPlan = flatCmi != null ? flatCmi : budgetMonthly[i];
+      const remaining = perDiemRemainingCmi || 0;
+      const flatProjected = Math.abs(actualMonthly[i]) > Math.abs(flatPlan) ? actualMonthly[i] : flatPlan;
+      out[i] = Math.round((flatProjected + remaining)*100)/100;
+    }
     else out[i] = budgetMonthly[i];
   }
   return out;
@@ -954,12 +1093,15 @@ function renderYearTable(){
   // needed for Net regardless of whether a group is currently expanded, so
   // buildGroup always computes them and only builds the detail <tr>s when
   // open — see buildGroup below.
-  function buildGroup(kind, categories, catBudgetMonthly, subBudgetMonthly, isOpen){
+  function buildGroup(kind, categories, catBudgetMonthly, subBudgetMonthly, cmiSplit, isOpen){
     const monthTotals = new Array(12).fill(0);
     let grandTotal = 0;
     const rows = [];
     categories.forEach(cat=>{
-      const { values, dashMask } = yearRowValues(cat.monthly, catBudgetMonthly[cat.name] || new Array(12).fill(0));
+      const { values, dashMask } = yearRowValues(
+        cat.monthly, catBudgetMonthly[cat.name] || new Array(12).fill(0),
+        cmiSplit.catFlat[cat.name], cmiSplit.catPerDiem[cat.name]
+      );
       values.forEach((v,i)=>monthTotals[i]+=v);
       const total = values.reduce((a,b)=>a+b,0);
       grandTotal += total;
@@ -979,8 +1121,11 @@ function renderYearTable(){
       rows.push(tr);
 
       cat.subcategories.forEach(sub=>{
-        const subBudget = subBudgetMonthly[cat.name+'||'+sub.name] || new Array(12).fill(0);
-        const { values: subVals, dashMask: subDash } = yearRowValues(sub.monthly, subBudget);
+        const key = cat.name+'||'+sub.name;
+        const subBudget = subBudgetMonthly[key] || new Array(12).fill(0);
+        const { values: subVals, dashMask: subDash } = yearRowValues(
+          sub.monthly, subBudget, cmiSplit.subFlat[key], cmiSplit.subPerDiem[key]
+        );
         const subTotal = subVals.reduce((a,b)=>a+b,0);
         const isSel = selectedSub && selectedSub.kind===kind && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
         const sr = document.createElement('tr');
@@ -998,8 +1143,14 @@ function renderYearTable(){
     return { monthTotals, grandTotal, rows };
   }
 
-  const incomeGroup = buildGroup('income', mergedIncomeSubcats(), ROLL.incomeCategoryMonthly, ROLL.incomeSubMonthly, openGroups.has('income'));
-  const spendingGroup = buildGroup('expense', mergedExpenseCategories(), ROLL.expenseCategoryMonthly, ROLL.expenseSubMonthly, openGroups.has('expenses'));
+  const incomeGroup = buildGroup('income', mergedIncomeSubcats(), ROLL.incomeCategoryMonthly, ROLL.incomeSubMonthly, {
+    catFlat: ROLL.incomeCategoryFlatCmi, catPerDiem: ROLL.incomeCategoryPerDiemRemainingCmi,
+    subFlat: ROLL.incomeSubFlatCmi, subPerDiem: ROLL.incomeSubPerDiemRemainingCmi,
+  }, openGroups.has('income'));
+  const spendingGroup = buildGroup('expense', mergedExpenseCategories(), ROLL.expenseCategoryMonthly, ROLL.expenseSubMonthly, {
+    catFlat: ROLL.expenseCategoryFlatCmi, catPerDiem: ROLL.expenseCategoryPerDiemRemainingCmi,
+    subFlat: ROLL.expenseSubFlatCmi, subPerDiem: ROLL.expenseSubPerDiemRemainingCmi,
+  }, openGroups.has('expenses'));
 
   // Net row — derived from both groups' totals, always visible regardless
   // of which (if either) group is expanded; not collapsible or selectable.
@@ -1071,12 +1222,12 @@ function plannedMonthMask(){
 }
 
 // Resolves the 12 display values + a dash-mask for a row, based on the active pill.
-function yearRowValues(actualMonthly, budgetMonthly){
+function yearRowValues(actualMonthly, budgetMonthly, flatCmi, perDiemRemainingCmi){
   if (pill === 'plan'){
     return { values: budgetMonthly, dashMask: new Array(12).fill(false) };
   }
   if (pill === 'projection'){
-    return { values: projectedMonthly(actualMonthly, budgetMonthly), dashMask: new Array(12).fill(false) };
+    return { values: projectedMonthly(actualMonthly, budgetMonthly, flatCmi, perDiemRemainingCmi), dashMask: new Array(12).fill(false) };
   }
   // ytd
   const values = actualMonthly.slice();
@@ -1884,7 +2035,11 @@ function renderBudgetItemRow(item, sub, cat, kind){
 
   const freqSelect = document.createElement('select');
   freqSelect.className = 'budget-item-freq';
-  const freqOptions = [['monthly','Monthly'],['daily','Daily'], ...MONTHS_FULL.map((m,i)=>[MONTH_ABBR[i], m+' (once)'])];
+  // Items reaching this row always come from budgetDraft, where the legacy
+  // freq:"daily" value has already been normalized into freq:"monthly" +
+  // amountType:"perDiem" (see budgetsRawToDraft) — so "Daily" itself is no
+  // longer offered here, only via the Amount Type select below.
+  const freqOptions = [['monthly','Monthly'], ...MONTHS_FULL.map((m,i)=>[MONTH_ABBR[i], m+' (once)'])];
   const curFreq = (item.freq||'monthly').toLowerCase();
   freqOptions.forEach(([val,label])=>{
     const opt = document.createElement('option');
@@ -1895,6 +2050,27 @@ function renderBudgetItemRow(item, sub, cat, kind){
   row.appendChild(freqSelect);
 
   const isArrayAmount = Array.isArray(item.amount) && curFreq === 'monthly';
+  // Amount Type has no meaning for an explicit 12-value array (already a
+  // literal total per month — see resolveLineItem), so it's skipped
+  // entirely alongside the amount input in that case.
+  if (!isArrayAmount){
+    const amountTypeSelect = document.createElement('select');
+    amountTypeSelect.className = 'budget-item-freq';
+    const amountTypeOptions = [['monthly','Per Month'],['perDiem','Per Diem']];
+    const curAmountType = item.amountType === 'perDiem' ? 'perDiem' : 'monthly';
+    amountTypeOptions.forEach(([val,label])=>{
+      const opt = document.createElement('option');
+      opt.value = val; opt.textContent = label;
+      if (curAmountType === val) opt.selected = true;
+      amountTypeSelect.appendChild(opt);
+    });
+    amountTypeSelect.addEventListener('change', ()=>{
+      item.amountType = amountTypeSelect.value;
+      onChanged();
+    });
+    row.appendChild(amountTypeSelect);
+  }
+
   let amountInput = null;
   if (isArrayAmount){
     const note = document.createElement('span');
@@ -2120,7 +2296,7 @@ function getSelectedBudgetItems(){
 // Selects the (possibly newly-created) subcategory afterward, same as
 // clicking it directly, so the added item is right there in the right
 // panel.
-function addDraftBudgetItem(target, freq, label, rawAmount){
+function addDraftBudgetItem(target, freq, label, rawAmount, amountType){
   const amt = Math.abs(Number(rawAmount) || 0);
   if (amt === 0) return false;
   const list = target.kind === 'income' ? budgetDraft.income : budgetDraft.expenses;
@@ -2137,6 +2313,7 @@ function addDraftBudgetItem(target, freq, label, rawAmount){
   sub.items.push({
     id: nextBudgetId(),
     freq,
+    amountType: amountType === 'perDiem' ? 'perDiem' : 'monthly',
     label: (label && label.trim()) || target.subcategory,
     amount: target.kind==='expense' ? -amt : amt,
   });
@@ -2257,7 +2434,7 @@ function renderRightPlannedList(container, monthFilter){
 // `opts`: { kind, category, subcategory } is the initial selection (all
 // changeable in the form itself); `getCategories(kind)` returns the
 // category/subcategory option list for a given Type; `onAdd(target, freq,
-// label, amount)` performs the actual write into budgetDraft.
+// label, amount, amountType)` performs the actual write into budgetDraft.
 function openAddBudgetItemModal(opts){
   let currentKind = opts.kind;
   const categoriesFor = (k) => opts.getCategories(k);
@@ -2469,6 +2646,41 @@ function openAddBudgetItemModal(opts){
   amountField.appendChild(amountInput);
   descAmountGroup.appendChild(amountField);
 
+  // Amount type — whether Amount above is a flat total for whichever
+  // month(s) get picked below, or a per-day rate multiplied out by the
+  // number of days in each of those months (see resolveLineItem and, for
+  // the Forecast pill's current-month figure specifically,
+  // itemCurrentMonthSplit).
+  let amountType = 'monthly';
+  const amountTypeField = document.createElement('div');
+  amountTypeField.className = 'modal-field';
+  const amountTypeLabel = document.createElement('div');
+  amountTypeLabel.className = 'modal-field-label';
+  amountTypeLabel.textContent = 'Amount Type';
+  const amountTypeRow = document.createElement('div');
+  amountTypeRow.className = 'modal-type-pills';
+  amountTypeField.appendChild(amountTypeLabel);
+  amountTypeField.appendChild(amountTypeRow);
+  descAmountGroup.appendChild(amountTypeField);
+
+  const perMonthPill = document.createElement('button');
+  perMonthPill.type = 'button';
+  perMonthPill.className = 'pill';
+  perMonthPill.textContent = 'Per Month';
+  const perDiemPill = document.createElement('button');
+  perDiemPill.type = 'button';
+  perDiemPill.className = 'pill';
+  perDiemPill.textContent = 'Per Diem';
+  amountTypeRow.appendChild(perMonthPill);
+  amountTypeRow.appendChild(perDiemPill);
+  const syncAmountTypePills = () => {
+    perMonthPill.classList.toggle('active', amountType === 'monthly');
+    perDiemPill.classList.toggle('active', amountType === 'perDiem');
+  };
+  syncAmountTypePills();
+  perMonthPill.addEventListener('click', ()=>{ amountType = 'monthly'; syncAmountTypePills(); });
+  perDiemPill.addEventListener('click', ()=>{ amountType = 'perDiem'; syncAmountTypePills(); });
+
   // Frequency picker — a pill toggle group (same look as the Expenses/
   // Income and YTD/Projection/Plan pills elsewhere) instead of a <select>,
   // so more than one month can be picked at once. "Every month" and
@@ -2563,7 +2775,7 @@ function openAddBudgetItemModal(opts){
     const target = { kind: currentKind, category: categoryName, subcategory: subcategoryName };
     let anyAdded = false;
     selectedFreqs.forEach(freq=>{
-      if (opts.onAdd(target, freq, labelInput.value, amountInput.value)) anyAdded = true;
+      if (opts.onAdd(target, freq, labelInput.value, amountInput.value, amountType)) anyAdded = true;
     });
     if (!anyAdded){
       amountInput.focus();
@@ -2601,24 +2813,45 @@ function openAddDraftItemModal(){
 
 function renderRightProjectedList(container){
   const cmi = DATA.currentMonthIndex;
+  const currentDay = DATA.currentDay;
   const actualMonthly = getSelectedActualMonthly();
   const items = getSelectedBudgetItems();
-  const budgetMonthly = new Array(12).fill(0);
-  items.forEach(it=>it.monthly.forEach((v,i)=>budgetMonthly[i]+=v));
-  // Note: for expenses, actualMonthly is a positive magnitude while budgetMonthly
-  // (raw item amounts) is negative — compare on absolute value, as in the table.
+  const flatItems = items.filter(it=>!isPerDiemItem(it));
+  const perDiemItems = items.filter(it=>isPerDiemItem(it));
+  const flatMonthly = new Array(12).fill(0);
+  flatItems.forEach(it=>it.monthly.forEach((v,i)=>flatMonthly[i]+=v));
+  // Note: for expenses, actualMonthly is a positive magnitude while
+  // flatMonthly (raw item amounts) is negative — compare on absolute
+  // value, as in the table.
+  const txnRow = (t) => ({ dateLabel: (parseInt(t.date.slice(5,7),10))+'/'+(parseInt(t.date.slice(8,10),10)), description: t.description, amount: t.amount, planned: false });
   const rows = [];
   for (let m=0;m<12;m++){
-    let useActual;
-    if (cmi === null) useActual = false;
-    else if (m < cmi) useActual = true;
-    else if (m === cmi) useActual = Math.abs(actualMonthly[m]) > Math.abs(budgetMonthly[m]);
-    else useActual = false;
-
-    if (useActual){
-      getSelectedTxns(m).forEach(t=>{
-        rows.push({ dateLabel: (parseInt(t.date.slice(5,7),10))+'/'+(parseInt(t.date.slice(8,10),10)), description: t.description, amount: t.amount, planned: false });
+    if (cmi !== null && m === cmi){
+      // Current (partial) month — matches the Year table's Forecast pill
+      // (see projectedMonthly): actual transactions so far always show;
+      // per diem items always add a synthetic "rest of the month" row for
+      // their remaining days, on top of that, regardless of actual; flat
+      // items keep the old whichever's-bigger choice between showing as
+      // actual (already covered by the transactions above) or as their
+      // own full month's planned rows, so they aren't listed twice.
+      getSelectedTxns(m).forEach(t=>rows.push(txnRow(t)));
+      if (!(Math.abs(actualMonthly[m]) > Math.abs(flatMonthly[m]))){
+        flatItems.forEach(it=>{
+          const v = it.monthly[m];
+          if (v) rows.push({ dateLabel: MONTHS[m], description: it.label, amount: v, planned: true });
+        });
+      }
+      perDiemItems.forEach(it=>{
+        const remainingDays = remainingDaysInMonth(DATA.year, m, currentDay);
+        if (remainingDays <= 0) return;
+        const rate = Number(it.amount) || 0;
+        const v = Math.round(rate * remainingDays * 100)/100;
+        if (v) rows.push({ dateLabel: `Rest of ${MONTHS[m]}`, description: it.label, amount: v, planned: true });
       });
+      continue;
+    }
+    if (cmi !== null && m < cmi){
+      getSelectedTxns(m).forEach(t=>rows.push(txnRow(t)));
     } else {
       items.forEach(it=>{
         const v = it.monthly[m];
@@ -2639,7 +2872,7 @@ function setIOStatus(msg, kind){
 }
 
 function recomputeDerived(){
-  BUDGETS = resolveBudgets(BUDGETS_RAW, DATA.year);
+  BUDGETS = resolveBudgets(BUDGETS_RAW, DATA.year, DATA.currentMonthIndex, DATA.currentDay);
   ROLL = buildBudgetRollups(BUDGETS, DATA.categories, DATA.incomeSubcats);
 }
 

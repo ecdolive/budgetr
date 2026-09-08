@@ -842,9 +842,14 @@
   /* Right panel's line-item editor for whichever subcategory is selected
      in the budget editor table (see renderBudgetSelectionPanel). */
   .budget-items{margin-top:8px;display:flex;flex-direction:column;gap:8px;}
-  .budget-item-row{display:flex;align-items:center;gap:8px;}
+  /* flex-wrap so a third select (Amount Type, alongside the existing
+     Frequency one) doesn't overflow the right panel's fixed width — the
+     label is forced onto its own full-width line via flex-basis:100%
+     below, with Frequency/Amount Type/Amount/remove wrapping onto the
+     line(s) after it as needed. */
+  .budget-item-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
   .budget-item-label{
-    flex:1 1 auto;
+    flex:1 1 100%;
     min-width:0;
     background:var(--bg-input);
     border:1px solid var(--border);
