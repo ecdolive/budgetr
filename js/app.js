@@ -867,17 +867,13 @@ function renderMid(opts){
 function renderBudgetActions(){
   const wrap = document.createElement('div');
   wrap.className = 'mid-title-actions';
-  const exportBtn = document.createElement('button');
-  exportBtn.type = 'button';
-  exportBtn.className = 'file-btn';
-  exportBtn.textContent = 'Export';
-  exportBtn.addEventListener('click', downloadBudgetsJSON);
+  // Export now lives in the status bar (see renderStatusBar), appearing
+  // there only once there's actually something unexported to save.
   const editBtn = document.createElement('button');
   editBtn.type = 'button';
   editBtn.className = 'file-btn primary';
   editBtn.textContent = 'Edit';
   editBtn.addEventListener('click', enterBudgetEditor);
-  wrap.appendChild(exportBtn);
   wrap.appendChild(editBtn);
   return wrap;
 }
