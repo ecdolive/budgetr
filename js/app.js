@@ -2028,9 +2028,8 @@ function renderBudgetSelectionPanel(right){
   addItemBtn.type = 'button';
   addItemBtn.className = 'add-item-btn';
   addItemBtn.textContent = kind === 'income' ? '+ Add income' : '+ Add expense';
-  // Same modal as the read-only "Add to plan" quick-add (Year tab, Plan
-  // pill) — see openAddDraftItemModal — rather than dropping a blank,
-  // inline-edited row straight into the table.
+  // Opens the shared add-item modal (see openAddDraftItemModal) rather
+  // than dropping a blank, inline-edited row straight into the table.
   addItemBtn.addEventListener('click', openAddDraftItemModal);
   body.appendChild(addItemBtn);
 }
@@ -2098,7 +2097,6 @@ function renderRight(){
     renderRightActualList(body, null);
   } else if (pill === 'plan'){
     renderRightPlannedList(body, null, null);
-    renderAddToPlanControl(body);
   } else {
     renderRightProjectedList(body);
   }
@@ -2114,39 +2112,13 @@ function getSelectedBudgetItems(){
   return sub ? sub.items : [];
 }
 
-// Adds a new raw budget line item for whatever is currently selected —
-// same target the "Add to plan" quick-add control (Year tab, Plan pill)
-// writes to. Expenses and income both live at Category -> Subcategory ->
-// items, so both kinds are written the same way. Amount is entered by the
-// user as a plain positive number; the stored sign follows the same
-// convention as everywhere else BUDGETS_RAW is written (negative for
-// expenses, positive for income).
-function addSelectedBudgetItem(freq, label, rawAmount, target){
-  const t = target || selectedSub;
-  if (!t) return false;
-  const amt = Math.abs(Number(rawAmount) || 0);
-  if (amt === 0) return false;
-  const item = {
-    freq,
-    label: (label && label.trim()) || t.subcategory,
-    amount: t.kind==='expense' ? -amt : amt,
-  };
-  const group = t.kind === 'expense' ? BUDGETS_RAW.Expenses : BUDGETS_RAW.Income;
-  if (!group[t.category]) group[t.category] = {};
-  const subs = group[t.category];
-  if (!subs[t.subcategory]) subs[t.subcategory] = [];
-  subs[t.subcategory].push(item);
-  recomputeDerived();
-  return true;
-}
-
-// The budget editor's equivalent of addSelectedBudgetItem — same shape of
-// target ({kind,category,subcategory}) and the same category/subcategory-
-// name-based find-or-create behavior (so the modal's own "+ New" option
-// works identically either way), but writes into budgetDraft instead of
-// straight into BUDGETS_RAW, since nothing in the editor is real until
-// Save. Selects the (possibly newly-created) subcategory afterward, same
-// as clicking it directly, so the added item is right there in the right
+// Adds a new raw budget line item for whatever's selected in the budget
+// editor — target is {kind,category,subcategory}, with the same
+// category/subcategory-name-based find-or-create behavior the modal's own
+// "+ New" option relies on. Writes into budgetDraft rather than straight
+// into BUDGETS_RAW, since nothing in the editor is real until Save.
+// Selects the (possibly newly-created) subcategory afterward, same as
+// clicking it directly, so the added item is right there in the right
 // panel.
 function addDraftBudgetItem(target, freq, label, rawAmount){
   const amt = Math.abs(Number(rawAmount) || 0);
@@ -2276,39 +2248,16 @@ function renderRightPlannedList(container, monthFilter){
   renderRightTxnTable(container, rows);
 }
 
-// Quick-add control shown under the planned line items (Year tab, Plan
-// pill, row selected) — lets the user add a one-time or monthly recurring
-// budget line item for whatever's selected without opening the full
-// budget editor. Writes straight to BUDGETS_RAW via addSelectedBudgetItem.
-function renderAddToPlanControl(container){
-  const wrap = document.createElement('div');
-  wrap.className = 'add-plan-wrap';
-
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = 'add-item-btn';
-  btn.textContent = '+ Add to plan';
-  btn.addEventListener('click', openAddToPlanModal);
-  wrap.appendChild(btn);
-
-  container.appendChild(wrap);
-}
-
-// Centered modal (with a scrim behind it) for the "Add to plan"/budget-
-// editor quick-add form — built fresh and appended to <body> each time it
-// opens, so it overlays the whole app rather than being scoped to the
-// right panel. Shared by both places a single line item gets added
-// without opening/being inside the full budget editor table:
-//   - openAddToPlanModal(): Year tab, Plan pill, row selected — writes
-//     straight into BUDGETS_RAW (see addSelectedBudgetItem).
-//   - openAddDraftItemModal(): budget editor, subcategory selected —
-//     writes into budgetDraft instead (see addDraftBudgetItem), since
-//     nothing there is real until Save.
+// Centered modal (with a scrim behind it) for the budget editor's add-item
+// form — built fresh and appended to <body> each time it opens, so it
+// overlays the whole app rather than being scoped to the right panel.
+// Opened via openAddDraftItemModal() (budget editor, subcategory selected),
+// which writes into budgetDraft rather than straight into BUDGETS_RAW,
+// since nothing here is real until Save (see addDraftBudgetItem).
 // `opts`: { kind, category, subcategory } is the initial selection (all
-// changeable in the form itself); `getCategories(kind)` returns that
-// caller's category/subcategory option list for a given Type; `onAdd
-// (target, freq, label, amount)` performs the actual write for whichever
-// data model that caller owns.
+// changeable in the form itself); `getCategories(kind)` returns the
+// category/subcategory option list for a given Type; `onAdd(target, freq,
+// label, amount)` performs the actual write into budgetDraft.
 function openAddBudgetItemModal(opts){
   let currentKind = opts.kind;
   const categoriesFor = (k) => opts.getCategories(k);
@@ -2628,19 +2577,6 @@ function openAddBudgetItemModal(opts){
 
   document.body.appendChild(scrim);
   labelInput.focus();
-}
-
-// "+ Add to plan" (Year tab, Plan pill, row selected): writes straight
-// into BUDGETS_RAW via addSelectedBudgetItem, same as before.
-function openAddToPlanModal(){
-  if (!selectedSub) return;
-  openAddBudgetItemModal({
-    kind: selectedSub.kind,
-    category: selectedSub.category,
-    subcategory: selectedSub.subcategory,
-    getCategories: (k)=> k==='income' ? mergedIncomeSubcats() : mergedExpenseCategories(),
-    onAdd: (target, freq, label, amount) => addSelectedBudgetItem(freq, label, amount, target),
-  });
 }
 
 // Budget editor's "+ Add income"/"+ Add expense" (right panel, a
