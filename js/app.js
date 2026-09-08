@@ -2754,12 +2754,12 @@ async function onBudgetPickerChange(e){
 }
 
 // Default filename for a budget that's never been loaded from or exported
-// to a file yet, e.g. "Budget-20260907-14.23.05.json".
+// to a file yet, e.g. "Budget-20260907-142305.json".
 function defaultBudgetFileName(){
   const d = new Date();
   const pad = n => String(n).padStart(2,'0');
   const yyyymmdd = `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}`;
-  const hhmmss = `${pad(d.getHours())}.${pad(d.getMinutes())}.${pad(d.getSeconds())}`;
+  const hhmmss = `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
   return `Budget-${yyyymmdd}-${hhmmss}.json`;
 }
 
