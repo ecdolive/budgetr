@@ -2272,7 +2272,7 @@ function openAddBudgetItemModal(opts){
 
   const title = document.createElement('div');
   title.className = 'modal-title';
-  title.textContent = 'Add line item to budget';
+  title.textContent = 'Add line item';
   dialog.appendChild(title);
 
   // Type — Income vs. Spending, at the top since it decides which
