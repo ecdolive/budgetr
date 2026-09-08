@@ -2846,7 +2846,7 @@ function renderRightProjectedList(container){
         if (remainingDays <= 0) return;
         const rate = Number(it.amount) || 0;
         const v = Math.round(rate * remainingDays * 100)/100;
-        if (v) rows.push({ dateLabel: `Rest of ${MONTHS[m]}`, description: it.label, amount: v, planned: true });
+        if (v) rows.push({ dateLabel: MONTHS[m], description: `${it.label} (remaining)`, amount: v, planned: true });
       });
       continue;
     }
