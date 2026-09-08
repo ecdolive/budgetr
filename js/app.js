@@ -2749,22 +2749,19 @@ async function onBudgetPickerChange(e){
   }
 }
 
-// Default filename for a budget that's never been loaded from or exported
-// to a file yet, e.g. "Budget-20260907-142305.json".
-function defaultBudgetFileName(){
+// Every export gets a freshly timestamped filename, regardless of whether
+// this budget was loaded from a file, previously exported, or created from
+// scratch — e.g. "Budget-2026-09071423.json".
+function timestampedBudgetFileName(){
   const d = new Date();
   const pad = n => String(n).padStart(2,'0');
-  const yyyymmdd = `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}`;
-  const hhmmss = `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-  return `Budget-${yyyymmdd}-${hhmmss}.json`;
+  const mmdd = `${pad(d.getMonth()+1)}${pad(d.getDate())}`;
+  const hhmm = `${pad(d.getHours())}${pad(d.getMinutes())}`;
+  return `Budget-${d.getFullYear()}-${mmdd}${hhmm}.json`;
 }
 
 function downloadBudgetsJSON(){
-  // Re-exporting a budget that already has a name (loaded from a file, or
-  // exported once before) saves back under that same name rather than
-  // always resetting it to the generic default — only a budget that's
-  // never been named yet falls back to it.
-  const filename = budgetFileName || defaultBudgetFileName();
+  const filename = timestampedBudgetFileName();
   const blob = new Blob([JSON.stringify(BUDGETS_RAW, null, 2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
