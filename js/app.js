@@ -1320,33 +1320,48 @@ function yearRowValues(actualMonthly, budgetMonthly, flatCmi, perDiemRemainingCm
 /* ---- Month table (Plan / Actual / Difference) ---- */
 function renderMonthTable(){
   const mi = timeframe;
+  // Forecasted only means anything for the month actually in progress —
+  // every other month is either fully actual already (past) or hasn't
+  // started (future, where "forecast" is just the plan) — so the column
+  // only appears here, never in a past/future month's drill-down.
+  const isCurrentMonth = mi === DATA.currentMonthIndex;
+  const colCount = isCurrentMonth ? 5 : 4;
   const table = document.createElement('table');
   table.className = 'ledger ledger-month ledger-grouped';
   const thead = document.createElement('thead');
-  thead.innerHTML = `<tr><th></th><th>Budget</th><th>Actual</th><th>Difference</th></tr>`;
+  thead.innerHTML = `<tr><th></th><th>Budget</th><th>Actual</th>${isCurrentMonth?'<th>Forecasted</th>':''}<th>Difference</th></tr>`;
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   table.appendChild(tbody);
 
-  function rowHTML(name, actual, planVal, indent){
+  // Difference stays Actual − Budget regardless of Forecasted being shown
+  // — same figure every month, rather than switching definitions on the
+  // one month that happens to also show a forecast.
+  const forecastCell = (v) => isCurrentMonth ? `<td class="num">${fmt(v)}</td>` : '';
+  function rowHTML(name, actual, planVal, forecast, indent){
     const diff = actual - planVal;
     return `<td${indent?' style="padding-left:30px"':''}><span class="cell-label">${name}</span></td>` +
       `<td class="num">${fmt(planVal)}</td>` +
       `<td class="num">${fmt(actual)}</td>` +
+      forecastCell(forecast) +
       `<td class="num">${diff===0?'<span class="dash">–</span>':fmtSigned(diff)}</td>`;
   }
 
   // Same Net/Income/Spending grouped format as the Year table (see
-  // renderYearTable), just with Plan/Actual/Difference columns instead of
-  // 12 months + Total. Both groups always render (no more activeTab-driven
-  // single-table switch), topped by a non-interactive Net row.
-  function buildGroup(kind, categories, catBudgetMonthly, subBudgetMonthly, isOpen){
-    let totActual = 0, totPlan = 0;
+  // renderYearTable), just with Plan/Actual/[Forecasted/]Difference
+  // columns instead of 12 months + Total. Both groups always render (no
+  // more activeTab-driven single-table switch), topped by a
+  // non-interactive Net row. cmiSplit mirrors the Year table's own
+  // (catFlat/catPerDiem/subFlat/subPerDiem, see resolveBudgets) — only
+  // read when isCurrentMonth, so callers outside that month can skip it.
+  function buildGroup(kind, categories, catBudgetMonthly, subBudgetMonthly, cmiSplit, isOpen){
+    let totActual = 0, totPlan = 0, totForecast = 0;
     const rows = [];
     categories.forEach(cat=>{
       const actual = cat.monthly[mi] || 0;
       const planVal = (catBudgetMonthly[cat.name]||[])[mi] || 0;
-      totActual += actual; totPlan += planVal;
+      const forecast = isCurrentMonth ? (cmiSplit.catFlat[cat.name]||0) + (cmiSplit.catPerDiem[cat.name]||0) : 0;
+      totActual += actual; totPlan += planVal; totForecast += forecast;
       if (!isOpen) return;
 
       const isCatOpen = openCats.has(cat.name);
@@ -1354,7 +1369,9 @@ function renderMonthTable(){
       const tr = document.createElement('tr');
       tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
       tr.innerHTML = `<td><span class="catname"><span class="arrow${isCatOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
-        `<td class="num">${fmt(planVal)}</td><td class="num">${fmt(actual)}</td><td class="num">${fmtSigned(actual-planVal)}</td>`;
+        `<td class="num">${fmt(planVal)}</td><td class="num">${fmt(actual)}</td>` +
+        forecastCell(forecast) +
+        `<td class="num">${fmtSigned(actual-planVal)}</td>`;
       tr.addEventListener('click', ()=>{
         if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
         renderMid();
@@ -1362,12 +1379,14 @@ function renderMonthTable(){
       rows.push(tr);
 
       cat.subcategories.forEach(sub=>{
+        const key = cat.name+'||'+sub.name;
         const subActual = sub.monthly[mi] || 0;
-        const subPlan = (subBudgetMonthly[cat.name+'||'+sub.name]||[])[mi] || 0;
+        const subPlan = (subBudgetMonthly[key]||[])[mi] || 0;
+        const subForecast = isCurrentMonth ? (cmiSplit.subFlat[key]||0) + (cmiSplit.subPerDiem[key]||0) : 0;
         const isSel = selectedSub && selectedSub.kind===kind && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
         const sr = document.createElement('tr');
         sr.className = 'sub-row' + (isCatOpen?' open':'') + (isSel?' selected':'');
-        sr.innerHTML = rowHTML(sub.name, subActual, subPlan, true);
+        sr.innerHTML = rowHTML(sub.name, subActual, subPlan, subForecast, true);
         sr.addEventListener('click', (e)=>{
           e.stopPropagation();
           selectSub({ kind, category: cat.name, subcategory: sub.name });
@@ -1375,25 +1394,33 @@ function renderMonthTable(){
         rows.push(sr);
       });
     });
-    return { totActual, totPlan, rows };
+    return { totActual, totPlan, totForecast, rows };
   }
 
-  const incomeGroup = buildGroup('income', mergedIncomeSubcats(), ROLL.incomeCategoryMonthly, ROLL.incomeSubMonthly, openGroups.has('income'));
-  const spendingGroup = buildGroup('expense', mergedExpenseCategories(), ROLL.expenseCategoryMonthly, ROLL.expenseSubMonthly, openGroups.has('expenses'));
+  const incomeGroup = buildGroup('income', mergedIncomeSubcats(), ROLL.incomeCategoryMonthly, ROLL.incomeSubMonthly, {
+    catFlat: ROLL.incomeCategoryFlatCmi, catPerDiem: ROLL.incomeCategoryPerDiemRemainingCmi,
+    subFlat: ROLL.incomeSubFlatCmi, subPerDiem: ROLL.incomeSubPerDiemRemainingCmi,
+  }, openGroups.has('income'));
+  const spendingGroup = buildGroup('expense', mergedExpenseCategories(), ROLL.expenseCategoryMonthly, ROLL.expenseSubMonthly, {
+    catFlat: ROLL.expenseCategoryFlatCmi, catPerDiem: ROLL.expenseCategoryPerDiemRemainingCmi,
+    subFlat: ROLL.expenseSubFlatCmi, subPerDiem: ROLL.expenseSubPerDiemRemainingCmi,
+  }, openGroups.has('expenses'));
 
   // Net row — derived from both groups' totals, always visible regardless
   // of which (if either) group is expanded; not collapsible or selectable.
   const netActual = incomeGroup.totActual - spendingGroup.totActual;
   const netPlan = incomeGroup.totPlan - spendingGroup.totPlan;
+  const netForecast = incomeGroup.totForecast - spendingGroup.totForecast;
   const netDiff = netActual - netPlan;
   const netRow = document.createElement('tr');
   netRow.className = 'net-row';
   netRow.innerHTML = `<td><span class="catname"><span class="arrow"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">Net</span></span></td>` +
     `<td class="num">${fmt(netPlan)}</td>` +
     `<td class="num ${signCls(netActual)}">${fmt(netActual)}</td>` +
+    (isCurrentMonth ? `<td class="num ${signCls(netForecast)}">${fmt(netForecast)}</td>` : '') +
     `<td class="num ${signCls(netDiff)}">${netDiff===0?'<span class="dash">–</span>':fmtSigned(netDiff)}</td>`;
   tbody.appendChild(netRow);
-  tbody.appendChild(groupGapRow(4));
+  tbody.appendChild(groupGapRow(colCount));
 
   function groupHeaderRow(kind, label, group, totalColorClass){
     const isOpen = openGroups.has(kind);
@@ -1402,6 +1429,7 @@ function renderMonthTable(){
     tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${label}</span></span></td>` +
       `<td class="num">${fmt(group.totPlan)}</td>` +
       `<td class="num ${totalColorClass}">${fmt(group.totActual)}</td>` +
+      forecastCell(group.totForecast) +
       `<td class="num">${fmtSigned(group.totActual-group.totPlan)}</td>`;
     tr.addEventListener('click', ()=>{
       if (openGroups.has(kind)) openGroups.delete(kind); else openGroups.add(kind);
@@ -1413,17 +1441,17 @@ function renderMonthTable(){
   tbody.appendChild(groupHeaderRow('income', 'Income', incomeGroup, 'group-total-income'));
   if (openGroups.has('income')){
     if (incomeGroup.rows.length === 0){
-      tbody.appendChild(emptyGroupRow('No income categories loaded yet.', 4));
+      tbody.appendChild(emptyGroupRow('No income categories loaded yet.', colCount));
     } else {
       incomeGroup.rows.forEach(row=>tbody.appendChild(row));
     }
   }
-  tbody.appendChild(groupGapRow(4));
+  tbody.appendChild(groupGapRow(colCount));
 
   tbody.appendChild(groupHeaderRow('expenses', 'Spending', spendingGroup, 'group-total-spending'));
   if (openGroups.has('expenses')){
     if (spendingGroup.rows.length === 0){
-      tbody.appendChild(emptyGroupRow('No expense categories loaded yet.', 4));
+      tbody.appendChild(emptyGroupRow('No expense categories loaded yet.', colCount));
     } else {
       spendingGroup.rows.forEach(row=>tbody.appendChild(row));
     }
