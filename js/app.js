@@ -1337,7 +1337,11 @@ function renderMonthTable(){
   const table = document.createElement('table');
   table.className = 'ledger ledger-month ledger-grouped';
   const thead = document.createElement('thead');
-  thead.innerHTML = `<tr><th></th><th>Budget</th><th>Actual</th><th></th>${isCurrentMonth?'<th>Forecasted</th><th></th>':''}</tr>`;
+  // .num-value on the Actual/Forecasted headers themselves (not just the
+  // body cells) — it's what drops the column's right padding, so header
+  // text and column values share the exact same right edge instead of the
+  // header sitting the normal 12px further left.
+  thead.innerHTML = `<tr><th></th><th>Budget</th><th class="num-value">Actual</th><th></th>${isCurrentMonth?'<th class="num-value">Forecasted</th><th></th>':''}</tr>`;
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   table.appendChild(tbody);

@@ -435,18 +435,21 @@
      (unlabeled — no <th> text) rather than merged into the value's own
      cell, so every row's Actual (and every row's Forecasted) values stay
      right-aligned with each other regardless of how wide each row's own
-     parenthesized diff happens to be. .num-value drops its own right
-     padding and .num-diff-col drops its left, so together they sum to
-     exactly .5rem — tighter than the table's normal column gap — and
-     .num-diff-col left-aligns (rather than right-, like every other .num
-     cell) so a short diff sits right after the value instead of drifting
-     to the far edge of its own auto-sized column. Always muted regardless
-     of the value's own color (net rows color Actual/Forecasted via
-     signCls, applied to .num-value only). */
+     parenthesized diff happens to be — and every row's diff, in turn,
+     stays right-aligned with every other row's diff, same as any other
+     numeric column. .num-value drops its own right padding and
+     .num-diff-col drops its left, so together they sum to exactly .5rem
+     at minimum (the widest diff in the column sits exactly that close to
+     its value; a narrower one just has more empty column width to its
+     left, same as Budget/Actual/Forecasted already do relative to each
+     other). Applied to the Actual/Forecasted <th> themselves too (not
+     just body cells), so the header text lands on that same right edge
+     instead of the normal 12px further left. Always muted regardless of
+     the value's own color (net rows color Actual/Forecasted via signCls,
+     applied to .num-value only). */
   table.ledger-month .num-value{padding-right:0;}
   table.ledger-month .num-diff-col{
     padding-left:0.5rem;
-    text-align:left;
     color:var(--text-muted);
     font-size:0.9em;
   }
