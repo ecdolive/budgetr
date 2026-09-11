@@ -1349,10 +1349,13 @@ function renderMonthTable(){
   // value formatted with its own difference-from-planVal as a separate,
   // unlabeled, tightly-spaced column right after it (e.g. "530" | "(-65)")
   // — mainClass colors the value itself (e.g. Net's signCls); the diff
-  // column always stays muted regardless.
+  // column always stays muted regardless. No difference at all (rounds to
+  // zero) renders as a blank cell rather than a "(–)" nobody needs to see.
   const numDiffCell = (value, planVal, mainClass) => {
     const cls = mainClass ? ` ${mainClass}` : '';
-    return `<td class="num num-value${cls}">${fmt(value)}</td><td class="num num-diff-col">(${fmtSigned(value-planVal)})</td>`;
+    const diff = value - planVal;
+    const diffText = Math.round(diff) === 0 ? '' : `(${fmtSigned(diff)})`;
+    return `<td class="num num-value${cls}">${fmt(value)}</td><td class="num num-diff-col">${diffText}</td>`;
   };
   const forecastCell = (v, planVal, mainClass) => isCurrentMonth ? numDiffCell(v, planVal, mainClass) : '';
   function rowHTML(name, actual, planVal, forecast, indent){
