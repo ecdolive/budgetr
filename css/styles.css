@@ -430,14 +430,23 @@
   /* Month tab: the Budget column is always a planned figure (unlike
      Actual/Forecasted), so it reads muted rather than primary. */
   table.ledger-month td:nth-child(2){color:var(--text-muted);}
-  /* Difference-from-Budget, inline right after Actual's (and, current
-     month only, Forecasted's) own value — see numDiffCell in app.js —
-     rather than a separate column, so it reads as part of that value.
-     Always muted regardless of the value's own color (net rows color
-     Actual/Forecasted via signCls) and set apart by only .5rem, tighter
-     than the table's normal column gap. */
-  table.ledger-month .num-diff{
-    margin-left:0.5rem;
+  /* Difference-from-Budget for Actual (and, current month only,
+     Forecasted) — see numDiffCell in app.js. A real column of its own
+     (unlabeled — no <th> text) rather than merged into the value's own
+     cell, so every row's Actual (and every row's Forecasted) values stay
+     right-aligned with each other regardless of how wide each row's own
+     parenthesized diff happens to be. .num-value drops its own right
+     padding and .num-diff-col drops its left, so together they sum to
+     exactly .5rem — tighter than the table's normal column gap — and
+     .num-diff-col left-aligns (rather than right-, like every other .num
+     cell) so a short diff sits right after the value instead of drifting
+     to the far edge of its own auto-sized column. Always muted regardless
+     of the value's own color (net rows color Actual/Forecasted via
+     signCls, applied to .num-value only). */
+  table.ledger-month .num-value{padding-right:0;}
+  table.ledger-month .num-diff-col{
+    padding-left:0.5rem;
+    text-align:left;
     color:var(--text-muted);
     font-size:0.9em;
   }

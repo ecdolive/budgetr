@@ -1325,26 +1325,30 @@ function renderMonthTable(){
   // started (future, where "forecast" is just the plan) — so the column
   // only appears here, never in a past/future month's drill-down.
   const isCurrentMonth = mi === DATA.currentMonthIndex;
-  // No standalone Difference column anymore — each of Actual/Forecasted
-  // carries its own difference-from-Budget as a muted "(+/-N)" annotation
-  // right after its own value (see .num-diff), so it reads as part of
-  // that column rather than a separate one. Column count is Budget +
-  // Actual (+ Forecasted, current month only).
-  const colCount = isCurrentMonth ? 4 : 3;
+  // No standalone "Difference" header anymore — each of Actual/Forecasted
+  // carries its own difference-from-Budget as a muted "(+/-N)" right after
+  // its own value, in an unlabeled column of its own (see .num-diff-col)
+  // rather than merged into the same cell — a real adjacent column is what
+  // lets every row's Actual (and every row's Forecasted) values themselves
+  // stay right-aligned with each other, independent of how wide each row's
+  // parenthesized diff happens to be. Column count is label + Budget +
+  // Actual + its diff (+ Forecasted + its diff, current month only).
+  const colCount = isCurrentMonth ? 6 : 4;
   const table = document.createElement('table');
   table.className = 'ledger ledger-month ledger-grouped';
   const thead = document.createElement('thead');
-  thead.innerHTML = `<tr><th></th><th>Budget</th><th>Actual</th>${isCurrentMonth?'<th>Forecasted</th>':''}</tr>`;
+  thead.innerHTML = `<tr><th></th><th>Budget</th><th>Actual</th><th></th>${isCurrentMonth?'<th>Forecasted</th><th></th>':''}</tr>`;
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   table.appendChild(tbody);
 
-  // value formatted with its own difference-from-planVal in parentheses
-  // right after it (e.g. "530 (-65)") — mainClass colors the value itself
-  // (e.g. Net's signCls), .num-diff always stays muted regardless.
+  // value formatted with its own difference-from-planVal as a separate,
+  // unlabeled, tightly-spaced column right after it (e.g. "530" | "(-65)")
+  // — mainClass colors the value itself (e.g. Net's signCls); the diff
+  // column always stays muted regardless.
   const numDiffCell = (value, planVal, mainClass) => {
     const cls = mainClass ? ` ${mainClass}` : '';
-    return `<td class="num${cls}">${fmt(value)}<span class="num-diff">(${fmtSigned(value-planVal)})</span></td>`;
+    return `<td class="num num-value${cls}">${fmt(value)}</td><td class="num num-diff-col">(${fmtSigned(value-planVal)})</td>`;
   };
   const forecastCell = (v, planVal, mainClass) => isCurrentMonth ? numDiffCell(v, planVal, mainClass) : '';
   function rowHTML(name, actual, planVal, forecast, indent){
