@@ -1325,35 +1325,42 @@ function renderMonthTable(){
   // started (future, where "forecast" is just the plan) — so the column
   // only appears here, never in a past/future month's drill-down.
   const isCurrentMonth = mi === DATA.currentMonthIndex;
-  const colCount = isCurrentMonth ? 5 : 4;
+  // No standalone Difference column anymore — each of Actual/Forecasted
+  // carries its own difference-from-Budget as a muted "(+/-N)" annotation
+  // right after its own value (see .num-diff), so it reads as part of
+  // that column rather than a separate one. Column count is Budget +
+  // Actual (+ Forecasted, current month only).
+  const colCount = isCurrentMonth ? 4 : 3;
   const table = document.createElement('table');
   table.className = 'ledger ledger-month ledger-grouped';
   const thead = document.createElement('thead');
-  thead.innerHTML = `<tr><th></th><th>Budget</th><th>Actual</th>${isCurrentMonth?'<th>Forecasted</th>':''}<th>Difference</th></tr>`;
+  thead.innerHTML = `<tr><th></th><th>Budget</th><th>Actual</th>${isCurrentMonth?'<th>Forecasted</th>':''}</tr>`;
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   table.appendChild(tbody);
 
-  // Difference stays Actual − Budget regardless of Forecasted being shown
-  // — same figure every month, rather than switching definitions on the
-  // one month that happens to also show a forecast.
-  const forecastCell = (v) => isCurrentMonth ? `<td class="num">${fmt(v)}</td>` : '';
+  // value formatted with its own difference-from-planVal in parentheses
+  // right after it (e.g. "530 (-65)") — mainClass colors the value itself
+  // (e.g. Net's signCls), .num-diff always stays muted regardless.
+  const numDiffCell = (value, planVal, mainClass) => {
+    const cls = mainClass ? ` ${mainClass}` : '';
+    return `<td class="num${cls}">${fmt(value)}<span class="num-diff">(${fmtSigned(value-planVal)})</span></td>`;
+  };
+  const forecastCell = (v, planVal, mainClass) => isCurrentMonth ? numDiffCell(v, planVal, mainClass) : '';
   function rowHTML(name, actual, planVal, forecast, indent){
-    const diff = actual - planVal;
     return `<td${indent?' style="padding-left:30px"':''}><span class="cell-label">${name}</span></td>` +
       `<td class="num">${fmt(planVal)}</td>` +
-      `<td class="num">${fmt(actual)}</td>` +
-      forecastCell(forecast) +
-      `<td class="num">${diff===0?'<span class="dash">–</span>':fmtSigned(diff)}</td>`;
+      numDiffCell(actual, planVal) +
+      forecastCell(forecast, planVal);
   }
 
   // Same Net/Income/Spending grouped format as the Year table (see
-  // renderYearTable), just with Plan/Actual/[Forecasted/]Difference
-  // columns instead of 12 months + Total. Both groups always render (no
-  // more activeTab-driven single-table switch), topped by a
-  // non-interactive Net row. cmiSplit mirrors the Year table's own
-  // (catFlat/catPerDiem/subFlat/subPerDiem, see resolveBudgets) — only
-  // read when isCurrentMonth, so callers outside that month can skip it.
+  // renderYearTable), just with Plan/Actual/[Forecasted] columns instead
+  // of 12 months + Total. Both groups always render (no more activeTab-
+  // driven single-table switch), topped by a non-interactive Net row.
+  // cmiSplit mirrors the Year table's own (catFlat/catPerDiem/subFlat/
+  // subPerDiem, see resolveBudgets) — only read when isCurrentMonth, so
+  // callers outside that month can skip it.
   function buildGroup(kind, categories, catBudgetMonthly, subBudgetMonthly, cmiSplit, isOpen){
     let totActual = 0, totPlan = 0, totForecast = 0;
     const rows = [];
@@ -1369,9 +1376,9 @@ function renderMonthTable(){
       const tr = document.createElement('tr');
       tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
       tr.innerHTML = `<td><span class="catname"><span class="arrow${isCatOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
-        `<td class="num">${fmt(planVal)}</td><td class="num">${fmt(actual)}</td>` +
-        forecastCell(forecast) +
-        `<td class="num">${fmtSigned(actual-planVal)}</td>`;
+        `<td class="num">${fmt(planVal)}</td>` +
+        numDiffCell(actual, planVal) +
+        forecastCell(forecast, planVal);
       tr.addEventListener('click', ()=>{
         if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
         renderMid();
@@ -1411,14 +1418,12 @@ function renderMonthTable(){
   const netActual = incomeGroup.totActual - spendingGroup.totActual;
   const netPlan = incomeGroup.totPlan - spendingGroup.totPlan;
   const netForecast = incomeGroup.totForecast - spendingGroup.totForecast;
-  const netDiff = netActual - netPlan;
   const netRow = document.createElement('tr');
   netRow.className = 'net-row';
   netRow.innerHTML = `<td><span class="catname"><span class="arrow"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">Net</span></span></td>` +
     `<td class="num">${fmt(netPlan)}</td>` +
-    `<td class="num ${signCls(netActual)}">${fmt(netActual)}</td>` +
-    (isCurrentMonth ? `<td class="num ${signCls(netForecast)}">${fmt(netForecast)}</td>` : '') +
-    `<td class="num ${signCls(netDiff)}">${netDiff===0?'<span class="dash">–</span>':fmtSigned(netDiff)}</td>`;
+    numDiffCell(netActual, netPlan, signCls(netActual)) +
+    forecastCell(netForecast, netPlan, signCls(netForecast));
   tbody.appendChild(netRow);
   tbody.appendChild(groupGapRow(colCount));
 
@@ -1428,9 +1433,8 @@ function renderMonthTable(){
     tr.className = 'group-row' + (isOpen?' open':'');
     tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${label}</span></span></td>` +
       `<td class="num">${fmt(group.totPlan)}</td>` +
-      `<td class="num ${totalColorClass}">${fmt(group.totActual)}</td>` +
-      forecastCell(group.totForecast) +
-      `<td class="num">${fmtSigned(group.totActual-group.totPlan)}</td>`;
+      numDiffCell(group.totActual, group.totPlan, totalColorClass) +
+      forecastCell(group.totForecast, group.totPlan);
     tr.addEventListener('click', ()=>{
       if (openGroups.has(kind)) openGroups.delete(kind); else openGroups.add(kind);
       renderMid();
