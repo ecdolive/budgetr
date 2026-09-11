@@ -1346,32 +1346,24 @@ function renderMonthTable(){
   const tbody = document.createElement('tbody');
   table.appendChild(tbody);
 
-  // Whether this row has any real figure at all this month, across Budget/
-  // Actual/(Forecasted) — as opposed to a row that's simply inactive this
-  // month (nothing budgeted, nothing spent, nothing forecasted). Only that
-  // "genuinely nothing" case blanks the diff columns below; a real, if
-  // coincidental, exact match (e.g. Actual === Budget) still shows its
-  // (legitimately zero) difference rather than being mistaken for one.
-  const rowHasAnyValue = (planVal, actual, forecast) =>
-    Math.round(planVal) !== 0 || Math.round(actual) !== 0 || (isCurrentMonth && Math.round(forecast) !== 0);
   // value formatted with its own difference-from-planVal as a separate,
   // unlabeled, tightly-spaced column right after it (e.g. "530" | "(-65)")
   // — mainClass colors the value itself (e.g. Net's signCls); the diff
-  // column always stays muted regardless. hasAnyValue false (see
-  // rowHasAnyValue) blanks the diff cell entirely rather than showing a
-  // "(–)" nobody needs to see for a row with nothing going on this month.
-  const numDiffCell = (value, planVal, mainClass, hasAnyValue) => {
+  // column always stays muted regardless. No difference (this column's own
+  // value equals planVal) renders as a blank cell rather than a "(–)"
+  // nobody needs to see — deliberately not distinguishing a genuine exact
+  // match from a row with nothing going on this month; both blank.
+  const numDiffCell = (value, planVal, mainClass) => {
     const cls = mainClass ? ` ${mainClass}` : '';
-    const diffText = hasAnyValue ? `(${fmtSigned(value-planVal)})` : '';
+    const diffText = Math.round(value-planVal) === 0 ? '' : `(${fmtSigned(value-planVal)})`;
     return `<td class="num num-value${cls}">${fmt(value)}</td><td class="num num-diff-col">${diffText}</td>`;
   };
-  const forecastCell = (v, planVal, mainClass, hasAnyValue) => isCurrentMonth ? numDiffCell(v, planVal, mainClass, hasAnyValue) : '';
+  const forecastCell = (v, planVal, mainClass) => isCurrentMonth ? numDiffCell(v, planVal, mainClass) : '';
   function rowHTML(name, actual, planVal, forecast, indent){
-    const hasAnyValue = rowHasAnyValue(planVal, actual, forecast);
     return `<td${indent?' style="padding-left:30px"':''}><span class="cell-label">${name}</span></td>` +
       `<td class="num">${fmt(planVal)}</td>` +
-      numDiffCell(actual, planVal, null, hasAnyValue) +
-      forecastCell(forecast, planVal, null, hasAnyValue);
+      numDiffCell(actual, planVal) +
+      forecastCell(forecast, planVal);
   }
 
   // Same Net/Income/Spending grouped format as the Year table (see
@@ -1393,13 +1385,12 @@ function renderMonthTable(){
 
       const isCatOpen = openCats.has(cat.name);
       const hasSelectedSub = !isCatOpen && selectedSub && selectedSub.kind===kind && selectedSub.category===cat.name;
-      const catHasAnyValue = rowHasAnyValue(planVal, actual, forecast);
       const tr = document.createElement('tr');
       tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
       tr.innerHTML = `<td><span class="catname"><span class="arrow${isCatOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
         `<td class="num">${fmt(planVal)}</td>` +
-        numDiffCell(actual, planVal, null, catHasAnyValue) +
-        forecastCell(forecast, planVal, null, catHasAnyValue);
+        numDiffCell(actual, planVal) +
+        forecastCell(forecast, planVal);
       tr.addEventListener('click', ()=>{
         if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
         renderMid();
@@ -1439,25 +1430,23 @@ function renderMonthTable(){
   const netActual = incomeGroup.totActual - spendingGroup.totActual;
   const netPlan = incomeGroup.totPlan - spendingGroup.totPlan;
   const netForecast = incomeGroup.totForecast - spendingGroup.totForecast;
-  const netHasAnyValue = rowHasAnyValue(netPlan, netActual, netForecast);
   const netRow = document.createElement('tr');
   netRow.className = 'net-row';
   netRow.innerHTML = `<td><span class="catname"><span class="arrow"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">Net</span></span></td>` +
     `<td class="num">${fmt(netPlan)}</td>` +
-    numDiffCell(netActual, netPlan, signCls(netActual), netHasAnyValue) +
-    forecastCell(netForecast, netPlan, signCls(netForecast), netHasAnyValue);
+    numDiffCell(netActual, netPlan, signCls(netActual)) +
+    forecastCell(netForecast, netPlan, signCls(netForecast));
   tbody.appendChild(netRow);
   tbody.appendChild(groupGapRow(colCount));
 
   function groupHeaderRow(kind, label, group, totalColorClass){
     const isOpen = openGroups.has(kind);
-    const groupHasAnyValue = rowHasAnyValue(group.totPlan, group.totActual, group.totForecast);
     const tr = document.createElement('tr');
     tr.className = 'group-row' + (isOpen?' open':'');
     tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${label}</span></span></td>` +
       `<td class="num">${fmt(group.totPlan)}</td>` +
-      numDiffCell(group.totActual, group.totPlan, totalColorClass, groupHasAnyValue) +
-      forecastCell(group.totForecast, group.totPlan, null, groupHasAnyValue);
+      numDiffCell(group.totActual, group.totPlan, totalColorClass) +
+      forecastCell(group.totForecast, group.totPlan);
     tr.addEventListener('click', ()=>{
       if (openGroups.has(kind)) openGroups.delete(kind); else openGroups.add(kind);
       renderMid();
