@@ -222,8 +222,8 @@ function emptyData(){
 /* ============================================================
    BUDGETS — line-item schema + resolver
    {
-     "Expenses": { "<Category>": { "<Subcategory>": [ {freq,amountType,label,amount}, ... ] } },
-     "Income":   { "<Subcategory>": [ {freq,amountType,label,amount}, ... ] }
+     "Expenses": { "<Category>": { "<Subcategory>": [ {freq,amountType,linkedDescriptions,label,amount}, ... ] } },
+     "Income":   { "<Subcategory>": [ {freq,amountType,linkedDescriptions,label,amount}, ... ] }
    }
    freq: "monthly" (scalar or 12-array) | 3-letter month code ("jan".."dec",
          scalar, one-time). "daily" is also still accepted when reading —
@@ -231,6 +231,15 @@ function emptyData(){
    amountType: "monthly" (default — amount is the flat total for whichever
          month(s) freq applies to) | "perDiem" (amount is a per-day rate,
          scaled by the number of days in each of those months).
+   linkedDescriptions: string[] (default []) — raw transaction descriptions
+         (see budget-editor's "Link" control on each item) this item is
+         explicitly tied to. Only meaningful for a non-per-diem item, and
+         only changes anything for the CURRENT month: see resolveBudgets'
+         linked/unlinked split for how a linked item's matched actual
+         spend this month combines with its plan (a "spending cap" —
+         forecast is whichever's bigger of the two), and how unlinked
+         items/unclaimed actual spend fall back to the old subcategory-
+         level comparison.
    ============================================================ */
 function daysInMonth(year, monthIndex){ return new Date(year, monthIndex+1, 0).getDate(); }
 // Days left in a month counting from (and including) currentDay+1 through
@@ -252,6 +261,15 @@ function remainingDaysInMonth(year, monthIndex, currentDay){
 // line item's amount type matters.
 function isPerDiemItem(item){
   return item.amountType === 'perDiem' || (item.freq||'').toLowerCase() === 'daily';
+}
+
+// Whether a line item's freq targets the given month at all — "monthly"
+// (recurring every month) always does; a specific month code ("jan" etc.,
+// a one-time item) only targets that one month.
+function itemAppliesToMonth(item, monthIndex){
+  const freq = (item.freq||'').toLowerCase();
+  const effectiveFreq = freq === 'daily' ? 'monthly' : freq;
+  return effectiveFreq === 'monthly' || MONTH_ABBR.indexOf(effectiveFreq) === monthIndex;
 }
 
 function resolveLineItem(item, year){
@@ -292,10 +310,7 @@ function resolveLineItem(item, year){
 // has no meaningful per diem interpretation) always via the flat side.
 function itemCurrentMonthSplit(item, year, cmi, currentDay){
   if (cmi == null) return { flat: 0, perDiemRemaining: 0 };
-  const freq = (item.freq||'').toLowerCase();
-  const effectiveFreq = freq === 'daily' ? 'monthly' : freq;
-  const appliesToCmi = effectiveFreq === 'monthly' || MONTH_ABBR.indexOf(effectiveFreq) === cmi;
-  if (!appliesToCmi) return { flat: 0, perDiemRemaining: 0 };
+  if (!itemAppliesToMonth(item, cmi)) return { flat: 0, perDiemRemaining: 0 };
   if (Array.isArray(item.amount)){
     return { flat: item.amount[cmi] || 0, perDiemRemaining: 0 };
   }
@@ -306,29 +321,90 @@ function itemCurrentMonthSplit(item, year, cmi, currentDay){
   return { flat: v, perDiemRemaining: 0 };
 }
 
-function resolveBudgets(raw, year, cmi, currentDay){
+// A transaction's category/subcategory fields mean something different per
+// type (see aggregate()'s income-tree comment): an Expense transaction's
+// own category/subcategory line up directly with the budget's Category ->
+// Subcategory; an Income transaction's budget "Category" is actually its
+// CSV Subcategory (the source, e.g. "Salary") and its budget "Subcategory"
+// is actually its Description (income is rolled up per unique description).
+function transactionMatchesBudgetSlot(t, txnType, catName, subName){
+  if (txnType === 'Income') return t.subcategory === catName && t.description === subName;
+  return t.category === catName && t.subcategory === subName;
+}
+
+// Sum of this month's actual transactions (in the given budget slot) whose
+// description is one of this item's linkedDescriptions — the "matched
+// actual" side of a linked item's spending-cap comparison (see
+// resolveBudgets). Signed the same way item.amount already is (negative
+// for an expense), since transaction amounts share that same convention.
+function itemMatchedActual(transactions, txnType, catName, subName, cmi, linkedDescriptions){
+  if (cmi == null || !linkedDescriptions || !linkedDescriptions.length) return 0;
+  const set = new Set(linkedDescriptions);
+  return transactions.reduce((sum,t)=>{
+    if (t.type !== txnType || t.month !== cmi || !set.has(t.description)) return sum;
+    if (!transactionMatchesBudgetSlot(t, txnType, catName, subName)) return sum;
+    return sum + t.amount;
+  }, 0);
+}
+
+function resolveBudgets(raw, year, cmi, currentDay, transactions){
+  const txns = transactions || [];
   // Expenses and Income share the same Category -> Subcategory -> items
   // shape, so both groups resolve through the same logic.
-  const resolveGroup = (groupRaw) => {
+  const resolveGroup = (groupRaw, txnType) => {
     const out = {};
     Object.entries(groupRaw||{}).forEach(([catName, subs])=>{
       out[catName] = {};
       Object.entries(subs||{}).forEach(([subName, items])=>{
         const list = Array.isArray(items) ? items : [];
         const resolvedItems = list.map(it=>({
-          freq: it.freq, amountType: it.amountType, label: it.label||subName, amount: it.amount,
+          freq: it.freq, amountType: it.amountType,
+          linkedDescriptions: Array.isArray(it.linkedDescriptions) ? it.linkedDescriptions.slice() : [],
+          label: it.label||subName, amount: it.amount,
           monthly: resolveLineItem(it, year),
         }));
         const monthly = new Array(12).fill(0);
         resolvedItems.forEach(it=>it.monthly.forEach((v,i)=>monthly[i]+=v));
-        // Current-month split (see itemCurrentMonthSplit) — only ever
-        // meaningful for cmi, so kept as two scalars rather than 12-arrays.
-        let flatCmi = 0, perDiemRemainingCmi = 0;
+
+        // Current month's figure — per diem items keep contributing their
+        // always-additive remaining-days amount exactly as before (see
+        // itemCurrentMonthSplit). Flat items split into linked (this
+        // item's own matched-actual-vs-planned spending-cap comparison —
+        // see itemMatchedActual) and unlinked (pooled with whatever actual
+        // spend nothing has claimed yet, compared the old subcategory-wide
+        // whichever's-bigger way). A subcategory where nothing is linked
+        // degrades to exactly the old behavior: linkedForecast is 0, and
+        // the unlinked pool covers every item and every actual dollar.
+        let perDiemRemainingCmi = 0;
+        let linkedForecastCmi = 0;
+        let unlinkedPlanCmi = 0;
+        const claimedDescriptions = new Set();
+        list.forEach(it=>{
+          if (!isPerDiemItem(it) && it.linkedDescriptions && it.linkedDescriptions.length){
+            it.linkedDescriptions.forEach(d=>claimedDescriptions.add(d));
+          }
+        });
         list.forEach(it=>{
           const split = itemCurrentMonthSplit(it, year, cmi, currentDay);
-          flatCmi += split.flat;
           perDiemRemainingCmi += split.perDiemRemaining;
+          if (isPerDiemItem(it) || cmi == null || !itemAppliesToMonth(it, cmi)) return;
+          const hasLinks = it.linkedDescriptions && it.linkedDescriptions.length > 0;
+          if (!hasLinks){
+            unlinkedPlanCmi += split.flat;
+            return;
+          }
+          const matched = itemMatchedActual(txns, txnType, catName, subName, cmi, it.linkedDescriptions);
+          const planned = split.flat;
+          linkedForecastCmi += Math.abs(matched) > Math.abs(planned) ? matched : planned;
         });
+        const residualActual = cmi == null ? 0 : txns.reduce((sum,t)=>{
+          if (t.type !== txnType || t.month !== cmi || claimedDescriptions.has(t.description)) return sum;
+          if (!transactionMatchesBudgetSlot(t, txnType, catName, subName)) return sum;
+          return sum + t.amount;
+        }, 0);
+        const unlinkedForecastCmi = Math.abs(residualActual) > Math.abs(unlinkedPlanCmi) ? residualActual : unlinkedPlanCmi;
+        const flatCmi = linkedForecastCmi + unlinkedForecastCmi;
+
         out[catName][subName] = {
           monthly: monthly.map(v=>Math.round(v*100)/100), items: resolvedItems,
           flatCmi: Math.round(flatCmi*100)/100,
@@ -339,8 +415,8 @@ function resolveBudgets(raw, year, cmi, currentDay){
     return out;
   };
   return {
-    expenses: resolveGroup(raw && raw.Expenses),
-    income: resolveGroup(raw && raw.Income),
+    expenses: resolveGroup(raw && raw.Expenses, 'Expenses'),
+    income: resolveGroup(raw && raw.Income, 'Income'),
   };
 }
 
@@ -350,10 +426,13 @@ function buildBudgetRollups(resolved, categories, incomeSubcats){
   // positive "planned spend" magnitude (matches Actual sign convention).
   const expenseCategoryMonthly = {}; // catName -> [12] positive
   const expenseSubMonthly = {};      // "cat||sub" -> [12] positive
-  // Current-month flat/per-diem-remaining split (see itemCurrentMonthSplit),
-  // rolled up the same bottom-up way and sign-flipped alongside monthly —
-  // catName/"cat||sub" -> scalar positive, used only by the Forecast pill's
-  // current-month blending (see projectedMonthly).
+  // Current-month figures (see resolveBudgets) — flatCmi is already a
+  // fully-resolved forecast (linked items' spending-cap comparisons plus
+  // the unlinked pool's whichever's-bigger), and perDiemRemainingCmi is
+  // the always-additive per diem remainder — rolled up the same bottom-up
+  // way and sign-flipped alongside monthly. catName/"cat||sub" -> scalar
+  // positive, used only by the Forecast pill's current-month figure (see
+  // projectedMonthly, which now just adds these two together).
   const expenseCategoryFlatCmi = {};
   const expenseCategoryPerDiemRemainingCmi = {};
   const expenseSubFlatCmi = {};
@@ -445,6 +524,7 @@ function budgetsRawToDraft(raw){
       id: nextBudgetId(),
       freq: legacyDaily ? 'monthly' : (it.freq || 'monthly'),
       amountType: it.amountType || (legacyDaily ? 'perDiem' : 'monthly'),
+      linkedDescriptions: Array.isArray(it.linkedDescriptions) ? it.linkedDescriptions.slice() : [],
       label: it.label != null ? it.label : fallbackLabel,
       amount: it.amount,
     };
@@ -469,7 +549,11 @@ function budgetsRawToDraft(raw){
 function draftToBudgetsRaw(draft){
   const serializeItems = (items) => items
     .filter(it => (it.label && it.label.trim()) || it.amount)
-    .map(it => ({ freq: it.freq, amountType: it.amountType || 'monthly', label: it.label, amount: it.amount }));
+    .map(it => ({
+      freq: it.freq, amountType: it.amountType || 'monthly',
+      linkedDescriptions: Array.isArray(it.linkedDescriptions) ? it.linkedDescriptions.slice() : [],
+      label: it.label, amount: it.amount,
+    }));
   const serializeCategories = (list) => {
     const out = {};
     list.forEach(cat => {
@@ -616,7 +700,7 @@ function importLastYearCSVIntoDraft(files){
         }
         const avgMonthly = Math.round(sub.yearly / 12);
         if (avgMonthly !== 0){
-          draftSub.items.push({ id: nextBudgetId(), freq: 'monthly', amountType: 'monthly', label: `${sub.name} (last year avg)`, amount: -avgMonthly });
+          draftSub.items.push({ id: nextBudgetId(), freq: 'monthly', amountType: 'monthly', linkedDescriptions: [], label: `${sub.name} (last year avg)`, amount: -avgMonthly });
         }
       });
       budgetOpenCats.add(draftCat.id);
@@ -636,7 +720,7 @@ function importLastYearCSVIntoDraft(files){
         }
         const avgMonthly = Math.round(sub.yearly / 12);
         if (avgMonthly !== 0){
-          draftSub.items.push({ id: nextBudgetId(), freq: 'monthly', amountType: 'monthly', label: `${sub.name} (last year avg)`, amount: avgMonthly });
+          draftSub.items.push({ id: nextBudgetId(), freq: 'monthly', amountType: 'monthly', linkedDescriptions: [], label: `${sub.name} (last year avg)`, amount: avgMonthly });
         }
       });
       budgetOpenCats.add(draftCat.id);
@@ -655,7 +739,7 @@ function importLastYearCSVIntoDraft(files){
    ============================================================ */
 let DATA = emptyData();
 let BUDGETS_RAW = emptyBudgets();
-let BUDGETS = resolveBudgets(BUDGETS_RAW, DATA.year, DATA.currentMonthIndex, DATA.currentDay);
+let BUDGETS = resolveBudgets(BUDGETS_RAW, DATA.year, DATA.currentMonthIndex, DATA.currentDay, DATA.transactions);
 let ROLL = buildBudgetRollups(BUDGETS, DATA.categories, DATA.incomeSubcats);
 
 // Budget file identity, for the status bar (see renderStatusBar). Loaded
@@ -1020,16 +1104,15 @@ function renderPills(){
 }
 
 /* ---- Blended (Projection) monthly value for a subcategory ---- */
-// flatCmi/perDiemRemainingCmi (see itemCurrentMonthSplit/buildBudgetRollups)
-// refine the current month's figure only: flatCmi is the ordinary
-// per-month items' full-month plan, compared against actual-so-far the
-// same "whichever's bigger" way budgetMonthly[cmi] always was; per diem
-// items are pulled out of that comparison entirely and their
-// remaining-days amount is always added on top instead, since a per diem
-// item's plan isn't "the whole month" to compare against — it's just
-// whatever's left of the month from here. Both default to budgetMonthly's
-// own current-month value / 0 so callers that don't have the split handy
-// (there currently are none) still get the old behavior.
+// Past months use actual, future months use plan, same as always. The
+// current month is the only special case, and — unlike before — no
+// comparison happens here anymore: flatCmi already IS the resolved
+// forecast for that month (each linked item's own matched-actual-vs-
+// planned spending cap, plus the unlinked pool's whichever's-bigger — see
+// resolveBudgets), and perDiemRemainingCmi is the always-additive per diem
+// remainder, so the current month's value is just their sum. Both default
+// to budgetMonthly's own current-month value / 0 so callers that don't
+// have the split handy (there currently are none) still get a sane value.
 function projectedMonthly(actualMonthly, budgetMonthly, flatCmi, perDiemRemainingCmi){
   const cmi = DATA.currentMonthIndex;
   const out = new Array(12).fill(0);
@@ -1037,10 +1120,9 @@ function projectedMonthly(actualMonthly, budgetMonthly, flatCmi, perDiemRemainin
     if (cmi === null){ out[i] = budgetMonthly[i]; continue; }
     if (i < cmi) out[i] = actualMonthly[i];
     else if (i === cmi){
-      const flatPlan = flatCmi != null ? flatCmi : budgetMonthly[i];
+      const flatResolved = flatCmi != null ? flatCmi : budgetMonthly[i];
       const remaining = perDiemRemainingCmi || 0;
-      const flatProjected = Math.abs(actualMonthly[i]) > Math.abs(flatPlan) ? actualMonthly[i] : flatPlan;
-      out[i] = Math.round((flatProjected + remaining)*100)/100;
+      out[i] = Math.round((flatResolved + remaining)*100)/100;
     }
     else out[i] = budgetMonthly[i];
   }
@@ -1238,33 +1320,67 @@ function yearRowValues(actualMonthly, budgetMonthly, flatCmi, perDiemRemainingCm
 /* ---- Month table (Plan / Actual / Difference) ---- */
 function renderMonthTable(){
   const mi = timeframe;
+  // Forecasted only means anything for the month actually in progress —
+  // every other month is either fully actual already (past) or hasn't
+  // started (future, where "forecast" is just the plan) — so the column
+  // only appears here, never in a past/future month's drill-down.
+  const isCurrentMonth = mi === DATA.currentMonthIndex;
+  // No standalone "Difference" header anymore — each of Actual/Forecasted
+  // carries its own difference-from-Budget as a muted "(+/-N)" right after
+  // its own value, in an unlabeled column of its own (see .num-diff-col)
+  // rather than merged into the same cell — a real adjacent column is what
+  // lets every row's Actual (and every row's Forecasted) values themselves
+  // stay right-aligned with each other, independent of how wide each row's
+  // parenthesized diff happens to be. Column count is label + Budget +
+  // Actual + its diff (+ Forecasted + its diff, current month only).
+  const colCount = isCurrentMonth ? 6 : 4;
   const table = document.createElement('table');
   table.className = 'ledger ledger-month ledger-grouped';
   const thead = document.createElement('thead');
-  thead.innerHTML = `<tr><th></th><th>Budget</th><th>Actual</th><th>Difference</th></tr>`;
+  // .num-value on the Actual/Forecasted headers themselves (not just the
+  // body cells) — it's what drops the column's right padding, so header
+  // text and column values share the exact same right edge instead of the
+  // header sitting the normal 12px further left.
+  thead.innerHTML = `<tr><th></th><th>Budget</th><th class="num-value">Actual</th><th></th>${isCurrentMonth?'<th class="num-value">Forecasted</th><th></th>':''}</tr>`;
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   table.appendChild(tbody);
 
-  function rowHTML(name, actual, planVal, indent){
-    const diff = actual - planVal;
+  // value formatted with its own difference-from-planVal as a separate,
+  // unlabeled, tightly-spaced column right after it (e.g. "530" | "(-65)")
+  // — mainClass colors the value itself (e.g. Net's signCls); the diff
+  // column always stays muted regardless. No difference (this column's own
+  // value equals planVal) renders as a blank cell rather than a "(–)"
+  // nobody needs to see — deliberately not distinguishing a genuine exact
+  // match from a row with nothing going on this month; both blank.
+  const numDiffCell = (value, planVal, mainClass) => {
+    const cls = mainClass ? ` ${mainClass}` : '';
+    const diffText = Math.round(value-planVal) === 0 ? '' : `(${fmtSigned(value-planVal)})`;
+    return `<td class="num num-value${cls}">${fmt(value)}</td><td class="num num-diff-col">${diffText}</td>`;
+  };
+  const forecastCell = (v, planVal, mainClass) => isCurrentMonth ? numDiffCell(v, planVal, mainClass) : '';
+  function rowHTML(name, actual, planVal, forecast, indent){
     return `<td${indent?' style="padding-left:30px"':''}><span class="cell-label">${name}</span></td>` +
       `<td class="num">${fmt(planVal)}</td>` +
-      `<td class="num">${fmt(actual)}</td>` +
-      `<td class="num">${diff===0?'<span class="dash">–</span>':fmtSigned(diff)}</td>`;
+      numDiffCell(actual, planVal) +
+      forecastCell(forecast, planVal);
   }
 
   // Same Net/Income/Spending grouped format as the Year table (see
-  // renderYearTable), just with Plan/Actual/Difference columns instead of
-  // 12 months + Total. Both groups always render (no more activeTab-driven
-  // single-table switch), topped by a non-interactive Net row.
-  function buildGroup(kind, categories, catBudgetMonthly, subBudgetMonthly, isOpen){
-    let totActual = 0, totPlan = 0;
+  // renderYearTable), just with Plan/Actual/[Forecasted] columns instead
+  // of 12 months + Total. Both groups always render (no more activeTab-
+  // driven single-table switch), topped by a non-interactive Net row.
+  // cmiSplit mirrors the Year table's own (catFlat/catPerDiem/subFlat/
+  // subPerDiem, see resolveBudgets) — only read when isCurrentMonth, so
+  // callers outside that month can skip it.
+  function buildGroup(kind, categories, catBudgetMonthly, subBudgetMonthly, cmiSplit, isOpen){
+    let totActual = 0, totPlan = 0, totForecast = 0;
     const rows = [];
     categories.forEach(cat=>{
       const actual = cat.monthly[mi] || 0;
       const planVal = (catBudgetMonthly[cat.name]||[])[mi] || 0;
-      totActual += actual; totPlan += planVal;
+      const forecast = isCurrentMonth ? (cmiSplit.catFlat[cat.name]||0) + (cmiSplit.catPerDiem[cat.name]||0) : 0;
+      totActual += actual; totPlan += planVal; totForecast += forecast;
       if (!isOpen) return;
 
       const isCatOpen = openCats.has(cat.name);
@@ -1272,7 +1388,9 @@ function renderMonthTable(){
       const tr = document.createElement('tr');
       tr.className = 'cat-row' + (hasSelectedSub?' has-selection':'');
       tr.innerHTML = `<td><span class="catname"><span class="arrow${isCatOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${cat.name}</span></span></td>` +
-        `<td class="num">${fmt(planVal)}</td><td class="num">${fmt(actual)}</td><td class="num">${fmtSigned(actual-planVal)}</td>`;
+        `<td class="num">${fmt(planVal)}</td>` +
+        numDiffCell(actual, planVal) +
+        forecastCell(forecast, planVal);
       tr.addEventListener('click', ()=>{
         if (openCats.has(cat.name)) openCats.delete(cat.name); else openCats.add(cat.name);
         renderMid();
@@ -1280,12 +1398,14 @@ function renderMonthTable(){
       rows.push(tr);
 
       cat.subcategories.forEach(sub=>{
+        const key = cat.name+'||'+sub.name;
         const subActual = sub.monthly[mi] || 0;
-        const subPlan = (subBudgetMonthly[cat.name+'||'+sub.name]||[])[mi] || 0;
+        const subPlan = (subBudgetMonthly[key]||[])[mi] || 0;
+        const subForecast = isCurrentMonth ? (cmiSplit.subFlat[key]||0) + (cmiSplit.subPerDiem[key]||0) : 0;
         const isSel = selectedSub && selectedSub.kind===kind && selectedSub.category===cat.name && selectedSub.subcategory===sub.name;
         const sr = document.createElement('tr');
         sr.className = 'sub-row' + (isCatOpen?' open':'') + (isSel?' selected':'');
-        sr.innerHTML = rowHTML(sub.name, subActual, subPlan, true);
+        sr.innerHTML = rowHTML(sub.name, subActual, subPlan, subForecast, true);
         sr.addEventListener('click', (e)=>{
           e.stopPropagation();
           selectSub({ kind, category: cat.name, subcategory: sub.name });
@@ -1293,25 +1413,31 @@ function renderMonthTable(){
         rows.push(sr);
       });
     });
-    return { totActual, totPlan, rows };
+    return { totActual, totPlan, totForecast, rows };
   }
 
-  const incomeGroup = buildGroup('income', mergedIncomeSubcats(), ROLL.incomeCategoryMonthly, ROLL.incomeSubMonthly, openGroups.has('income'));
-  const spendingGroup = buildGroup('expense', mergedExpenseCategories(), ROLL.expenseCategoryMonthly, ROLL.expenseSubMonthly, openGroups.has('expenses'));
+  const incomeGroup = buildGroup('income', mergedIncomeSubcats(), ROLL.incomeCategoryMonthly, ROLL.incomeSubMonthly, {
+    catFlat: ROLL.incomeCategoryFlatCmi, catPerDiem: ROLL.incomeCategoryPerDiemRemainingCmi,
+    subFlat: ROLL.incomeSubFlatCmi, subPerDiem: ROLL.incomeSubPerDiemRemainingCmi,
+  }, openGroups.has('income'));
+  const spendingGroup = buildGroup('expense', mergedExpenseCategories(), ROLL.expenseCategoryMonthly, ROLL.expenseSubMonthly, {
+    catFlat: ROLL.expenseCategoryFlatCmi, catPerDiem: ROLL.expenseCategoryPerDiemRemainingCmi,
+    subFlat: ROLL.expenseSubFlatCmi, subPerDiem: ROLL.expenseSubPerDiemRemainingCmi,
+  }, openGroups.has('expenses'));
 
   // Net row — derived from both groups' totals, always visible regardless
   // of which (if either) group is expanded; not collapsible or selectable.
   const netActual = incomeGroup.totActual - spendingGroup.totActual;
   const netPlan = incomeGroup.totPlan - spendingGroup.totPlan;
-  const netDiff = netActual - netPlan;
+  const netForecast = incomeGroup.totForecast - spendingGroup.totForecast;
   const netRow = document.createElement('tr');
   netRow.className = 'net-row';
   netRow.innerHTML = `<td><span class="catname"><span class="arrow"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">Net</span></span></td>` +
     `<td class="num">${fmt(netPlan)}</td>` +
-    `<td class="num ${signCls(netActual)}">${fmt(netActual)}</td>` +
-    `<td class="num ${signCls(netDiff)}">${netDiff===0?'<span class="dash">–</span>':fmtSigned(netDiff)}</td>`;
+    numDiffCell(netActual, netPlan, signCls(netActual)) +
+    forecastCell(netForecast, netPlan, signCls(netForecast));
   tbody.appendChild(netRow);
-  tbody.appendChild(groupGapRow(4));
+  tbody.appendChild(groupGapRow(colCount));
 
   function groupHeaderRow(kind, label, group, totalColorClass){
     const isOpen = openGroups.has(kind);
@@ -1319,8 +1445,8 @@ function renderMonthTable(){
     tr.className = 'group-row' + (isOpen?' open':'');
     tr.innerHTML = `<td><span class="catname"><span class="arrow${isOpen?' open':''}"><img src="icons/chevron-right.svg" alt=""></span><span class="cell-label">${label}</span></span></td>` +
       `<td class="num">${fmt(group.totPlan)}</td>` +
-      `<td class="num ${totalColorClass}">${fmt(group.totActual)}</td>` +
-      `<td class="num">${fmtSigned(group.totActual-group.totPlan)}</td>`;
+      numDiffCell(group.totActual, group.totPlan, totalColorClass) +
+      forecastCell(group.totForecast, group.totPlan);
     tr.addEventListener('click', ()=>{
       if (openGroups.has(kind)) openGroups.delete(kind); else openGroups.add(kind);
       renderMid();
@@ -1331,17 +1457,17 @@ function renderMonthTable(){
   tbody.appendChild(groupHeaderRow('income', 'Income', incomeGroup, 'group-total-income'));
   if (openGroups.has('income')){
     if (incomeGroup.rows.length === 0){
-      tbody.appendChild(emptyGroupRow('No income categories loaded yet.', 4));
+      tbody.appendChild(emptyGroupRow('No income categories loaded yet.', colCount));
     } else {
       incomeGroup.rows.forEach(row=>tbody.appendChild(row));
     }
   }
-  tbody.appendChild(groupGapRow(4));
+  tbody.appendChild(groupGapRow(colCount));
 
   tbody.appendChild(groupHeaderRow('expenses', 'Spending', spendingGroup, 'group-total-spending'));
   if (openGroups.has('expenses')){
     if (spendingGroup.rows.length === 0){
-      tbody.appendChild(emptyGroupRow('No expense categories loaded yet.', 4));
+      tbody.appendChild(emptyGroupRow('No expense categories loaded yet.', colCount));
     } else {
       spendingGroup.rows.forEach(row=>tbody.appendChild(row));
     }
@@ -2122,6 +2248,32 @@ function renderBudgetItemRow(item, sub, cat, kind){
     });
   }
 
+  // Links this item to specific actual transaction descriptions, so the
+  // Forecast pill can treat it as a spending cap (matched actual vs.
+  // planned) for the current month instead of falling back to the whole
+  // subcategory's whichever's-bigger comparison — see resolveBudgets.
+  // Expense-only (income's subcategories already correspond 1:1 with a
+  // single transaction description — see transactionMatchesBudgetSlot —
+  // so linking there would just offer one redundant option) and only for
+  // a plain per-month amount (per diem items are always additive
+  // regardless of any specific transaction, and an explicit 12-value
+  // array has no single "planned" figure to compare against).
+  if (kind === 'expense' && !isArrayAmount && !isPerDiemItem(item)){
+    const linkBtn = document.createElement('button');
+    linkBtn.type = 'button';
+    linkBtn.className = 'budget-item-link-btn';
+    const syncLinkBtn = () => {
+      const n = item.linkedDescriptions ? item.linkedDescriptions.length : 0;
+      linkBtn.textContent = n ? `Linked (${n})` : 'Link';
+      linkBtn.classList.toggle('linked', n > 0);
+    };
+    syncLinkBtn();
+    linkBtn.addEventListener('click', ()=>{
+      openLinkTransactionsModal(item, cat, sub, kind, syncLinkBtn);
+    });
+    row.appendChild(linkBtn);
+  }
+
   const removeBtn = document.createElement('button');
   removeBtn.type = 'button';
   removeBtn.className = 'icon-btn';
@@ -2135,6 +2287,118 @@ function renderBudgetItemRow(item, sub, cat, kind){
   row.appendChild(removeBtn);
 
   return row;
+}
+
+// Every distinct actual transaction description on record for a given
+// category/subcategory, across every month/year currently loaded — not
+// just the current month, since a linked description should keep matching
+// whatever month later becomes "current" as fresh CSVs get loaded.
+function distinctDescriptionsFor(category, subcategory){
+  const set = new Set();
+  DATA.transactions.forEach(t=>{
+    if (t.type==='Expenses' && t.category===category && t.subcategory===subcategory) set.add(t.description);
+  });
+  return [...set].sort((a,b)=>a.localeCompare(b));
+}
+
+// Every description already linked to some OTHER item in the draft (any
+// category/subcategory) — excluded from a picker so the same actual
+// dollars can never be claimed by two line items at once.
+function claimedDescriptionsExcept(kind, exceptItemId){
+  const list = kind === 'income' ? budgetDraft.income : budgetDraft.expenses;
+  const set = new Set();
+  list.forEach(c=>c.subcategories.forEach(s=>s.items.forEach(it=>{
+    if (it.id === exceptItemId) return;
+    (it.linkedDescriptions||[]).forEach(d=>set.add(d));
+  })));
+  return set;
+}
+
+// Modal for choosing which actual transaction descriptions (in this
+// item's own category/subcategory) count as this line item's matched
+// actual spend — see resolveBudgets. onSaved is called after a successful
+// save so the caller can refresh just its own trigger button rather than
+// re-rendering the whole editor.
+function openLinkTransactionsModal(item, cat, sub, kind, onSaved){
+  const available = distinctDescriptionsFor(cat.name, sub.name);
+  const claimedElsewhere = claimedDescriptionsExcept(kind, item.id);
+  const pickable = available.filter(d=>!claimedElsewhere.has(d));
+  const currentlyLinked = new Set(item.linkedDescriptions || []);
+
+  const scrim = document.createElement('div');
+  scrim.className = 'modal-scrim';
+  const dialog = document.createElement('div');
+  dialog.className = 'modal-dialog';
+  dialog.addEventListener('click', e=>e.stopPropagation());
+  scrim.appendChild(dialog);
+
+  const title = document.createElement('div');
+  title.className = 'modal-title';
+  title.textContent = 'Link Transactions';
+  dialog.appendChild(title);
+
+  const hint = document.createElement('div');
+  hint.className = 'modal-hint';
+  hint.textContent = `Transactions in ${cat.name} › ${sub.name} that count toward "${item.label || sub.name}".`;
+  dialog.appendChild(hint);
+
+  const list = document.createElement('div');
+  list.className = 'link-txn-list';
+  if (pickable.length === 0){
+    const empty = document.createElement('div');
+    empty.className = 'link-txn-empty';
+    empty.textContent = available.length === 0
+      ? 'No transactions loaded yet for this category/subcategory.'
+      : 'Every transaction description here is already linked to another line item.';
+    list.appendChild(empty);
+  } else {
+    pickable.forEach(desc=>{
+      const option = document.createElement('label');
+      option.className = 'link-txn-option';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.value = desc;
+      checkbox.checked = currentlyLinked.has(desc);
+      const text = document.createElement('span');
+      text.textContent = desc;
+      option.appendChild(checkbox);
+      option.appendChild(text);
+      list.appendChild(option);
+    });
+  }
+  dialog.appendChild(list);
+
+  const actions = document.createElement('div');
+  actions.className = 'add-plan-actions';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'file-btn ghost';
+  cancelBtn.textContent = 'Cancel';
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.className = 'file-btn primary';
+  saveBtn.textContent = 'Save';
+  actions.appendChild(cancelBtn);
+  actions.appendChild(saveBtn);
+  dialog.appendChild(actions);
+
+  function close(){
+    document.removeEventListener('keydown', onKeydown);
+    scrim.remove();
+  }
+  function onKeydown(e){
+    if (e.key === 'Escape') close();
+  }
+  scrim.addEventListener('click', close);
+  cancelBtn.addEventListener('click', close);
+  saveBtn.addEventListener('click', ()=>{
+    item.linkedDescriptions = [...list.querySelectorAll('input:checked')].map(el=>el.value);
+    close();
+    onSaved();
+  });
+  document.addEventListener('keydown', onKeydown);
+
+  document.body.appendChild(scrim);
 }
 
 // Default right-panel content while editing a budget and nothing is
@@ -2278,10 +2542,6 @@ function renderRight(){
   }
 }
 
-function getSelectedActualMonthly(){
-  if (selectedSub.kind === 'expense') return findSubcategory(selectedSub.category, selectedSub.subcategory)?.monthly || new Array(12).fill(0);
-  return findIncomeSub(selectedSub.category, selectedSub.subcategory)?.monthly || new Array(12).fill(0);
-}
 function getSelectedBudgetItems(){
   const group = selectedSub.kind === 'expense' ? BUDGETS.expenses : BUDGETS.income;
   const sub = (group[selectedSub.category]||{})[selectedSub.subcategory];
@@ -2314,6 +2574,7 @@ function addDraftBudgetItem(target, freq, label, rawAmount, amountType){
     id: nextBudgetId(),
     freq,
     amountType: amountType === 'perDiem' ? 'perDiem' : 'monthly',
+    linkedDescriptions: [],
     label: (label && label.trim()) || target.subcategory,
     amount: target.kind==='expense' ? -amt : amt,
   });
@@ -2814,33 +3075,52 @@ function openAddDraftItemModal(){
 function renderRightProjectedList(container){
   const cmi = DATA.currentMonthIndex;
   const currentDay = DATA.currentDay;
-  const actualMonthly = getSelectedActualMonthly();
   const items = getSelectedBudgetItems();
   const flatItems = items.filter(it=>!isPerDiemItem(it));
   const perDiemItems = items.filter(it=>isPerDiemItem(it));
-  const flatMonthly = new Array(12).fill(0);
-  flatItems.forEach(it=>it.monthly.forEach((v,i)=>flatMonthly[i]+=v));
-  // Note: for expenses, actualMonthly is a positive magnitude while
-  // flatMonthly (raw item amounts) is negative — compare on absolute
-  // value, as in the table.
   const txnRow = (t) => ({ dateLabel: (parseInt(t.date.slice(5,7),10))+'/'+(parseInt(t.date.slice(8,10),10)), description: t.description, amount: t.amount, planned: false });
   const rows = [];
   for (let m=0;m<12;m++){
     if (cmi !== null && m === cmi){
-      // Current (partial) month — matches the Year table's Forecast pill
-      // (see projectedMonthly): actual transactions so far always show;
-      // per diem items always add a synthetic "rest of the month" row for
-      // their remaining days, on top of that, regardless of actual; flat
-      // items keep the old whichever's-bigger choice between showing as
-      // actual (already covered by the transactions above) or as their
-      // own full month's planned rows, so they aren't listed twice.
-      getSelectedTxns(m).forEach(t=>rows.push(txnRow(t)));
-      if (!(Math.abs(actualMonthly[m]) > Math.abs(flatMonthly[m]))){
-        flatItems.forEach(it=>{
+      // Current (partial) month — mirrors resolveBudgets' current-month
+      // split exactly, at this one subcategory's own item granularity:
+      //   - linked items: their own matched transactions, plus a
+      //     "(remaining)" row for whatever's left of their plan (the
+      //     spending-cap comparison — see itemMatchedActual).
+      //   - unlinked items + whatever actual isn't claimed by a linked
+      //     item: the old whichever's-bigger choice between showing as
+      //     actual or as planned rows, just scoped to that leftover pool.
+      //   - per diem items: unchanged, always a "(remaining)" row for
+      //     their own remaining days, regardless of actual.
+      const monthTxns = getSelectedTxns(m);
+      const linkedItems = flatItems.filter(it=>it.linkedDescriptions && it.linkedDescriptions.length);
+      const unlinkedItems = flatItems.filter(it=>!(it.linkedDescriptions && it.linkedDescriptions.length));
+      const claimedDescriptions = new Set();
+      linkedItems.forEach(it=>it.linkedDescriptions.forEach(d=>claimedDescriptions.add(d)));
+
+      linkedItems.forEach(it=>{
+        const matchedTxns = monthTxns.filter(t=>it.linkedDescriptions.includes(t.description));
+        matchedTxns.forEach(t=>rows.push(txnRow(t)));
+        const matched = matchedTxns.reduce((a,t)=>a+t.amount,0);
+        const planned = it.monthly[m] || 0;
+        if (Math.abs(planned) > Math.abs(matched)){
+          const remaining = Math.round((planned-matched)*100)/100;
+          if (remaining) rows.push({ dateLabel: MONTHS[m], description: `${it.label} (remaining)`, amount: remaining, planned: true });
+        }
+      });
+
+      const residualTxns = monthTxns.filter(t=>!claimedDescriptions.has(t.description));
+      const residualActual = residualTxns.reduce((a,t)=>a+t.amount,0);
+      const unlinkedPlan = unlinkedItems.reduce((a,it)=>a+(it.monthly[m]||0),0);
+      if (Math.abs(residualActual) > Math.abs(unlinkedPlan)){
+        residualTxns.forEach(t=>rows.push(txnRow(t)));
+      } else {
+        unlinkedItems.forEach(it=>{
           const v = it.monthly[m];
           if (v) rows.push({ dateLabel: MONTHS[m], description: it.label, amount: v, planned: true });
         });
       }
+
       perDiemItems.forEach(it=>{
         const remainingDays = remainingDaysInMonth(DATA.year, m, currentDay);
         if (remainingDays <= 0) return;
@@ -2872,7 +3152,7 @@ function setIOStatus(msg, kind){
 }
 
 function recomputeDerived(){
-  BUDGETS = resolveBudgets(BUDGETS_RAW, DATA.year, DATA.currentMonthIndex, DATA.currentDay);
+  BUDGETS = resolveBudgets(BUDGETS_RAW, DATA.year, DATA.currentMonthIndex, DATA.currentDay, DATA.transactions);
   ROLL = buildBudgetRollups(BUDGETS, DATA.categories, DATA.incomeSubcats);
 }
 
