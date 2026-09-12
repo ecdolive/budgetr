@@ -221,6 +221,13 @@
     background:transparent;border:none;border-radius:50%;
     cursor:pointer;
   }
+  /* Its own display:flex above otherwise beats the browser's default
+     [hidden]{display:none} (an author-stylesheet class rule always wins
+     over a UA-stylesheet attribute rule, regardless of specificity or
+     source order), silently defeating clearBtn.hidden — this restores it,
+     at the higher specificity a class+attribute selector gets over a
+     plain class alone. */
+  .search-clear-btn[hidden]{display:none;}
   .search-clear-btn img{width:11px;height:11px;opacity:0.4;}
   .search-clear-btn:hover{background:var(--bg-row-hover);}
   .search-clear-btn:hover img{opacity:0.8;}
@@ -411,6 +418,14 @@
     font-weight:700;
     padding:0;
     cursor:pointer;
+    /* A native <select>'s closed-state box reserves a little extra width
+       past its own label text (browser-drawn dropdown-affordance space
+       that appearance:none doesn't remove) — left-aligned by default, this
+       shows up as a stray gap between the label and whatever follows it
+       (", totaling ..."). Right-aligning tucks that reserved space against
+       "in " right before it instead, where the existing word-space already
+       hides it. */
+    text-align:right;
   }
   .search-heading-field:hover,
   .search-heading-field:focus{color:var(--accent-teal);border-bottom-color:var(--accent-teal-dim);outline:none;}
