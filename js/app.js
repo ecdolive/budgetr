@@ -251,6 +251,24 @@ function remainingDaysInMonth(year, monthIndex, currentDay){
   return Math.max(0, daysInMonth(year, monthIndex) - currentDay);
 }
 
+// Normalizes a line item's freq into either null ("every month" — the
+// "monthly" string, the legacy "daily" string, or nullish) or an array of
+// lowercase 3-letter month codes it targets — a single-element array for
+// the original one-time-item shape (freq: "jun"), or a multi-element array
+// for an item that targets a specific, non-exhaustive SET of months at
+// once (freq: ["jun","dec"] — see openAddBudgetItemModal's Months picker,
+// which produces this shape whenever 2-11 individual months are selected
+// together, rather than creating one separate item per month). Centralizes
+// every place that used to compare freq to "monthly"/a single month code
+// directly.
+function freqMonthCodes(freq){
+  if (freq == null) return null;
+  if (Array.isArray(freq)) return freq.map(f=>String(f).toLowerCase());
+  const f = String(freq).toLowerCase();
+  if (f === 'monthly' || f === 'daily') return null;
+  return [f];
+}
+
 // A line item counts as per diem either via the current amountType field,
 // or — for line items saved before that field existed — via the legacy
 // freq:"daily" value, which meant exactly the same thing (a per-day rate,
@@ -260,28 +278,26 @@ function remainingDaysInMonth(year, monthIndex, currentDay){
 // re-exported) can still carry it, so both forms are checked everywhere a
 // line item's amount type matters.
 function isPerDiemItem(item){
-  return item.amountType === 'perDiem' || (item.freq||'').toLowerCase() === 'daily';
+  return item.amountType === 'perDiem' || (typeof item.freq === 'string' && item.freq.toLowerCase() === 'daily');
 }
 
 // Whether a line item's freq targets the given month at all — "monthly"
-// (recurring every month) always does; a specific month code ("jan" etc.,
-// a one-time item) only targets that one month.
+// (recurring every month, see freqMonthCodes) always does; a specific
+// month or set of months only targets those.
 function itemAppliesToMonth(item, monthIndex){
-  const freq = (item.freq||'').toLowerCase();
-  const effectiveFreq = freq === 'daily' ? 'monthly' : freq;
-  return effectiveFreq === 'monthly' || MONTH_ABBR.indexOf(effectiveFreq) === monthIndex;
+  const codes = freqMonthCodes(item.freq);
+  return codes === null || codes.includes(MONTH_ABBR[monthIndex]);
 }
 
 function resolveLineItem(item, year){
   const arr = new Array(12).fill(0);
-  const freq = (item.freq||'').toLowerCase();
-  const effectiveFreq = freq === 'daily' ? 'monthly' : freq;
+  const codes = freqMonthCodes(item.freq);
   const perDiem = isPerDiemItem(item);
   const monthValue = (monthIndex) => {
     const v = Number(item.amount)||0;
     return perDiem ? v * daysInMonth(year, monthIndex) : v;
   };
-  if (effectiveFreq === 'monthly'){
+  if (codes === null){
     if (Array.isArray(item.amount)){
       // An explicit 12-value array is already a literal total per month —
       // amountType doesn't apply to it.
@@ -290,8 +306,10 @@ function resolveLineItem(item, year){
       for (let i=0;i<12;i++) arr[i] = monthValue(i);
     }
   } else {
-    const mi = MONTH_ABBR.indexOf(effectiveFreq);
-    if (mi !== -1) arr[mi] = monthValue(mi);
+    codes.forEach(c=>{
+      const mi = MONTH_ABBR.indexOf(c);
+      if (mi !== -1) arr[mi] = monthValue(mi);
+    });
   }
   return arr.map(v=>Math.round(v*100)/100);
 }
@@ -342,7 +360,19 @@ function itemMatchedActual(transactions, txnType, catName, subName, cmi, linkedD
   const set = new Set(linkedDescriptions);
   return transactions.reduce((sum,t)=>{
     if (t.type !== txnType || t.month !== cmi || !set.has(t.description)) return sum;
-    if (!transactionMatchesBudgetSlot(t, txnType, catName, subName)) return sum;
+    // A linked description already pins the match precisely — for Income
+    // this only needs the transaction's source (subcategory) to agree with
+    // the item's own Category, not its own (freely-typed) Subcategory too.
+    // transactionMatchesBudgetSlot's exact description-equals-Subcategory
+    // check assumes the older one-description-per-item model, which an
+    // item that explicitly links a different-named set of descriptions
+    // (see openAddBudgetItemModal's income linking) intentionally breaks
+    // away from.
+    if (txnType === 'Income'){
+      if (t.subcategory !== catName) return sum;
+    } else if (!transactionMatchesBudgetSlot(t, txnType, catName, subName)){
+      return sum;
+    }
     return sum + t.amount;
   }, 0);
 }
@@ -519,7 +549,7 @@ function budgetsRawToDraft(raw){
   // stored — resolveLineItem/itemCurrentMonthSplit still accept the
   // legacy form directly for files that never get re-opened here.
   const toItems = (items, fallbackLabel) => (Array.isArray(items) ? items : []).map(it => {
-    const legacyDaily = (it.freq||'').toLowerCase() === 'daily';
+    const legacyDaily = typeof it.freq === 'string' && it.freq.toLowerCase() === 'daily';
     return {
       id: nextBudgetId(),
       freq: legacyDaily ? 'monthly' : (it.freq || 'monthly'),
@@ -848,12 +878,58 @@ function mergedExpenseCategories(){
   });
   return result;
 }
+// Every income budget slot (Category/Subcategory pair) that has at least
+// one linked description, plus — per category — the full union of
+// descriptions claimed by ANY of its slots. A linked description no longer
+// gets its own separate row in the ledger (see mergedIncomeSubcats); its
+// actual dollars surface on its linked item's own subcategory row instead
+// (see incomeActualMonthlyForDescriptions), and its individual
+// transactions on that row's own drill-down (see getSelectedTxns).
+function incomeLinkedSlots(){
+  const bySlot = new Map(); // "cat||sub" -> Set(description)
+  const byCategory = new Map(); // cat -> Set(description)
+  Object.entries(BUDGETS.income || {}).forEach(([catName, subs])=>{
+    Object.entries(subs || {}).forEach(([subName, subData])=>{
+      const set = new Set();
+      (subData.items||[]).forEach(it=>(it.linkedDescriptions||[]).forEach(d=>set.add(d)));
+      if (!set.size) return;
+      bySlot.set(catName+'||'+subName, set);
+      if (!byCategory.has(catName)) byCategory.set(catName, new Set());
+      set.forEach(d=>byCategory.get(catName).add(d));
+    });
+  });
+  return { bySlot, byCategory };
+}
+
+// Sums actual Income transactions under `catName` whose description is one
+// of `descriptions`, per month — the ledger's substitute for a linked
+// income subcategory row's own actual, since its Subcategory (unlike an
+// expense subcategory) has no real transaction-side field to match on
+// directly (see distinctDescriptionsFor).
+function incomeActualMonthlyForDescriptions(catName, descriptions){
+  const arr = new Array(12).fill(0);
+  if (!descriptions || !descriptions.size) return arr;
+  DATA.transactions.forEach(t=>{
+    if (t.type==='Income' && t.subcategory===catName && descriptions.has(t.description)) arr[t.month] += t.amount;
+  });
+  return arr.map(v=>Math.round(v*100)/100);
+}
+
 function mergedIncomeSubcats(){
-  const result = DATA.incomeSubcats.map(cat=>({
-    name: cat.name,
-    monthly: cat.monthly,
-    subcategories: cat.subcategories.map(s=>({ name: s.name, monthly: s.monthly })),
-  }));
+  const { bySlot, byCategory } = incomeLinkedSlots();
+  const result = DATA.incomeSubcats.map(cat=>{
+    const linkedHere = byCategory.get(cat.name);
+    return {
+      name: cat.name,
+      monthly: cat.monthly,
+      // A description claimed by some income item's link no longer gets
+      // its own row here — its actual dollars surface on that item's own
+      // subcategory row instead, added back in below.
+      subcategories: cat.subcategories
+        .filter(s=>!(linkedHere && linkedHere.has(s.name)))
+        .map(s=>({ name: s.name, monthly: s.monthly })),
+    };
+  });
   const byName = new Map(result.map(c=>[c.name, c]));
   Object.entries(BUDGETS.income||{}).forEach(([catName, subs])=>{
     let cat = byName.get(catName);
@@ -864,7 +940,19 @@ function mergedIncomeSubcats(){
     }
     const subByName = new Map(cat.subcategories.map(s=>[s.name, s]));
     Object.keys(subs||{}).forEach(subName=>{
-      if (!subByName.has(subName)){
+      const linkedDescs = bySlot.get(catName+'||'+subName);
+      if (linkedDescs){
+        // This row's actual always comes from its linked descriptions —
+        // even if a same-named real description also happens to exist —
+        // since the link is the source of truth once it's set.
+        const sub = { name: subName, monthly: incomeActualMonthlyForDescriptions(catName, linkedDescs) };
+        if (subByName.has(subName)){
+          cat.subcategories = cat.subcategories.map(s=>s.name===subName ? sub : s);
+        } else {
+          cat.subcategories.push(sub);
+        }
+        subByName.set(subName, sub);
+      } else if (!subByName.has(subName)){
         const sub = { name: subName, monthly: new Array(12).fill(0) };
         cat.subcategories.push(sub);
         subByName.set(subName, sub);
@@ -2148,57 +2236,76 @@ function refreshBudgetLiveTotals(kind, cat, sub){
 // Editable line-item row — label/frequency/amount inputs plus a remove
 // button. Lives only in the right panel now (see renderBudgetSelectionPanel
 // below), for whichever subcategory is currently selected in the table.
+// Plain-English "amount · frequency [· links]" summary shown on a draft
+// item's row (see renderBudgetItemRow) — everything else about the item is
+// only visible/editable via the Add/Edit line item modal now.
+function budgetItemFreqText(item){
+  const codes = freqMonthCodes(item.freq);
+  if (codes === null) return 'Every month';
+  const indices = codes.map(c=>MONTH_ABBR.indexOf(c)).sort((a,b)=>a-b);
+  // A single month reads as "January only" (a one-time item); a set of
+  // several reads as a plain abbreviated comma list — one item spanning
+  // just those months (see openAddBudgetItemModal's Months picker) —
+  // rather than repeating "only" for each.
+  if (indices.length === 1){
+    const idx = indices[0];
+    return (idx !== -1 ? MONTHS_FULL[idx] : codes[0]) + ' only';
+  }
+  return indices.map(idx=>idx!==-1 ? MONTHS[idx] : '?').join(', ');
+}
+function budgetItemSummaryText(item, kind){
+  const perDiem = isPerDiemItem(item);
+  const amtText = perDiem ? `${fmt(Math.abs(Number(item.amount)||0))}/day` : fmt(Math.abs(Number(item.amount)||0));
+  const parts = [amtText, budgetItemFreqText(item)];
+  const n = item.linkedDescriptions ? item.linkedDescriptions.length : 0;
+  if (!perDiem && n) parts.push(`${n} link${n===1?'':'s'}`);
+  return parts.join(' · ');
+}
+
 function renderBudgetItemRow(item, sub, cat, kind){
   const row = document.createElement('div');
   row.className = 'budget-item-row';
 
-  const labelInput = document.createElement('input');
-  labelInput.className = 'budget-item-label';
-  labelInput.placeholder = 'Label';
-  labelInput.value = item.label || '';
-  labelInput.addEventListener('input', ()=>{ item.label = labelInput.value; });
-  row.appendChild(labelInput);
+  // A 12-value amount array only ever pairs with the plain "every month"
+  // freq (see resolveLineItem) — an item with a specific-month(s) freq
+  // (single or an array, see freqMonthCodes) never has an array amount, so
+  // this only needs to check the "every month" case, not spell out every
+  // other possible freq shape.
+  const isArrayAmount = Array.isArray(item.amount) && freqMonthCodes(item.freq) === null;
 
-  const freqSelect = document.createElement('select');
-  freqSelect.className = 'budget-item-freq';
-  // Items reaching this row always come from budgetDraft, where the legacy
-  // freq:"daily" value has already been normalized into freq:"monthly" +
-  // amountType:"perDiem" (see budgetsRawToDraft) — so "Daily" itself is no
-  // longer offered here, only via the Amount Type select below.
-  const freqOptions = [['monthly','Monthly'], ...MONTHS_FULL.map((m,i)=>[MONTH_ABBR[i], m+' (once)'])];
-  const curFreq = (item.freq||'monthly').toLowerCase();
-  freqOptions.forEach(([val,label])=>{
-    const opt = document.createElement('option');
-    opt.value = val; opt.textContent = label;
-    if (curFreq === val) opt.selected = true;
-    freqSelect.appendChild(opt);
-  });
-  row.appendChild(freqSelect);
+  // A legacy explicit 12-value array has no single "amount"/"month" the
+  // Add/Edit modal's fields can represent, so it keeps its own minimal
+  // inline editor (label + frequency + a note with a one-way "convert to a
+  // single amount" action) instead of opening that modal.
+  if (isArrayAmount){
+    const labelInput = document.createElement('input');
+    labelInput.className = 'budget-item-label';
+    labelInput.placeholder = 'Label';
+    labelInput.value = item.label || '';
+    labelInput.addEventListener('input', ()=>{
+      item.label = labelInput.value;
+      refreshBudgetLiveTotals(kind, cat, sub);
+    });
+    row.appendChild(labelInput);
 
-  const isArrayAmount = Array.isArray(item.amount) && curFreq === 'monthly';
-  // Amount Type has no meaning for an explicit 12-value array (already a
-  // literal total per month — see resolveLineItem), so it's skipped
-  // entirely alongside the amount input in that case.
-  if (!isArrayAmount){
-    const amountTypeSelect = document.createElement('select');
-    amountTypeSelect.className = 'budget-item-freq';
-    const amountTypeOptions = [['monthly','Per Month'],['perDiem','Per Diem']];
-    const curAmountType = item.amountType === 'perDiem' ? 'perDiem' : 'monthly';
-    amountTypeOptions.forEach(([val,label])=>{
+    const freqSelect = document.createElement('select');
+    freqSelect.className = 'budget-item-freq';
+    const freqOptions = [['monthly','Monthly'], ...MONTHS_FULL.map((m,i)=>[MONTH_ABBR[i], m+' (once)'])];
+    // isArrayAmount already guarantees this item's freq is plain "monthly"
+    // (see above), so that's always the initially-selected option.
+    freqOptions.forEach(([val,label])=>{
       const opt = document.createElement('option');
       opt.value = val; opt.textContent = label;
-      if (curAmountType === val) opt.selected = true;
-      amountTypeSelect.appendChild(opt);
+      if (val === 'monthly') opt.selected = true;
+      freqSelect.appendChild(opt);
     });
-    amountTypeSelect.addEventListener('change', ()=>{
-      item.amountType = amountTypeSelect.value;
-      onChanged();
+    freqSelect.addEventListener('change', ()=>{
+      item.freq = freqSelect.value;
+      refreshBudgetLiveTotals(kind, cat, sub);
+      updateBudgetRightSummary();
     });
-    row.appendChild(amountTypeSelect);
-  }
+    row.appendChild(freqSelect);
 
-  let amountInput = null;
-  if (isArrayAmount){
     const note = document.createElement('span');
     note.className = 'budget-array-note';
     const avg = item.amount.reduce((a,b)=>a+(Number(b)||0),0)/12;
@@ -2215,71 +2322,45 @@ function renderBudgetItemRow(item, sub, cat, kind){
     });
     note.appendChild(convertBtn);
     row.appendChild(note);
-  } else {
-    amountInput = document.createElement('input');
-    amountInput.type = 'number';
-    amountInput.step = '1';
-    amountInput.className = 'budget-item-amount num';
-    const displayVal = kind==='expense' ? Math.abs(Number(item.amount)||0) : (Number(item.amount)||0);
-    amountInput.value = displayVal || '';
-    amountInput.placeholder = '0';
-    row.appendChild(amountInput);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'icon-btn';
+    removeBtn.title = 'Remove line item';
+    removeBtn.textContent = '✕';
+    removeBtn.addEventListener('click', ()=>{
+      sub.items = sub.items.filter(it=>it.id!==item.id);
+      renderMid();
+      renderRight();
+    });
+    row.appendChild(removeBtn);
+    return row;
   }
 
-  function onChanged(){
-    if (budgetRightSubTotalEl){
-      const v = budgetSubYearTotal(sub);
-      budgetRightSubTotalEl.textContent = fmtSigned(v);
-      budgetRightSubTotalEl.className = 'right-total-value num ' + signCls(v);
-    }
-    refreshBudgetLiveTotals(kind, cat, sub);
-    updateBudgetRightSummary();
-  }
-  freqSelect.addEventListener('change', ()=>{
-    item.freq = freqSelect.value;
-    onChanged();
-  });
-  if (amountInput){
-    amountInput.addEventListener('input', ()=>{
-      const raw = parseFloat(amountInput.value);
-      const v = isNaN(raw) ? 0 : raw;
-      item.amount = kind==='expense' ? -Math.abs(v) : Math.abs(v);
-      onChanged();
-    });
-  }
-
-  // Links this item to specific actual transaction descriptions, so the
-  // Forecast pill can treat it as a spending cap (matched actual vs.
-  // planned) for the current month instead of falling back to the whole
-  // subcategory's whichever's-bigger comparison — see resolveBudgets.
-  // Expense-only (income's subcategories already correspond 1:1 with a
-  // single transaction description — see transactionMatchesBudgetSlot —
-  // so linking there would just offer one redundant option) and only for
-  // a plain per-month amount (per diem items are always additive
-  // regardless of any specific transaction, and an explicit 12-value
-  // array has no single "planned" figure to compare against).
-  if (kind === 'expense' && !isArrayAmount && !isPerDiemItem(item)){
-    const linkBtn = document.createElement('button');
-    linkBtn.type = 'button';
-    linkBtn.className = 'budget-item-link-btn';
-    const syncLinkBtn = () => {
-      const n = item.linkedDescriptions ? item.linkedDescriptions.length : 0;
-      linkBtn.textContent = n ? `Linked (${n})` : 'Link';
-      linkBtn.classList.toggle('linked', n > 0);
-    };
-    syncLinkBtn();
-    linkBtn.addEventListener('click', ()=>{
-      openLinkTransactionsModal(item, cat, sub, kind, syncLinkBtn);
-    });
-    row.appendChild(linkBtn);
-  }
+  // Everything else: a compact read-only summary — clicking it opens the
+  // Add/Edit line item modal (see openEditDraftItemModal) pre-filled with
+  // this item's full details, rather than editing fields inline.
+  row.classList.add('clickable');
+  const summary = document.createElement('div');
+  summary.className = 'budget-item-summary';
+  const summaryLabel = document.createElement('div');
+  summaryLabel.className = 'budget-item-summary-label';
+  summaryLabel.textContent = item.label || sub.name;
+  const summaryMeta = document.createElement('div');
+  summaryMeta.className = 'budget-item-summary-meta';
+  summaryMeta.textContent = budgetItemSummaryText(item, kind);
+  summary.appendChild(summaryLabel);
+  summary.appendChild(summaryMeta);
+  summary.addEventListener('click', ()=>openEditDraftItemModal(item, sub, cat, kind));
+  row.appendChild(summary);
 
   const removeBtn = document.createElement('button');
   removeBtn.type = 'button';
   removeBtn.className = 'icon-btn';
   removeBtn.title = 'Remove line item';
   removeBtn.textContent = '✕';
-  removeBtn.addEventListener('click', ()=>{
+  removeBtn.addEventListener('click', (e)=>{
+    e.stopPropagation();
     sub.items = sub.items.filter(it=>it.id!==item.id);
     renderMid();
     renderRight();
@@ -2290,28 +2371,51 @@ function renderBudgetItemRow(item, sub, cat, kind){
 }
 
 // Every distinct actual transaction description on record for a given
-// category/subcategory, across every month/year currently loaded — not
-// just the current month, since a linked description should keep matching
-// whatever month later becomes "current" as fresh CSVs get loaded.
-function distinctDescriptionsFor(category, subcategory){
+// category (income) or category/subcategory (expense), across every
+// month/year currently loaded — not just the current month, since a linked
+// description should keep matching whatever month later becomes "current"
+// as fresh CSVs get loaded. Income has no real per-transaction field
+// corresponding to a budget item's own (freely-typed) Subcategory — a
+// transaction's "subcategory" is really its source (the budget Category),
+// and its description is what would otherwise become its own separate
+// leaf row in the ledger (see aggregate()'s income tree) — so linking
+// there scopes only by category, offering every description under that
+// source regardless of which item's Subcategory the picker was opened
+// from.
+function distinctDescriptionsFor(kind, category, subcategory){
   const set = new Set();
   DATA.transactions.forEach(t=>{
-    if (t.type==='Expenses' && t.category===category && t.subcategory===subcategory) set.add(t.description);
+    if (kind === 'income'){
+      if (t.type==='Income' && t.subcategory===category) set.add(t.description);
+    } else if (t.type==='Expenses' && t.category===category && t.subcategory===subcategory){
+      set.add(t.description);
+    }
   });
   return [...set].sort((a,b)=>a.localeCompare(b));
 }
 
-// Every description already linked to some OTHER item in the draft (any
-// category/subcategory) — excluded from a picker so the same actual
-// dollars can never be claimed by two line items at once.
-function claimedDescriptionsExcept(kind, exceptItemId){
+// Every OTHER item (in the draft, any category/subcategory) that already
+// links a given description, keyed by description — a description can be
+// linked to more than one line item at once (e.g. a shared charge that
+// counts toward more than one budget item's cap), so this is purely
+// informational: the picker (see openLinkTransactionsModal) annotates an
+// already-shared description with who else claims it rather than hiding
+// it, so sharing one is a visible, deliberate choice. Each item that
+// claims a description still compares its own full matched actual against
+// its own plan independently (see itemMatchedActual/resolveBudgets), so
+// the same actual dollars can count toward more than one item's forecast
+// figure once shared.
+function descriptionLinksElsewhere(kind, exceptItemId){
   const list = kind === 'income' ? budgetDraft.income : budgetDraft.expenses;
-  const set = new Set();
+  const map = new Map();
   list.forEach(c=>c.subcategories.forEach(s=>s.items.forEach(it=>{
     if (it.id === exceptItemId) return;
-    (it.linkedDescriptions||[]).forEach(d=>set.add(d));
+    (it.linkedDescriptions||[]).forEach(d=>{
+      if (!map.has(d)) map.set(d, []);
+      map.get(d).push(it.label || s.name);
+    });
   })));
-  return set;
+  return map;
 }
 
 // Modal for choosing which actual transaction descriptions (in this
@@ -2320,9 +2424,8 @@ function claimedDescriptionsExcept(kind, exceptItemId){
 // save so the caller can refresh just its own trigger button rather than
 // re-rendering the whole editor.
 function openLinkTransactionsModal(item, cat, sub, kind, onSaved){
-  const available = distinctDescriptionsFor(cat.name, sub.name);
-  const claimedElsewhere = claimedDescriptionsExcept(kind, item.id);
-  const pickable = available.filter(d=>!claimedElsewhere.has(d));
+  const available = distinctDescriptionsFor(kind, cat.name, sub.name);
+  const linkedElsewhere = descriptionLinksElsewhere(kind, item.id);
   const currentlyLinked = new Set(item.linkedDescriptions || []);
 
   const scrim = document.createElement('div');
@@ -2339,30 +2442,50 @@ function openLinkTransactionsModal(item, cat, sub, kind, onSaved){
 
   const hint = document.createElement('div');
   hint.className = 'modal-hint';
-  hint.textContent = `Transactions in ${cat.name} › ${sub.name} that count toward "${item.label || sub.name}".`;
+  // Income scopes by category alone (see distinctDescriptionsFor) — its
+  // hint drops the "› Subcategory" segment accordingly, since that field
+  // has no real transaction-side counterpart to speak of there.
+  hint.textContent = kind === 'income'
+    ? `Transactions in ${cat.name} that count toward "${item.label || sub.name}".`
+    : `Transactions in ${cat.name} › ${sub.name} that count toward "${item.label || sub.name}".`;
   dialog.appendChild(hint);
 
   const list = document.createElement('div');
   list.className = 'link-txn-list';
-  if (pickable.length === 0){
+  if (available.length === 0){
     const empty = document.createElement('div');
     empty.className = 'link-txn-empty';
-    empty.textContent = available.length === 0
-      ? 'No transactions loaded yet for this category/subcategory.'
-      : 'Every transaction description here is already linked to another line item.';
+    empty.textContent = kind === 'income'
+      ? 'No transactions loaded yet for this category.'
+      : 'No transactions loaded yet for this category/subcategory.';
     list.appendChild(empty);
   } else {
-    pickable.forEach(desc=>{
+    available.forEach(desc=>{
       const option = document.createElement('label');
       option.className = 'link-txn-option';
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
       checkbox.value = desc;
       checkbox.checked = currentlyLinked.has(desc);
+      const textWrap = document.createElement('div');
+      textWrap.className = 'link-txn-text';
       const text = document.createElement('span');
+      text.className = 'link-txn-desc';
       text.textContent = desc;
+      textWrap.appendChild(text);
+      // A description already linked elsewhere isn't excluded — it can be
+      // shared across more than one item (see descriptionLinksElsewhere) —
+      // just called out here (as a second, muted line) so sharing one is a
+      // visible, deliberate choice rather than a surprise later.
+      const others = linkedElsewhere.get(desc);
+      if (others && others.length){
+        const note = document.createElement('span');
+        note.className = 'link-txn-shared-note';
+        note.textContent = `also linked to ${others.join(', ')}`;
+        textWrap.appendChild(note);
+      }
       option.appendChild(checkbox);
-      option.appendChild(text);
+      option.appendChild(textWrap);
       list.appendChild(option);
     });
   }
@@ -2551,12 +2674,12 @@ function getSelectedBudgetItems(){
 // Adds a new raw budget line item for whatever's selected in the budget
 // editor — target is {kind,category,subcategory}, with the same
 // category/subcategory-name-based find-or-create behavior the modal's own
-// "+ New" option relies on. Writes into budgetDraft rather than straight
-// into BUDGETS_RAW, since nothing in the editor is real until Save.
-// Selects the (possibly newly-created) subcategory afterward, same as
-// clicking it directly, so the added item is right there in the right
-// panel.
-function addDraftBudgetItem(target, freq, label, rawAmount, amountType){
+// free-text Category/Subcategory fields rely on (see openAddBudgetItemModal).
+// Writes into budgetDraft rather than straight into BUDGETS_RAW, since
+// nothing in the editor is real until Save. Selects the (possibly
+// newly-created) subcategory afterward, same as clicking it directly, so
+// the added item is right there in the right panel.
+function addDraftBudgetItem(target, freq, label, rawAmount, amountType, linkedDescriptions){
   const amt = Math.abs(Number(rawAmount) || 0);
   if (amt === 0) return false;
   const list = target.kind === 'income' ? budgetDraft.income : budgetDraft.expenses;
@@ -2570,14 +2693,56 @@ function addDraftBudgetItem(target, freq, label, rawAmount, amountType){
     sub = { id: nextBudgetId(), name: target.subcategory, items: [] };
     cat.subcategories.push(sub);
   }
+  const resolvedAmountType = amountType === 'perDiem' ? 'perDiem' : 'monthly';
   sub.items.push({
     id: nextBudgetId(),
     freq,
-    amountType: amountType === 'perDiem' ? 'perDiem' : 'monthly',
-    linkedDescriptions: [],
+    amountType: resolvedAmountType,
+    linkedDescriptions: (resolvedAmountType!=='perDiem' && linkedDescriptions) ? [...linkedDescriptions] : [],
     label: (label && label.trim()) || target.subcategory,
     amount: target.kind==='expense' ? -amt : amt,
   });
+  budgetOpenCats.add(cat.id);
+  budgetSelection = { kind: target.kind, catId: cat.id, subId: sub.id };
+  return true;
+}
+
+// Applies an edit (from the same modal, in edit mode — see
+// openAddBudgetItemModal/openEditDraftItemModal) to an existing draft item:
+// relocates it to the target category/subcategory (creating either as
+// needed, same find-or-create as addDraftBudgetItem above) — which may be a
+// different Income/Spending list than it started in, since the modal's Type
+// toggle stays editable — and overwrites its fields in place. The item's id
+// (and thus its identity for descriptionLinksElsewhere) stays stable across
+// the move, since this relocates the actual item object rather than
+// creating a new one.
+function updateDraftBudgetItem(item, target, freq, label, rawAmount, amountType, linkedDescriptions){
+  const amt = Math.abs(Number(rawAmount) || 0);
+  if (amt === 0) return false;
+  [budgetDraft.income, budgetDraft.expenses].forEach(list=>{
+    list.forEach(c=>c.subcategories.forEach(s=>{
+      const idx = s.items.indexOf(item);
+      if (idx !== -1) s.items.splice(idx, 1);
+    }));
+  });
+  const list = target.kind === 'income' ? budgetDraft.income : budgetDraft.expenses;
+  let cat = list.find(c=>c.name === target.category);
+  if (!cat){
+    cat = { id: nextBudgetId(), name: target.category, subcategories: [] };
+    list.push(cat);
+  }
+  let sub = cat.subcategories.find(s=>s.name === target.subcategory);
+  if (!sub){
+    sub = { id: nextBudgetId(), name: target.subcategory, items: [] };
+    cat.subcategories.push(sub);
+  }
+  const resolvedAmountType = amountType === 'perDiem' ? 'perDiem' : 'monthly';
+  item.freq = freq;
+  item.amountType = resolvedAmountType;
+  item.label = (label && label.trim()) || target.subcategory;
+  item.amount = target.kind==='expense' ? -amt : amt;
+  item.linkedDescriptions = (resolvedAmountType!=='perDiem' && linkedDescriptions) ? [...linkedDescriptions] : [];
+  sub.items.push(item);
   budgetOpenCats.add(cat.id);
   budgetSelection = { kind: target.kind, catId: cat.id, subId: sub.id };
   return true;
@@ -2619,11 +2784,22 @@ function draftCategoriesFor(kind){
 }
 
 function getSelectedTxns(monthFilter){
+  // An income subcategory row backed by a linked item (see
+  // incomeLinkedSlots/mergedIncomeSubcats) has no real transaction field
+  // matching its own (freely-typed) Subcategory name directly — its actual
+  // transactions are whichever descriptions that item(s) actually link, so
+  // drilling into that row falls back to matching on those instead of an
+  // exact description match.
+  const incomeLinkedDescs = selectedSub.kind === 'income'
+    ? incomeLinkedSlots().bySlot.get(selectedSub.category+'||'+selectedSub.subcategory)
+    : null;
   return DATA.transactions.filter(t=>{
     if (selectedSub.kind==='expense'){
       if (t.type!=='Expenses' || t.category!==selectedSub.category || t.subcategory!==selectedSub.subcategory) return false;
     } else {
-      if (t.type!=='Income' || t.subcategory!==selectedSub.category || t.description!==selectedSub.subcategory) return false;
+      if (t.type!=='Income' || t.subcategory!==selectedSub.category) return false;
+      const matches = incomeLinkedDescs ? incomeLinkedDescs.has(t.description) : t.description===selectedSub.subcategory;
+      if (!matches) return false;
     }
     if (monthFilter!==null && monthFilter!==undefined && t.month!==monthFilter) return false;
     return true;
@@ -2686,18 +2862,37 @@ function renderRightPlannedList(container, monthFilter){
   renderRightTxnTable(container, rows);
 }
 
-// Centered modal (with a scrim behind it) for the budget editor's add-item
-// form — built fresh and appended to <body> each time it opens, so it
-// overlays the whole app rather than being scoped to the right panel.
-// Opened via openAddDraftItemModal() (budget editor, subcategory selected),
-// which writes into budgetDraft rather than straight into BUDGETS_RAW,
-// since nothing here is real until Save (see addDraftBudgetItem).
+// Centered modal (with a scrim behind it) for the budget editor's unified
+// add/edit line item form — built fresh and appended to <body> each time it
+// opens, so it overlays the whole app rather than being scoped to the right
+// panel. Opened via openAddDraftItemModal() (the "+ Add income"/"+ Add
+// expense" row) or openEditDraftItemModal() (clicking an existing item's
+// summary row) — both write into budgetDraft rather than straight into
+// BUDGETS_RAW, since nothing here is real until Save (see
+// addDraftBudgetItem/updateDraftBudgetItem).
 // `opts`: { kind, category, subcategory } is the initial selection (all
 // changeable in the form itself); `getCategories(kind)` returns the
-// category/subcategory option list for a given Type; `onAdd(target, freq,
-// label, amount, amountType)` performs the actual write into budgetDraft.
+// category/subcategory option list for a given Type. The Months picker's
+// selection always resolves (see freqArgFromSelection) to exactly one freq
+// value — "monthly", a single month code, or an array of 2-11 month codes
+// (see freqMonthCodes) — so exactly one item is written either way: in add
+// mode via `onAdd(target, freq, label, amount, amountType,
+// linkedDescriptions)`, or in edit mode (`opts.editItem` set to the raw
+// item being edited) via `onSave(item, target, freq, label, amount,
+// amountType, linkedDescriptions)` instead, which relocates/updates it.
 function openAddBudgetItemModal(opts){
+  const isEdit = !!opts.editItem;
   let currentKind = opts.kind;
+  // Amount type — whether Amount below is a flat total for whichever
+  // month(s) get picked, or a per-day rate multiplied out by the number of
+  // days in each of those months (see resolveLineItem and, for the
+  // Forecast pill's current-month figure specifically,
+  // itemCurrentMonthSplit). Declared up top since the Description field's
+  // link badge (built before the Amount field) already needs to read it.
+  let amountType = isEdit && opts.editItem.amountType === 'perDiem' ? 'perDiem' : 'monthly';
+  // Working copy of linkedDescriptions, only committed to the real item on
+  // Save — see the Link Transactions modal wiring below.
+  let pendingLinkedDescriptions = isEdit ? [...(opts.editItem.linkedDescriptions || [])] : [];
   const categoriesFor = (k) => opts.getCategories(k);
 
   const scrim = document.createElement('div');
@@ -2710,21 +2905,15 @@ function openAddBudgetItemModal(opts){
 
   const title = document.createElement('div');
   title.className = 'modal-title';
-  title.textContent = 'Add line item';
+  title.textContent = isEdit ? 'Edit line item' : 'Add line item';
   dialog.appendChild(title);
 
   // Type — Income vs. Spending, at the top since it decides which
-  // category/subcategory options the fields below offer.
-  const typeField = document.createElement('div');
-  typeField.className = 'modal-field';
-  const typeLabel = document.createElement('div');
-  typeLabel.className = 'modal-field-label';
-  typeLabel.textContent = 'Type';
+  // category/subcategory options the fields below offer. No field label —
+  // the two pills read as self-explanatory on their own.
   const typeRow = document.createElement('div');
   typeRow.className = 'modal-type-pills';
-  typeField.appendChild(typeLabel);
-  typeField.appendChild(typeRow);
-  dialog.appendChild(typeField);
+  dialog.appendChild(typeRow);
 
   const incomeTypePill = document.createElement('button');
   incomeTypePill.type = 'button';
@@ -2742,50 +2931,12 @@ function openAddBudgetItemModal(opts){
   };
   syncTypePills();
 
-  // Category / subcategory — default to whatever's currently selected in
-  // the ledger, but changeable here so the new item can be filed elsewhere
-  // without closing the modal and re-selecting a different row first.
-  // Grouped together (and below, description+amount grouped together) so
-  // the modal reads as distinct sections with visible breathing room
-  // between them, rather than one long uniform list of fields.
-  const NEW_OPTION = '__new__';
-
-  // A hidden-by-default text input that appears next to a select once its
-  // "+ New" option is chosen, for typing the new category/subcategory
-  // name — the select shrinks to share the row with it. No label above
-  // it — the placeholder alone identifies the field.
-  function makeNewNameInput(placeholder){
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'modal-pill-input modal-inline-new';
-    input.placeholder = placeholder;
-    input.hidden = true;
-    return input;
-  }
-  // Prepends "+ New" above whatever real category/subcategory options are
-  // already in the select.
-  // Native <select> arrows sit flush against the edge with no control over
-  // spacing, so the default appearance is suppressed (via CSS) in favor of
-  // a positioned chevron icon with real padding from the pill's right edge.
-  function wrapSelect(select){
-    const wrap = document.createElement('div');
-    wrap.className = 'modal-select-wrap';
-    const chevron = document.createElement('img');
-    chevron.className = 'modal-select-chevron';
-    chevron.src = 'icons/chevron-right.svg';
-    chevron.alt = '';
-    wrap.appendChild(select);
-    wrap.appendChild(chevron);
-    return wrap;
-  }
-  function addNewOption(select){
-    const opt = document.createElement('option');
-    opt.value = NEW_OPTION;
-    opt.textContent = '+ New';
-    select.insertBefore(opt, select.firstChild);
-    return opt;
-  }
-
+  // Category / subcategory — plain free-text fields (with a typeahead of
+  // existing names, see bindTypeahead) rather than a <select> + "+ New"
+  // affordance: typing an unrecognized name simply creates it on Save,
+  // exactly like addDraftBudgetItem/updateDraftBudgetItem's own
+  // find-or-create-by-name behavior, so there's nothing extra to wire up
+  // here for the "new category" case.
   const catSubGroup = document.createElement('div');
   catSubGroup.className = 'modal-group';
   dialog.appendChild(catSubGroup);
@@ -2795,83 +2946,50 @@ function openAddBudgetItemModal(opts){
   const catLabel = document.createElement('div');
   catLabel.className = 'modal-field-label';
   catLabel.textContent = 'Category';
-  const catRow = document.createElement('div');
-  catRow.className = 'modal-inline-row';
-  const catSelect = document.createElement('select');
-  catSelect.className = 'modal-select';
+  const catInput = document.createElement('input');
+  catInput.type = 'text';
+  catInput.className = 'modal-pill-input';
+  catInput.placeholder = 'Category';
+  catInput.value = opts.category || '';
   catField.appendChild(catLabel);
-  catField.appendChild(catRow);
-  catRow.appendChild(wrapSelect(catSelect));
+  catField.appendChild(catInput);
   catSubGroup.appendChild(catField);
-
-  const catNewInput = makeNewNameInput('Category name');
-  catRow.appendChild(catNewInput);
-  const syncCatNew = () => { catNewInput.hidden = catSelect.value !== NEW_OPTION; };
 
   const subField = document.createElement('div');
   subField.className = 'modal-field';
   const subLabel = document.createElement('div');
   subLabel.className = 'modal-field-label';
   subLabel.textContent = 'Subcategory';
-  const subRow = document.createElement('div');
-  subRow.className = 'modal-inline-row';
-  const subSelect = document.createElement('select');
-  subSelect.className = 'modal-select';
+  const subInput = document.createElement('input');
+  subInput.type = 'text';
+  subInput.className = 'modal-pill-input';
+  subInput.placeholder = 'Subcategory';
+  subInput.value = opts.subcategory || '';
   subField.appendChild(subLabel);
-  subField.appendChild(subRow);
-  subRow.appendChild(wrapSelect(subSelect));
+  subField.appendChild(subInput);
   catSubGroup.appendChild(subField);
 
-  const subNewInput = makeNewNameInput('Subcategory name');
-  subRow.appendChild(subNewInput);
-  const syncSubNew = () => { subNewInput.hidden = subSelect.value !== NEW_OPTION; };
+  const catSuggestions = () => categoriesFor(currentKind).map(c=>c.name);
+  const subSuggestions = () => {
+    const catName = catInput.value.trim().toLowerCase();
+    const cat = categoriesFor(currentKind).find(c=>c.name.toLowerCase()===catName);
+    return cat ? cat.subcategories.map(s=>s.name) : [];
+  };
+  bindTypeahead(catInput, catSuggestions);
+  bindTypeahead(subInput, subSuggestions);
+  catInput.addEventListener('typeahead-pick', (e)=>{ catInput.value = e.detail; updateSaveEnabled(); });
+  subInput.addEventListener('typeahead-pick', (e)=>{ subInput.value = e.detail; updateSaveEnabled(); });
 
-  const populateSubs = (catName, preferredSub) => {
-    subSelect.innerHTML = '';
-    if (catName !== NEW_OPTION){
-      const cat = categoriesFor(currentKind).find(c=>c.name===catName);
-      (cat ? cat.subcategories : []).forEach(s=>{
-        const opt = document.createElement('option');
-        opt.value = s.name;
-        opt.textContent = s.name;
-        if (s.name === preferredSub) opt.selected = true;
-        subSelect.appendChild(opt);
-      });
-    }
-    const newOpt = addNewOption(subSelect);
-    // A brand-new category has no existing subcategories yet, so force
-    // "+ New" rather than leaving the select empty.
-    if (catName === NEW_OPTION) newOpt.selected = true;
-    syncSubNew();
-  };
-  const populateCats = (preferredCat, preferredSub) => {
-    catSelect.innerHTML = '';
-    categoriesFor(currentKind).forEach(c=>{
-      const opt = document.createElement('option');
-      opt.value = c.name;
-      opt.textContent = c.name;
-      if (c.name === preferredCat) opt.selected = true;
-      catSelect.appendChild(opt);
-    });
-    addNewOption(catSelect);
-    syncCatNew();
-    populateSubs(catSelect.value, preferredSub);
-  };
-  populateCats(opts.category, opts.subcategory);
-  subSelect.addEventListener('change', syncSubNew);
-  catSelect.addEventListener('change', () => {
-    populateSubs(catSelect.value, null);
-    syncCatNew();
-  });
   function selectType(kind){
     if (kind === currentKind) return;
     currentKind = kind;
     syncTypePills();
-    // Switching Type has no notion of a "same" category/subcategory to
-    // carry over — Income and Spending are disjoint lists — so this
-    // starts over at that Type's first category (or "+ New" if it has
-    // none yet) rather than trying to preserve the old selection.
-    populateCats(null, null);
+    // Income and Spending are disjoint category namespaces, so there's no
+    // "same" category/subcategory to carry over across the switch.
+    catInput.value = '';
+    subInput.value = '';
+    syncLinkBadgeVisibility();
+    updateSaveEnabled();
   }
   incomeTypePill.addEventListener('click', ()=>selectType('income'));
   expenseTypePill.addEventListener('click', ()=>selectType('expense'));
@@ -2880,75 +2998,121 @@ function openAddBudgetItemModal(opts){
   descAmountGroup.className = 'modal-group';
   dialog.appendChild(descAmountGroup);
 
+  // Description — this item's own label. Doubles as the trigger for the
+  // "link specific transactions" picker (see openLinkTransactionsModal): an
+  // inline badge inside the same pill, reading "add links" until something
+  // is linked, then "N transaction link(s)" in an accent color. Only
+  // meaningful for a flat (non-per-diem) expense item — see
+  // renderBudgetItemRow's identical condition for the equivalent old inline
+  // Link button.
   const labelField = document.createElement('div');
   labelField.className = 'modal-field';
   const labelFieldLabel = document.createElement('div');
   labelFieldLabel.className = 'modal-field-label';
   labelFieldLabel.textContent = 'Description';
+  const labelWrap = document.createElement('div');
+  labelWrap.className = 'modal-input-wrap';
   const labelInput = document.createElement('input');
   labelInput.type = 'text';
   labelInput.className = 'modal-pill-input';
   labelInput.placeholder = 'Description';
+  labelInput.value = isEdit ? (opts.editItem.label || '') : '';
+  const linkBadge = document.createElement('button');
+  linkBadge.type = 'button';
+  linkBadge.className = 'modal-link-badge';
+  labelWrap.appendChild(labelInput);
+  labelWrap.appendChild(linkBadge);
   labelField.appendChild(labelFieldLabel);
-  labelField.appendChild(labelInput);
+  labelField.appendChild(labelWrap);
   descAmountGroup.appendChild(labelField);
+
+  function syncLinkBadge(){
+    const n = pendingLinkedDescriptions.length;
+    linkBadge.textContent = n ? `${n} transaction link${n===1?'':'s'}` : 'add links';
+    linkBadge.classList.toggle('linked', n > 0);
+  }
+  function syncLinkBadgeVisibility(){
+    // Available for both Income and Spending — only per-diem items have no
+    // single "planned" figure a matched transaction could compare against
+    // (see itemMatchedActual/resolveBudgets).
+    const show = amountType !== 'perDiem';
+    linkBadge.hidden = !show;
+    labelWrap.classList.toggle('has-badge', show);
+  }
+  syncLinkBadge();
+  syncLinkBadgeVisibility();
+  linkBadge.addEventListener('click', ()=>{
+    const pseudoCat = { name: catInput.value.trim() };
+    const pseudoSub = { name: subInput.value.trim() };
+    const pseudoItem = { id: isEdit ? opts.editItem.id : '__pending__', label: labelInput.value, linkedDescriptions: pendingLinkedDescriptions };
+    openLinkTransactionsModal(pseudoItem, pseudoCat, pseudoSub, currentKind, ()=>{
+      pendingLinkedDescriptions = pseudoItem.linkedDescriptions;
+      syncLinkBadge();
+    });
+  });
 
   const amountField = document.createElement('div');
   amountField.className = 'modal-field';
   const amountFieldLabel = document.createElement('div');
   amountFieldLabel.className = 'modal-field-label';
   amountFieldLabel.textContent = 'Amount';
+  const amountWrap = document.createElement('div');
+  amountWrap.className = 'modal-input-wrap has-toggle';
   const amountInput = document.createElement('input');
   amountInput.type = 'number';
   amountInput.step = '1';
   amountInput.className = 'modal-pill-input num';
   amountInput.placeholder = '0';
+  amountInput.value = isEdit ? (Math.abs(Number(opts.editItem.amount)||0) || '') : '';
+  const amountTypeToggle = document.createElement('div');
+  amountTypeToggle.className = 'modal-amount-type-toggle';
+  amountWrap.appendChild(amountInput);
+  amountWrap.appendChild(amountTypeToggle);
   amountField.appendChild(amountFieldLabel);
-  amountField.appendChild(amountInput);
+  amountField.appendChild(amountWrap);
   descAmountGroup.appendChild(amountField);
-
-  // Amount type — whether Amount above is a flat total for whichever
-  // month(s) get picked below, or a per-day rate multiplied out by the
-  // number of days in each of those months (see resolveLineItem and, for
-  // the Forecast pill's current-month figure specifically,
-  // itemCurrentMonthSplit).
-  let amountType = 'monthly';
-  const amountTypeField = document.createElement('div');
-  amountTypeField.className = 'modal-field';
-  const amountTypeLabel = document.createElement('div');
-  amountTypeLabel.className = 'modal-field-label';
-  amountTypeLabel.textContent = 'Amount Type';
-  const amountTypeRow = document.createElement('div');
-  amountTypeRow.className = 'modal-type-pills';
-  amountTypeField.appendChild(amountTypeLabel);
-  amountTypeField.appendChild(amountTypeRow);
-  descAmountGroup.appendChild(amountTypeField);
 
   const perMonthPill = document.createElement('button');
   perMonthPill.type = 'button';
-  perMonthPill.className = 'pill';
-  perMonthPill.textContent = 'Per Month';
+  perMonthPill.className = 'pill pill-compact';
+  perMonthPill.textContent = 'per month';
   const perDiemPill = document.createElement('button');
   perDiemPill.type = 'button';
-  perDiemPill.className = 'pill';
-  perDiemPill.textContent = 'Per Diem';
-  amountTypeRow.appendChild(perMonthPill);
-  amountTypeRow.appendChild(perDiemPill);
+  perDiemPill.className = 'pill pill-compact';
+  perDiemPill.textContent = 'per diem';
+  amountTypeToggle.appendChild(perMonthPill);
+  amountTypeToggle.appendChild(perDiemPill);
   const syncAmountTypePills = () => {
     perMonthPill.classList.toggle('active', amountType === 'monthly');
     perDiemPill.classList.toggle('active', amountType === 'perDiem');
   };
   syncAmountTypePills();
-  perMonthPill.addEventListener('click', ()=>{ amountType = 'monthly'; syncAmountTypePills(); });
-  perDiemPill.addEventListener('click', ()=>{ amountType = 'perDiem'; syncAmountTypePills(); });
+  perMonthPill.addEventListener('click', ()=>{
+    amountType = 'monthly';
+    syncAmountTypePills();
+    syncLinkBadgeVisibility();
+  });
+  perDiemPill.addEventListener('click', ()=>{
+    amountType = 'perDiem';
+    // A per-diem item has no single "planned" figure to compare a matched
+    // transaction against (see resolveBudgets), so any existing links stop
+    // applying — same reset addDraftBudgetItem/updateDraftBudgetItem does
+    // at save-time if this slips through some other way.
+    pendingLinkedDescriptions = [];
+    syncLinkBadge();
+    syncAmountTypePills();
+    syncLinkBadgeVisibility();
+  });
 
-  // Frequency picker — a pill toggle group (same look as the Expenses/
-  // Income and YTD/Projection/Plan pills elsewhere) instead of a <select>,
-  // so more than one month can be picked at once. "Every month" and
-  // specific months are mutually exclusive: picking a month clears "Every
-  // month", and vice versa; multiple specific months can stay selected
-  // together (e.g. a one-time item in both June and December).
-  const selectedFreqs = new Set(['monthly']);
+  // Months picker — a pill toggle group (same look as the Expenses/Income
+  // and YTD/Projection/Plan pills elsewhere) instead of a <select>. "All"
+  // and specific months are mutually exclusive, but any number of specific
+  // months can stay selected together — see freqArgFromSelection below for
+  // how that set of selections becomes the one saved item's freq: a single
+  // month keeps the original one-time-item shape, and 2-11 months become
+  // one item spanning that whole set (see freqMonthCodes) rather than one
+  // separate item per month.
+  const selectedFreqs = new Set(isEdit ? (freqMonthCodes(opts.editItem.freq) || ['monthly']) : ['monthly']);
   const freqPillEls = {};
   const syncFreqPills = () => {
     Object.entries(freqPillEls).forEach(([val,el])=>el.classList.toggle('active', selectedFreqs.has(val)));
@@ -2958,7 +3122,7 @@ function openAddBudgetItemModal(opts){
   freqField.className = 'modal-field';
   const freqLabel = document.createElement('div');
   freqLabel.className = 'modal-field-label';
-  freqLabel.textContent = 'Month';
+  freqLabel.textContent = 'Months';
   freqField.appendChild(freqLabel);
   dialog.appendChild(freqField);
 
@@ -2969,11 +3133,12 @@ function openAddBudgetItemModal(opts){
   const allPill = document.createElement('button');
   allPill.type = 'button';
   allPill.className = 'pill freq-pill freq-pill-all';
-  allPill.textContent = 'Every month';
+  allPill.textContent = 'All';
   allPill.addEventListener('click', ()=>{
     selectedFreqs.clear();
     selectedFreqs.add('monthly');
     syncFreqPills();
+    updateSaveEnabled();
   });
   freqPillEls.monthly = allPill;
   freqSection.appendChild(allPill);
@@ -2984,18 +3149,32 @@ function openAddBudgetItemModal(opts){
     const val = MONTH_ABBR[i];
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'pill freq-pill';
-    b.textContent = m;
+    b.className = 'pill freq-pill freq-pill-month';
+    b.textContent = m[0];
+    b.title = MONTHS_FULL[i];
     b.addEventListener('click', ()=>{
       selectedFreqs.delete('monthly');
       if (selectedFreqs.has(val)) selectedFreqs.delete(val); else selectedFreqs.add(val);
       syncFreqPills();
+      updateSaveEnabled();
     });
     freqPillEls[val] = b;
     monthsGrid.appendChild(b);
   });
   freqSection.appendChild(monthsGrid);
   syncFreqPills();
+
+  // Resolves the Months picker's current selection down to the single freq
+  // value the saved item actually gets (see freqMonthCodes): "monthly" for
+  // "All" (or, equivalently, every individual month picked by hand), a
+  // single month code for exactly one, or an array of codes — sorted into
+  // calendar order regardless of click order — for 2-11 of them together.
+  function freqArgFromSelection(){
+    const freqs = [...selectedFreqs];
+    if (freqs.length === 1) return freqs[0];
+    if (freqs.length === 12) return 'monthly';
+    return freqs.sort((a,b)=>MONTH_ABBR.indexOf(a)-MONTH_ABBR.indexOf(b));
+  }
 
   const actions = document.createElement('div');
   actions.className = 'add-plan-actions';
@@ -3006,10 +3185,23 @@ function openAddBudgetItemModal(opts){
   const addBtn = document.createElement('button');
   addBtn.type = 'button';
   addBtn.className = 'file-btn primary';
-  addBtn.textContent = 'Add';
+  addBtn.textContent = 'Save';
   actions.appendChild(cancelBtn);
   actions.appendChild(addBtn);
   dialog.appendChild(actions);
+
+  // Save stays disabled until every required field has something in it —
+  // matches the mockup's greyed-out Save in the empty state.
+  function updateSaveEnabled(){
+    const ok = catInput.value.trim() && subInput.value.trim() && labelInput.value.trim()
+      && Number(amountInput.value) > 0 && selectedFreqs.size > 0;
+    addBtn.disabled = !ok;
+  }
+  catInput.addEventListener('input', updateSaveEnabled);
+  subInput.addEventListener('input', updateSaveEnabled);
+  labelInput.addEventListener('input', updateSaveEnabled);
+  amountInput.addEventListener('input', updateSaveEnabled);
+  updateSaveEnabled();
 
   function close(){
     document.removeEventListener('keydown', onKeydown);
@@ -3021,24 +3213,13 @@ function openAddBudgetItemModal(opts){
   scrim.addEventListener('click', close);
   cancelBtn.addEventListener('click', close);
   addBtn.addEventListener('click', ()=>{
-    if (selectedFreqs.size === 0) return;
-
-    let categoryName = catSelect.value;
-    if (categoryName === NEW_OPTION){
-      categoryName = catNewInput.value.trim();
-      if (!categoryName){ catNewInput.focus(); return; }
-    }
-    let subcategoryName = subSelect.value;
-    if (subcategoryName === NEW_OPTION){
-      subcategoryName = subNewInput.value.trim();
-      if (!subcategoryName){ subNewInput.focus(); return; }
-    }
-    const target = { kind: currentKind, category: categoryName, subcategory: subcategoryName };
-    let anyAdded = false;
-    selectedFreqs.forEach(freq=>{
-      if (opts.onAdd(target, freq, labelInput.value, amountInput.value, amountType)) anyAdded = true;
-    });
-    if (!anyAdded){
+    if (addBtn.disabled) return;
+    const target = { kind: currentKind, category: catInput.value.trim(), subcategory: subInput.value.trim() };
+    const freqArg = freqArgFromSelection();
+    const ok = isEdit
+      ? opts.onSave(opts.editItem, target, freqArg, labelInput.value, amountInput.value, amountType, pendingLinkedDescriptions)
+      : opts.onAdd(target, freqArg, labelInput.value, amountInput.value, amountType, pendingLinkedDescriptions);
+    if (!ok){
       amountInput.focus();
       return;
     }
@@ -3072,6 +3253,20 @@ function openAddDraftItemModal(){
   });
 }
 
+// Opens the same modal pre-filled for editing an existing draft item (see
+// renderBudgetItemRow's clickable summary row) — writes back via
+// updateDraftBudgetItem instead of adding a new item.
+function openEditDraftItemModal(item, sub, cat, kind){
+  openAddBudgetItemModal({
+    kind,
+    category: cat.name,
+    subcategory: sub.name,
+    editItem: item,
+    getCategories: draftCategoriesFor,
+    onSave: updateDraftBudgetItem,
+  });
+}
+
 function renderRightProjectedList(container){
   const cmi = DATA.currentMonthIndex;
   const currentDay = DATA.currentDay;
@@ -3098,14 +3293,21 @@ function renderRightProjectedList(container){
       const claimedDescriptions = new Set();
       linkedItems.forEach(it=>it.linkedDescriptions.forEach(d=>claimedDescriptions.add(d)));
 
+      // Built as two separate passes (rather than one interleaved-per-item
+      // pass) so every real transaction this month lists before any
+      // remaining budgeted/forecasted amount, regardless of which item
+      // produced which — see rows.push(...) below.
+      const actualRows = [];
+      const remainingRows = [];
+
       linkedItems.forEach(it=>{
         const matchedTxns = monthTxns.filter(t=>it.linkedDescriptions.includes(t.description));
-        matchedTxns.forEach(t=>rows.push(txnRow(t)));
+        matchedTxns.forEach(t=>actualRows.push(txnRow(t)));
         const matched = matchedTxns.reduce((a,t)=>a+t.amount,0);
         const planned = it.monthly[m] || 0;
         if (Math.abs(planned) > Math.abs(matched)){
           const remaining = Math.round((planned-matched)*100)/100;
-          if (remaining) rows.push({ dateLabel: MONTHS[m], description: `${it.label} (remaining)`, amount: remaining, planned: true });
+          if (remaining) remainingRows.push({ dateLabel: MONTHS[m], description: `${it.label} (remaining)`, amount: remaining, planned: true });
         }
       });
 
@@ -3113,11 +3315,11 @@ function renderRightProjectedList(container){
       const residualActual = residualTxns.reduce((a,t)=>a+t.amount,0);
       const unlinkedPlan = unlinkedItems.reduce((a,it)=>a+(it.monthly[m]||0),0);
       if (Math.abs(residualActual) > Math.abs(unlinkedPlan)){
-        residualTxns.forEach(t=>rows.push(txnRow(t)));
+        residualTxns.forEach(t=>actualRows.push(txnRow(t)));
       } else {
         unlinkedItems.forEach(it=>{
           const v = it.monthly[m];
-          if (v) rows.push({ dateLabel: MONTHS[m], description: it.label, amount: v, planned: true });
+          if (v) remainingRows.push({ dateLabel: MONTHS[m], description: it.label, amount: v, planned: true });
         });
       }
 
@@ -3126,8 +3328,10 @@ function renderRightProjectedList(container){
         if (remainingDays <= 0) return;
         const rate = Number(it.amount) || 0;
         const v = Math.round(rate * remainingDays * 100)/100;
-        if (v) rows.push({ dateLabel: MONTHS[m], description: `${it.label} (remaining)`, amount: v, planned: true });
+        if (v) remainingRows.push({ dateLabel: MONTHS[m], description: `${it.label} (remaining)`, amount: v, planned: true });
       });
+
+      rows.push(...actualRows, ...remainingRows);
       continue;
     }
     if (cmi !== null && m < cmi){
