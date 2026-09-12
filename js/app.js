@@ -2148,57 +2148,62 @@ function refreshBudgetLiveTotals(kind, cat, sub){
 // Editable line-item row — label/frequency/amount inputs plus a remove
 // button. Lives only in the right panel now (see renderBudgetSelectionPanel
 // below), for whichever subcategory is currently selected in the table.
+// Plain-English "amount · frequency [· links]" summary shown on a draft
+// item's row (see renderBudgetItemRow) — everything else about the item is
+// only visible/editable via the Add/Edit line item modal now.
+function budgetItemFreqText(item){
+  const freq = (item.freq||'monthly').toLowerCase();
+  if (freq === 'monthly') return 'Every month';
+  const idx = MONTH_ABBR.indexOf(freq);
+  return (idx !== -1 ? MONTHS_FULL[idx] : freq) + ' only';
+}
+function budgetItemSummaryText(item, kind){
+  const perDiem = isPerDiemItem(item);
+  const amtText = perDiem ? `${fmt(Math.abs(Number(item.amount)||0))}/day` : fmt(Math.abs(Number(item.amount)||0));
+  const parts = [amtText, budgetItemFreqText(item)];
+  const n = item.linkedDescriptions ? item.linkedDescriptions.length : 0;
+  if (kind === 'expense' && !perDiem && n) parts.push(`${n} link${n===1?'':'s'}`);
+  return parts.join(' · ');
+}
+
 function renderBudgetItemRow(item, sub, cat, kind){
   const row = document.createElement('div');
   row.className = 'budget-item-row';
 
-  const labelInput = document.createElement('input');
-  labelInput.className = 'budget-item-label';
-  labelInput.placeholder = 'Label';
-  labelInput.value = item.label || '';
-  labelInput.addEventListener('input', ()=>{ item.label = labelInput.value; });
-  row.appendChild(labelInput);
-
-  const freqSelect = document.createElement('select');
-  freqSelect.className = 'budget-item-freq';
-  // Items reaching this row always come from budgetDraft, where the legacy
-  // freq:"daily" value has already been normalized into freq:"monthly" +
-  // amountType:"perDiem" (see budgetsRawToDraft) — so "Daily" itself is no
-  // longer offered here, only via the Amount Type select below.
-  const freqOptions = [['monthly','Monthly'], ...MONTHS_FULL.map((m,i)=>[MONTH_ABBR[i], m+' (once)'])];
   const curFreq = (item.freq||'monthly').toLowerCase();
-  freqOptions.forEach(([val,label])=>{
-    const opt = document.createElement('option');
-    opt.value = val; opt.textContent = label;
-    if (curFreq === val) opt.selected = true;
-    freqSelect.appendChild(opt);
-  });
-  row.appendChild(freqSelect);
-
   const isArrayAmount = Array.isArray(item.amount) && curFreq === 'monthly';
-  // Amount Type has no meaning for an explicit 12-value array (already a
-  // literal total per month — see resolveLineItem), so it's skipped
-  // entirely alongside the amount input in that case.
-  if (!isArrayAmount){
-    const amountTypeSelect = document.createElement('select');
-    amountTypeSelect.className = 'budget-item-freq';
-    const amountTypeOptions = [['monthly','Per Month'],['perDiem','Per Diem']];
-    const curAmountType = item.amountType === 'perDiem' ? 'perDiem' : 'monthly';
-    amountTypeOptions.forEach(([val,label])=>{
+
+  // A legacy explicit 12-value array has no single "amount"/"month" the
+  // Add/Edit modal's fields can represent, so it keeps its own minimal
+  // inline editor (label + frequency + a note with a one-way "convert to a
+  // single amount" action) instead of opening that modal.
+  if (isArrayAmount){
+    const labelInput = document.createElement('input');
+    labelInput.className = 'budget-item-label';
+    labelInput.placeholder = 'Label';
+    labelInput.value = item.label || '';
+    labelInput.addEventListener('input', ()=>{
+      item.label = labelInput.value;
+      refreshBudgetLiveTotals(kind, cat, sub);
+    });
+    row.appendChild(labelInput);
+
+    const freqSelect = document.createElement('select');
+    freqSelect.className = 'budget-item-freq';
+    const freqOptions = [['monthly','Monthly'], ...MONTHS_FULL.map((m,i)=>[MONTH_ABBR[i], m+' (once)'])];
+    freqOptions.forEach(([val,label])=>{
       const opt = document.createElement('option');
       opt.value = val; opt.textContent = label;
-      if (curAmountType === val) opt.selected = true;
-      amountTypeSelect.appendChild(opt);
+      if (curFreq === val) opt.selected = true;
+      freqSelect.appendChild(opt);
     });
-    amountTypeSelect.addEventListener('change', ()=>{
-      item.amountType = amountTypeSelect.value;
-      onChanged();
+    freqSelect.addEventListener('change', ()=>{
+      item.freq = freqSelect.value;
+      refreshBudgetLiveTotals(kind, cat, sub);
+      updateBudgetRightSummary();
     });
-    row.appendChild(amountTypeSelect);
-  }
+    row.appendChild(freqSelect);
 
-  let amountInput = null;
-  if (isArrayAmount){
     const note = document.createElement('span');
     note.className = 'budget-array-note';
     const avg = item.amount.reduce((a,b)=>a+(Number(b)||0),0)/12;
@@ -2215,71 +2220,45 @@ function renderBudgetItemRow(item, sub, cat, kind){
     });
     note.appendChild(convertBtn);
     row.appendChild(note);
-  } else {
-    amountInput = document.createElement('input');
-    amountInput.type = 'number';
-    amountInput.step = '1';
-    amountInput.className = 'budget-item-amount num';
-    const displayVal = kind==='expense' ? Math.abs(Number(item.amount)||0) : (Number(item.amount)||0);
-    amountInput.value = displayVal || '';
-    amountInput.placeholder = '0';
-    row.appendChild(amountInput);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'icon-btn';
+    removeBtn.title = 'Remove line item';
+    removeBtn.textContent = '✕';
+    removeBtn.addEventListener('click', ()=>{
+      sub.items = sub.items.filter(it=>it.id!==item.id);
+      renderMid();
+      renderRight();
+    });
+    row.appendChild(removeBtn);
+    return row;
   }
 
-  function onChanged(){
-    if (budgetRightSubTotalEl){
-      const v = budgetSubYearTotal(sub);
-      budgetRightSubTotalEl.textContent = fmtSigned(v);
-      budgetRightSubTotalEl.className = 'right-total-value num ' + signCls(v);
-    }
-    refreshBudgetLiveTotals(kind, cat, sub);
-    updateBudgetRightSummary();
-  }
-  freqSelect.addEventListener('change', ()=>{
-    item.freq = freqSelect.value;
-    onChanged();
-  });
-  if (amountInput){
-    amountInput.addEventListener('input', ()=>{
-      const raw = parseFloat(amountInput.value);
-      const v = isNaN(raw) ? 0 : raw;
-      item.amount = kind==='expense' ? -Math.abs(v) : Math.abs(v);
-      onChanged();
-    });
-  }
-
-  // Links this item to specific actual transaction descriptions, so the
-  // Forecast pill can treat it as a spending cap (matched actual vs.
-  // planned) for the current month instead of falling back to the whole
-  // subcategory's whichever's-bigger comparison — see resolveBudgets.
-  // Expense-only (income's subcategories already correspond 1:1 with a
-  // single transaction description — see transactionMatchesBudgetSlot —
-  // so linking there would just offer one redundant option) and only for
-  // a plain per-month amount (per diem items are always additive
-  // regardless of any specific transaction, and an explicit 12-value
-  // array has no single "planned" figure to compare against).
-  if (kind === 'expense' && !isArrayAmount && !isPerDiemItem(item)){
-    const linkBtn = document.createElement('button');
-    linkBtn.type = 'button';
-    linkBtn.className = 'budget-item-link-btn';
-    const syncLinkBtn = () => {
-      const n = item.linkedDescriptions ? item.linkedDescriptions.length : 0;
-      linkBtn.textContent = n ? `Linked (${n})` : 'Link';
-      linkBtn.classList.toggle('linked', n > 0);
-    };
-    syncLinkBtn();
-    linkBtn.addEventListener('click', ()=>{
-      openLinkTransactionsModal(item, cat, sub, kind, syncLinkBtn);
-    });
-    row.appendChild(linkBtn);
-  }
+  // Everything else: a compact read-only summary — clicking it opens the
+  // Add/Edit line item modal (see openEditDraftItemModal) pre-filled with
+  // this item's full details, rather than editing fields inline.
+  row.classList.add('clickable');
+  const summary = document.createElement('div');
+  summary.className = 'budget-item-summary';
+  const summaryLabel = document.createElement('div');
+  summaryLabel.className = 'budget-item-summary-label';
+  summaryLabel.textContent = item.label || sub.name;
+  const summaryMeta = document.createElement('div');
+  summaryMeta.className = 'budget-item-summary-meta';
+  summaryMeta.textContent = budgetItemSummaryText(item, kind);
+  summary.appendChild(summaryLabel);
+  summary.appendChild(summaryMeta);
+  summary.addEventListener('click', ()=>openEditDraftItemModal(item, sub, cat, kind));
+  row.appendChild(summary);
 
   const removeBtn = document.createElement('button');
   removeBtn.type = 'button';
   removeBtn.className = 'icon-btn';
   removeBtn.title = 'Remove line item';
   removeBtn.textContent = '✕';
-  removeBtn.addEventListener('click', ()=>{
+  removeBtn.addEventListener('click', (e)=>{
+    e.stopPropagation();
     sub.items = sub.items.filter(it=>it.id!==item.id);
     renderMid();
     renderRight();
@@ -2551,12 +2530,12 @@ function getSelectedBudgetItems(){
 // Adds a new raw budget line item for whatever's selected in the budget
 // editor — target is {kind,category,subcategory}, with the same
 // category/subcategory-name-based find-or-create behavior the modal's own
-// "+ New" option relies on. Writes into budgetDraft rather than straight
-// into BUDGETS_RAW, since nothing in the editor is real until Save.
-// Selects the (possibly newly-created) subcategory afterward, same as
-// clicking it directly, so the added item is right there in the right
-// panel.
-function addDraftBudgetItem(target, freq, label, rawAmount, amountType){
+// free-text Category/Subcategory fields rely on (see openAddBudgetItemModal).
+// Writes into budgetDraft rather than straight into BUDGETS_RAW, since
+// nothing in the editor is real until Save. Selects the (possibly
+// newly-created) subcategory afterward, same as clicking it directly, so
+// the added item is right there in the right panel.
+function addDraftBudgetItem(target, freq, label, rawAmount, amountType, linkedDescriptions){
   const amt = Math.abs(Number(rawAmount) || 0);
   if (amt === 0) return false;
   const list = target.kind === 'income' ? budgetDraft.income : budgetDraft.expenses;
@@ -2570,14 +2549,56 @@ function addDraftBudgetItem(target, freq, label, rawAmount, amountType){
     sub = { id: nextBudgetId(), name: target.subcategory, items: [] };
     cat.subcategories.push(sub);
   }
+  const resolvedAmountType = amountType === 'perDiem' ? 'perDiem' : 'monthly';
   sub.items.push({
     id: nextBudgetId(),
     freq,
-    amountType: amountType === 'perDiem' ? 'perDiem' : 'monthly',
-    linkedDescriptions: [],
+    amountType: resolvedAmountType,
+    linkedDescriptions: (target.kind==='expense' && resolvedAmountType!=='perDiem' && linkedDescriptions) ? [...linkedDescriptions] : [],
     label: (label && label.trim()) || target.subcategory,
     amount: target.kind==='expense' ? -amt : amt,
   });
+  budgetOpenCats.add(cat.id);
+  budgetSelection = { kind: target.kind, catId: cat.id, subId: sub.id };
+  return true;
+}
+
+// Applies an edit (from the same modal, in edit mode — see
+// openAddBudgetItemModal/openEditDraftItemModal) to an existing draft item:
+// relocates it to the target category/subcategory (creating either as
+// needed, same find-or-create as addDraftBudgetItem above) — which may be a
+// different Income/Spending list than it started in, since the modal's Type
+// toggle stays editable — and overwrites its fields in place. The item's id
+// (and thus its identity for claimedDescriptionsExcept) stays stable across
+// the move, since this relocates the actual item object rather than
+// creating a new one.
+function updateDraftBudgetItem(item, target, freq, label, rawAmount, amountType, linkedDescriptions){
+  const amt = Math.abs(Number(rawAmount) || 0);
+  if (amt === 0) return false;
+  [budgetDraft.income, budgetDraft.expenses].forEach(list=>{
+    list.forEach(c=>c.subcategories.forEach(s=>{
+      const idx = s.items.indexOf(item);
+      if (idx !== -1) s.items.splice(idx, 1);
+    }));
+  });
+  const list = target.kind === 'income' ? budgetDraft.income : budgetDraft.expenses;
+  let cat = list.find(c=>c.name === target.category);
+  if (!cat){
+    cat = { id: nextBudgetId(), name: target.category, subcategories: [] };
+    list.push(cat);
+  }
+  let sub = cat.subcategories.find(s=>s.name === target.subcategory);
+  if (!sub){
+    sub = { id: nextBudgetId(), name: target.subcategory, items: [] };
+    cat.subcategories.push(sub);
+  }
+  const resolvedAmountType = amountType === 'perDiem' ? 'perDiem' : 'monthly';
+  item.freq = freq;
+  item.amountType = resolvedAmountType;
+  item.label = (label && label.trim()) || target.subcategory;
+  item.amount = target.kind==='expense' ? -amt : amt;
+  item.linkedDescriptions = (target.kind==='expense' && resolvedAmountType!=='perDiem' && linkedDescriptions) ? [...linkedDescriptions] : [];
+  sub.items.push(item);
   budgetOpenCats.add(cat.id);
   budgetSelection = { kind: target.kind, catId: cat.id, subId: sub.id };
   return true;
@@ -2686,18 +2707,36 @@ function renderRightPlannedList(container, monthFilter){
   renderRightTxnTable(container, rows);
 }
 
-// Centered modal (with a scrim behind it) for the budget editor's add-item
-// form — built fresh and appended to <body> each time it opens, so it
-// overlays the whole app rather than being scoped to the right panel.
-// Opened via openAddDraftItemModal() (budget editor, subcategory selected),
-// which writes into budgetDraft rather than straight into BUDGETS_RAW,
-// since nothing here is real until Save (see addDraftBudgetItem).
+// Centered modal (with a scrim behind it) for the budget editor's unified
+// add/edit line item form — built fresh and appended to <body> each time it
+// opens, so it overlays the whole app rather than being scoped to the right
+// panel. Opened via openAddDraftItemModal() (the "+ Add income"/"+ Add
+// expense" row) or openEditDraftItemModal() (clicking an existing item's
+// summary row) — both write into budgetDraft rather than straight into
+// BUDGETS_RAW, since nothing here is real until Save (see
+// addDraftBudgetItem/updateDraftBudgetItem).
 // `opts`: { kind, category, subcategory } is the initial selection (all
 // changeable in the form itself); `getCategories(kind)` returns the
-// category/subcategory option list for a given Type; `onAdd(target, freq,
-// label, amount, amountType)` performs the actual write into budgetDraft.
+// category/subcategory option list for a given Type. In add mode,
+// `onAdd(target, freq, label, amount, amountType, linkedDescriptions)`
+// performs the actual write into budgetDraft, once per selected month for a
+// multi-month one-time item. In edit mode (`opts.editItem` set to the raw
+// item being edited, `opts.onSave(item, target, freq, label, amount,
+// amountType, linkedDescriptions)` provided instead), only a single
+// freq/month applies, since there's exactly one item to relocate/update.
 function openAddBudgetItemModal(opts){
+  const isEdit = !!opts.editItem;
   let currentKind = opts.kind;
+  // Amount type — whether Amount below is a flat total for whichever
+  // month(s) get picked, or a per-day rate multiplied out by the number of
+  // days in each of those months (see resolveLineItem and, for the
+  // Forecast pill's current-month figure specifically,
+  // itemCurrentMonthSplit). Declared up top since the Description field's
+  // link badge (built before the Amount field) already needs to read it.
+  let amountType = isEdit && opts.editItem.amountType === 'perDiem' ? 'perDiem' : 'monthly';
+  // Working copy of linkedDescriptions, only committed to the real item on
+  // Save — see the Link Transactions modal wiring below.
+  let pendingLinkedDescriptions = isEdit ? [...(opts.editItem.linkedDescriptions || [])] : [];
   const categoriesFor = (k) => opts.getCategories(k);
 
   const scrim = document.createElement('div');
@@ -2710,21 +2749,15 @@ function openAddBudgetItemModal(opts){
 
   const title = document.createElement('div');
   title.className = 'modal-title';
-  title.textContent = 'Add line item';
+  title.textContent = isEdit ? 'Edit line item' : 'Add line item';
   dialog.appendChild(title);
 
   // Type — Income vs. Spending, at the top since it decides which
-  // category/subcategory options the fields below offer.
-  const typeField = document.createElement('div');
-  typeField.className = 'modal-field';
-  const typeLabel = document.createElement('div');
-  typeLabel.className = 'modal-field-label';
-  typeLabel.textContent = 'Type';
+  // category/subcategory options the fields below offer. No field label —
+  // the two pills read as self-explanatory on their own.
   const typeRow = document.createElement('div');
   typeRow.className = 'modal-type-pills';
-  typeField.appendChild(typeLabel);
-  typeField.appendChild(typeRow);
-  dialog.appendChild(typeField);
+  dialog.appendChild(typeRow);
 
   const incomeTypePill = document.createElement('button');
   incomeTypePill.type = 'button';
@@ -2742,50 +2775,12 @@ function openAddBudgetItemModal(opts){
   };
   syncTypePills();
 
-  // Category / subcategory — default to whatever's currently selected in
-  // the ledger, but changeable here so the new item can be filed elsewhere
-  // without closing the modal and re-selecting a different row first.
-  // Grouped together (and below, description+amount grouped together) so
-  // the modal reads as distinct sections with visible breathing room
-  // between them, rather than one long uniform list of fields.
-  const NEW_OPTION = '__new__';
-
-  // A hidden-by-default text input that appears next to a select once its
-  // "+ New" option is chosen, for typing the new category/subcategory
-  // name — the select shrinks to share the row with it. No label above
-  // it — the placeholder alone identifies the field.
-  function makeNewNameInput(placeholder){
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'modal-pill-input modal-inline-new';
-    input.placeholder = placeholder;
-    input.hidden = true;
-    return input;
-  }
-  // Prepends "+ New" above whatever real category/subcategory options are
-  // already in the select.
-  // Native <select> arrows sit flush against the edge with no control over
-  // spacing, so the default appearance is suppressed (via CSS) in favor of
-  // a positioned chevron icon with real padding from the pill's right edge.
-  function wrapSelect(select){
-    const wrap = document.createElement('div');
-    wrap.className = 'modal-select-wrap';
-    const chevron = document.createElement('img');
-    chevron.className = 'modal-select-chevron';
-    chevron.src = 'icons/chevron-right.svg';
-    chevron.alt = '';
-    wrap.appendChild(select);
-    wrap.appendChild(chevron);
-    return wrap;
-  }
-  function addNewOption(select){
-    const opt = document.createElement('option');
-    opt.value = NEW_OPTION;
-    opt.textContent = '+ New';
-    select.insertBefore(opt, select.firstChild);
-    return opt;
-  }
-
+  // Category / subcategory — plain free-text fields (with a typeahead of
+  // existing names, see bindTypeahead) rather than a <select> + "+ New"
+  // affordance: typing an unrecognized name simply creates it on Save,
+  // exactly like addDraftBudgetItem/updateDraftBudgetItem's own
+  // find-or-create-by-name behavior, so there's nothing extra to wire up
+  // here for the "new category" case.
   const catSubGroup = document.createElement('div');
   catSubGroup.className = 'modal-group';
   dialog.appendChild(catSubGroup);
@@ -2795,83 +2790,50 @@ function openAddBudgetItemModal(opts){
   const catLabel = document.createElement('div');
   catLabel.className = 'modal-field-label';
   catLabel.textContent = 'Category';
-  const catRow = document.createElement('div');
-  catRow.className = 'modal-inline-row';
-  const catSelect = document.createElement('select');
-  catSelect.className = 'modal-select';
+  const catInput = document.createElement('input');
+  catInput.type = 'text';
+  catInput.className = 'modal-pill-input';
+  catInput.placeholder = 'Category';
+  catInput.value = opts.category || '';
   catField.appendChild(catLabel);
-  catField.appendChild(catRow);
-  catRow.appendChild(wrapSelect(catSelect));
+  catField.appendChild(catInput);
   catSubGroup.appendChild(catField);
-
-  const catNewInput = makeNewNameInput('Category name');
-  catRow.appendChild(catNewInput);
-  const syncCatNew = () => { catNewInput.hidden = catSelect.value !== NEW_OPTION; };
 
   const subField = document.createElement('div');
   subField.className = 'modal-field';
   const subLabel = document.createElement('div');
   subLabel.className = 'modal-field-label';
   subLabel.textContent = 'Subcategory';
-  const subRow = document.createElement('div');
-  subRow.className = 'modal-inline-row';
-  const subSelect = document.createElement('select');
-  subSelect.className = 'modal-select';
+  const subInput = document.createElement('input');
+  subInput.type = 'text';
+  subInput.className = 'modal-pill-input';
+  subInput.placeholder = 'Subcategory';
+  subInput.value = opts.subcategory || '';
   subField.appendChild(subLabel);
-  subField.appendChild(subRow);
-  subRow.appendChild(wrapSelect(subSelect));
+  subField.appendChild(subInput);
   catSubGroup.appendChild(subField);
 
-  const subNewInput = makeNewNameInput('Subcategory name');
-  subRow.appendChild(subNewInput);
-  const syncSubNew = () => { subNewInput.hidden = subSelect.value !== NEW_OPTION; };
+  const catSuggestions = () => categoriesFor(currentKind).map(c=>c.name);
+  const subSuggestions = () => {
+    const catName = catInput.value.trim().toLowerCase();
+    const cat = categoriesFor(currentKind).find(c=>c.name.toLowerCase()===catName);
+    return cat ? cat.subcategories.map(s=>s.name) : [];
+  };
+  bindTypeahead(catInput, catSuggestions);
+  bindTypeahead(subInput, subSuggestions);
+  catInput.addEventListener('typeahead-pick', (e)=>{ catInput.value = e.detail; updateSaveEnabled(); });
+  subInput.addEventListener('typeahead-pick', (e)=>{ subInput.value = e.detail; updateSaveEnabled(); });
 
-  const populateSubs = (catName, preferredSub) => {
-    subSelect.innerHTML = '';
-    if (catName !== NEW_OPTION){
-      const cat = categoriesFor(currentKind).find(c=>c.name===catName);
-      (cat ? cat.subcategories : []).forEach(s=>{
-        const opt = document.createElement('option');
-        opt.value = s.name;
-        opt.textContent = s.name;
-        if (s.name === preferredSub) opt.selected = true;
-        subSelect.appendChild(opt);
-      });
-    }
-    const newOpt = addNewOption(subSelect);
-    // A brand-new category has no existing subcategories yet, so force
-    // "+ New" rather than leaving the select empty.
-    if (catName === NEW_OPTION) newOpt.selected = true;
-    syncSubNew();
-  };
-  const populateCats = (preferredCat, preferredSub) => {
-    catSelect.innerHTML = '';
-    categoriesFor(currentKind).forEach(c=>{
-      const opt = document.createElement('option');
-      opt.value = c.name;
-      opt.textContent = c.name;
-      if (c.name === preferredCat) opt.selected = true;
-      catSelect.appendChild(opt);
-    });
-    addNewOption(catSelect);
-    syncCatNew();
-    populateSubs(catSelect.value, preferredSub);
-  };
-  populateCats(opts.category, opts.subcategory);
-  subSelect.addEventListener('change', syncSubNew);
-  catSelect.addEventListener('change', () => {
-    populateSubs(catSelect.value, null);
-    syncCatNew();
-  });
   function selectType(kind){
     if (kind === currentKind) return;
     currentKind = kind;
     syncTypePills();
-    // Switching Type has no notion of a "same" category/subcategory to
-    // carry over — Income and Spending are disjoint lists — so this
-    // starts over at that Type's first category (or "+ New" if it has
-    // none yet) rather than trying to preserve the old selection.
-    populateCats(null, null);
+    // Income and Spending are disjoint category namespaces, so there's no
+    // "same" category/subcategory to carry over across the switch.
+    catInput.value = '';
+    subInput.value = '';
+    syncLinkBadgeVisibility();
+    updateSaveEnabled();
   }
   incomeTypePill.addEventListener('click', ()=>selectType('income'));
   expenseTypePill.addEventListener('click', ()=>selectType('expense'));
@@ -2880,75 +2842,118 @@ function openAddBudgetItemModal(opts){
   descAmountGroup.className = 'modal-group';
   dialog.appendChild(descAmountGroup);
 
+  // Description — this item's own label. Doubles as the trigger for the
+  // "link specific transactions" picker (see openLinkTransactionsModal): an
+  // inline badge inside the same pill, reading "add links" until something
+  // is linked, then "N transaction link(s)" in an accent color. Only
+  // meaningful for a flat (non-per-diem) expense item — see
+  // renderBudgetItemRow's identical condition for the equivalent old inline
+  // Link button.
   const labelField = document.createElement('div');
   labelField.className = 'modal-field';
   const labelFieldLabel = document.createElement('div');
   labelFieldLabel.className = 'modal-field-label';
   labelFieldLabel.textContent = 'Description';
+  const labelWrap = document.createElement('div');
+  labelWrap.className = 'modal-input-wrap';
   const labelInput = document.createElement('input');
   labelInput.type = 'text';
   labelInput.className = 'modal-pill-input';
   labelInput.placeholder = 'Description';
+  labelInput.value = isEdit ? (opts.editItem.label || '') : '';
+  const linkBadge = document.createElement('button');
+  linkBadge.type = 'button';
+  linkBadge.className = 'modal-link-badge';
+  labelWrap.appendChild(labelInput);
+  labelWrap.appendChild(linkBadge);
   labelField.appendChild(labelFieldLabel);
-  labelField.appendChild(labelInput);
+  labelField.appendChild(labelWrap);
   descAmountGroup.appendChild(labelField);
+
+  function syncLinkBadge(){
+    const n = pendingLinkedDescriptions.length;
+    linkBadge.textContent = n ? `${n} transaction link${n===1?'':'s'}` : 'add links';
+    linkBadge.classList.toggle('linked', n > 0);
+  }
+  function syncLinkBadgeVisibility(){
+    const show = currentKind === 'expense' && amountType !== 'perDiem';
+    linkBadge.hidden = !show;
+    labelWrap.classList.toggle('has-badge', show);
+  }
+  syncLinkBadge();
+  syncLinkBadgeVisibility();
+  linkBadge.addEventListener('click', ()=>{
+    const pseudoCat = { name: catInput.value.trim() };
+    const pseudoSub = { name: subInput.value.trim() };
+    const pseudoItem = { id: isEdit ? opts.editItem.id : '__pending__', label: labelInput.value, linkedDescriptions: pendingLinkedDescriptions };
+    openLinkTransactionsModal(pseudoItem, pseudoCat, pseudoSub, currentKind, ()=>{
+      pendingLinkedDescriptions = pseudoItem.linkedDescriptions;
+      syncLinkBadge();
+    });
+  });
 
   const amountField = document.createElement('div');
   amountField.className = 'modal-field';
   const amountFieldLabel = document.createElement('div');
   amountFieldLabel.className = 'modal-field-label';
   amountFieldLabel.textContent = 'Amount';
+  const amountWrap = document.createElement('div');
+  amountWrap.className = 'modal-input-wrap has-toggle';
   const amountInput = document.createElement('input');
   amountInput.type = 'number';
   amountInput.step = '1';
   amountInput.className = 'modal-pill-input num';
   amountInput.placeholder = '0';
+  amountInput.value = isEdit ? (Math.abs(Number(opts.editItem.amount)||0) || '') : '';
+  const amountTypeToggle = document.createElement('div');
+  amountTypeToggle.className = 'modal-amount-type-toggle';
+  amountWrap.appendChild(amountInput);
+  amountWrap.appendChild(amountTypeToggle);
   amountField.appendChild(amountFieldLabel);
-  amountField.appendChild(amountInput);
+  amountField.appendChild(amountWrap);
   descAmountGroup.appendChild(amountField);
-
-  // Amount type — whether Amount above is a flat total for whichever
-  // month(s) get picked below, or a per-day rate multiplied out by the
-  // number of days in each of those months (see resolveLineItem and, for
-  // the Forecast pill's current-month figure specifically,
-  // itemCurrentMonthSplit).
-  let amountType = 'monthly';
-  const amountTypeField = document.createElement('div');
-  amountTypeField.className = 'modal-field';
-  const amountTypeLabel = document.createElement('div');
-  amountTypeLabel.className = 'modal-field-label';
-  amountTypeLabel.textContent = 'Amount Type';
-  const amountTypeRow = document.createElement('div');
-  amountTypeRow.className = 'modal-type-pills';
-  amountTypeField.appendChild(amountTypeLabel);
-  amountTypeField.appendChild(amountTypeRow);
-  descAmountGroup.appendChild(amountTypeField);
 
   const perMonthPill = document.createElement('button');
   perMonthPill.type = 'button';
-  perMonthPill.className = 'pill';
-  perMonthPill.textContent = 'Per Month';
+  perMonthPill.className = 'pill pill-compact';
+  perMonthPill.textContent = 'per month';
   const perDiemPill = document.createElement('button');
   perDiemPill.type = 'button';
-  perDiemPill.className = 'pill';
-  perDiemPill.textContent = 'Per Diem';
-  amountTypeRow.appendChild(perMonthPill);
-  amountTypeRow.appendChild(perDiemPill);
+  perDiemPill.className = 'pill pill-compact';
+  perDiemPill.textContent = 'per diem';
+  amountTypeToggle.appendChild(perMonthPill);
+  amountTypeToggle.appendChild(perDiemPill);
   const syncAmountTypePills = () => {
     perMonthPill.classList.toggle('active', amountType === 'monthly');
     perDiemPill.classList.toggle('active', amountType === 'perDiem');
   };
   syncAmountTypePills();
-  perMonthPill.addEventListener('click', ()=>{ amountType = 'monthly'; syncAmountTypePills(); });
-  perDiemPill.addEventListener('click', ()=>{ amountType = 'perDiem'; syncAmountTypePills(); });
+  perMonthPill.addEventListener('click', ()=>{
+    amountType = 'monthly';
+    syncAmountTypePills();
+    syncLinkBadgeVisibility();
+  });
+  perDiemPill.addEventListener('click', ()=>{
+    amountType = 'perDiem';
+    // A per-diem item has no single "planned" figure to compare a matched
+    // transaction against (see resolveBudgets), so any existing links stop
+    // applying — same reset addDraftBudgetItem/updateDraftBudgetItem does
+    // at save-time if this slips through some other way.
+    pendingLinkedDescriptions = [];
+    syncLinkBadge();
+    syncAmountTypePills();
+    syncLinkBadgeVisibility();
+  });
 
-  // Frequency picker — a pill toggle group (same look as the Expenses/
-  // Income and YTD/Projection/Plan pills elsewhere) instead of a <select>,
-  // so more than one month can be picked at once. "Every month" and
-  // specific months are mutually exclusive: picking a month clears "Every
-  // month", and vice versa; multiple specific months can stay selected
-  // together (e.g. a one-time item in both June and December).
-  const selectedFreqs = new Set(['monthly']);
+  // Months picker — a pill toggle group (same look as the Expenses/Income
+  // and YTD/Projection/Plan pills elsewhere) instead of a <select>. In add
+  // mode more than one month can be picked at once — "All" and specific
+  // months are mutually exclusive, but multiple specific months can stay
+  // selected together (e.g. a one-time item in both June and December),
+  // creating one item per selected month on Save. In edit mode there's
+  // exactly one existing item to relocate, so picking a month here simply
+  // replaces the previous choice rather than toggling a set.
+  const selectedFreqs = new Set([isEdit ? (opts.editItem.freq||'monthly').toLowerCase() : 'monthly']);
   const freqPillEls = {};
   const syncFreqPills = () => {
     Object.entries(freqPillEls).forEach(([val,el])=>el.classList.toggle('active', selectedFreqs.has(val)));
@@ -2958,7 +2963,7 @@ function openAddBudgetItemModal(opts){
   freqField.className = 'modal-field';
   const freqLabel = document.createElement('div');
   freqLabel.className = 'modal-field-label';
-  freqLabel.textContent = 'Month';
+  freqLabel.textContent = 'Months';
   freqField.appendChild(freqLabel);
   dialog.appendChild(freqField);
 
@@ -2969,11 +2974,12 @@ function openAddBudgetItemModal(opts){
   const allPill = document.createElement('button');
   allPill.type = 'button';
   allPill.className = 'pill freq-pill freq-pill-all';
-  allPill.textContent = 'Every month';
+  allPill.textContent = 'All';
   allPill.addEventListener('click', ()=>{
     selectedFreqs.clear();
     selectedFreqs.add('monthly');
     syncFreqPills();
+    updateSaveEnabled();
   });
   freqPillEls.monthly = allPill;
   freqSection.appendChild(allPill);
@@ -2984,12 +2990,19 @@ function openAddBudgetItemModal(opts){
     const val = MONTH_ABBR[i];
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'pill freq-pill';
-    b.textContent = m;
+    b.className = 'pill freq-pill freq-pill-month';
+    b.textContent = m[0];
+    b.title = MONTHS_FULL[i];
     b.addEventListener('click', ()=>{
-      selectedFreqs.delete('monthly');
-      if (selectedFreqs.has(val)) selectedFreqs.delete(val); else selectedFreqs.add(val);
+      if (isEdit){
+        selectedFreqs.clear();
+        selectedFreqs.add(val);
+      } else {
+        selectedFreqs.delete('monthly');
+        if (selectedFreqs.has(val)) selectedFreqs.delete(val); else selectedFreqs.add(val);
+      }
       syncFreqPills();
+      updateSaveEnabled();
     });
     freqPillEls[val] = b;
     monthsGrid.appendChild(b);
@@ -3006,10 +3019,23 @@ function openAddBudgetItemModal(opts){
   const addBtn = document.createElement('button');
   addBtn.type = 'button';
   addBtn.className = 'file-btn primary';
-  addBtn.textContent = 'Add';
+  addBtn.textContent = 'Save';
   actions.appendChild(cancelBtn);
   actions.appendChild(addBtn);
   dialog.appendChild(actions);
+
+  // Save stays disabled until every required field has something in it —
+  // matches the mockup's greyed-out Save in the empty state.
+  function updateSaveEnabled(){
+    const ok = catInput.value.trim() && subInput.value.trim() && labelInput.value.trim()
+      && Number(amountInput.value) > 0 && selectedFreqs.size > 0;
+    addBtn.disabled = !ok;
+  }
+  catInput.addEventListener('input', updateSaveEnabled);
+  subInput.addEventListener('input', updateSaveEnabled);
+  labelInput.addEventListener('input', updateSaveEnabled);
+  amountInput.addEventListener('input', updateSaveEnabled);
+  updateSaveEnabled();
 
   function close(){
     document.removeEventListener('keydown', onKeydown);
@@ -3021,24 +3047,18 @@ function openAddBudgetItemModal(opts){
   scrim.addEventListener('click', close);
   cancelBtn.addEventListener('click', close);
   addBtn.addEventListener('click', ()=>{
-    if (selectedFreqs.size === 0) return;
-
-    let categoryName = catSelect.value;
-    if (categoryName === NEW_OPTION){
-      categoryName = catNewInput.value.trim();
-      if (!categoryName){ catNewInput.focus(); return; }
+    if (addBtn.disabled) return;
+    const target = { kind: currentKind, category: catInput.value.trim(), subcategory: subInput.value.trim() };
+    let ok;
+    if (isEdit){
+      ok = opts.onSave(opts.editItem, target, [...selectedFreqs][0], labelInput.value, amountInput.value, amountType, pendingLinkedDescriptions);
+    } else {
+      ok = false;
+      selectedFreqs.forEach(freq=>{
+        if (opts.onAdd(target, freq, labelInput.value, amountInput.value, amountType, pendingLinkedDescriptions)) ok = true;
+      });
     }
-    let subcategoryName = subSelect.value;
-    if (subcategoryName === NEW_OPTION){
-      subcategoryName = subNewInput.value.trim();
-      if (!subcategoryName){ subNewInput.focus(); return; }
-    }
-    const target = { kind: currentKind, category: categoryName, subcategory: subcategoryName };
-    let anyAdded = false;
-    selectedFreqs.forEach(freq=>{
-      if (opts.onAdd(target, freq, labelInput.value, amountInput.value, amountType)) anyAdded = true;
-    });
-    if (!anyAdded){
+    if (!ok){
       amountInput.focus();
       return;
     }
@@ -3069,6 +3089,20 @@ function openAddDraftItemModal(){
     subcategory: sub.name,
     getCategories: draftCategoriesFor,
     onAdd: addDraftBudgetItem,
+  });
+}
+
+// Opens the same modal pre-filled for editing an existing draft item (see
+// renderBudgetItemRow's clickable summary row) — writes back via
+// updateDraftBudgetItem instead of adding a new item.
+function openEditDraftItemModal(item, sub, cat, kind){
+  openAddBudgetItemModal({
+    kind,
+    category: cat.name,
+    subcategory: sub.name,
+    editItem: item,
+    getCategories: draftCategoriesFor,
+    onSave: updateDraftBudgetItem,
   });
 }
 
