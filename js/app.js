@@ -251,6 +251,24 @@ function remainingDaysInMonth(year, monthIndex, currentDay){
   return Math.max(0, daysInMonth(year, monthIndex) - currentDay);
 }
 
+// Normalizes a line item's freq into either null ("every month" — the
+// "monthly" string, the legacy "daily" string, or nullish) or an array of
+// lowercase 3-letter month codes it targets — a single-element array for
+// the original one-time-item shape (freq: "jun"), or a multi-element array
+// for an item that targets a specific, non-exhaustive SET of months at
+// once (freq: ["jun","dec"] — see openAddBudgetItemModal's Months picker,
+// which produces this shape whenever 2-11 individual months are selected
+// together, rather than creating one separate item per month). Centralizes
+// every place that used to compare freq to "monthly"/a single month code
+// directly.
+function freqMonthCodes(freq){
+  if (freq == null) return null;
+  if (Array.isArray(freq)) return freq.map(f=>String(f).toLowerCase());
+  const f = String(freq).toLowerCase();
+  if (f === 'monthly' || f === 'daily') return null;
+  return [f];
+}
+
 // A line item counts as per diem either via the current amountType field,
 // or — for line items saved before that field existed — via the legacy
 // freq:"daily" value, which meant exactly the same thing (a per-day rate,
@@ -260,28 +278,26 @@ function remainingDaysInMonth(year, monthIndex, currentDay){
 // re-exported) can still carry it, so both forms are checked everywhere a
 // line item's amount type matters.
 function isPerDiemItem(item){
-  return item.amountType === 'perDiem' || (item.freq||'').toLowerCase() === 'daily';
+  return item.amountType === 'perDiem' || (typeof item.freq === 'string' && item.freq.toLowerCase() === 'daily');
 }
 
 // Whether a line item's freq targets the given month at all — "monthly"
-// (recurring every month) always does; a specific month code ("jan" etc.,
-// a one-time item) only targets that one month.
+// (recurring every month, see freqMonthCodes) always does; a specific
+// month or set of months only targets those.
 function itemAppliesToMonth(item, monthIndex){
-  const freq = (item.freq||'').toLowerCase();
-  const effectiveFreq = freq === 'daily' ? 'monthly' : freq;
-  return effectiveFreq === 'monthly' || MONTH_ABBR.indexOf(effectiveFreq) === monthIndex;
+  const codes = freqMonthCodes(item.freq);
+  return codes === null || codes.includes(MONTH_ABBR[monthIndex]);
 }
 
 function resolveLineItem(item, year){
   const arr = new Array(12).fill(0);
-  const freq = (item.freq||'').toLowerCase();
-  const effectiveFreq = freq === 'daily' ? 'monthly' : freq;
+  const codes = freqMonthCodes(item.freq);
   const perDiem = isPerDiemItem(item);
   const monthValue = (monthIndex) => {
     const v = Number(item.amount)||0;
     return perDiem ? v * daysInMonth(year, monthIndex) : v;
   };
-  if (effectiveFreq === 'monthly'){
+  if (codes === null){
     if (Array.isArray(item.amount)){
       // An explicit 12-value array is already a literal total per month —
       // amountType doesn't apply to it.
@@ -290,8 +306,10 @@ function resolveLineItem(item, year){
       for (let i=0;i<12;i++) arr[i] = monthValue(i);
     }
   } else {
-    const mi = MONTH_ABBR.indexOf(effectiveFreq);
-    if (mi !== -1) arr[mi] = monthValue(mi);
+    codes.forEach(c=>{
+      const mi = MONTH_ABBR.indexOf(c);
+      if (mi !== -1) arr[mi] = monthValue(mi);
+    });
   }
   return arr.map(v=>Math.round(v*100)/100);
 }
@@ -519,7 +537,7 @@ function budgetsRawToDraft(raw){
   // stored — resolveLineItem/itemCurrentMonthSplit still accept the
   // legacy form directly for files that never get re-opened here.
   const toItems = (items, fallbackLabel) => (Array.isArray(items) ? items : []).map(it => {
-    const legacyDaily = (it.freq||'').toLowerCase() === 'daily';
+    const legacyDaily = typeof it.freq === 'string' && it.freq.toLowerCase() === 'daily';
     return {
       id: nextBudgetId(),
       freq: legacyDaily ? 'monthly' : (it.freq || 'monthly'),
@@ -2152,10 +2170,18 @@ function refreshBudgetLiveTotals(kind, cat, sub){
 // item's row (see renderBudgetItemRow) — everything else about the item is
 // only visible/editable via the Add/Edit line item modal now.
 function budgetItemFreqText(item){
-  const freq = (item.freq||'monthly').toLowerCase();
-  if (freq === 'monthly') return 'Every month';
-  const idx = MONTH_ABBR.indexOf(freq);
-  return (idx !== -1 ? MONTHS_FULL[idx] : freq) + ' only';
+  const codes = freqMonthCodes(item.freq);
+  if (codes === null) return 'Every month';
+  const indices = codes.map(c=>MONTH_ABBR.indexOf(c)).sort((a,b)=>a-b);
+  // A single month reads as "January only" (a one-time item); a set of
+  // several reads as a plain abbreviated comma list — one item spanning
+  // just those months (see openAddBudgetItemModal's Months picker) —
+  // rather than repeating "only" for each.
+  if (indices.length === 1){
+    const idx = indices[0];
+    return (idx !== -1 ? MONTHS_FULL[idx] : codes[0]) + ' only';
+  }
+  return indices.map(idx=>idx!==-1 ? MONTHS[idx] : '?').join(', ');
 }
 function budgetItemSummaryText(item, kind){
   const perDiem = isPerDiemItem(item);
@@ -2170,8 +2196,12 @@ function renderBudgetItemRow(item, sub, cat, kind){
   const row = document.createElement('div');
   row.className = 'budget-item-row';
 
-  const curFreq = (item.freq||'monthly').toLowerCase();
-  const isArrayAmount = Array.isArray(item.amount) && curFreq === 'monthly';
+  // A 12-value amount array only ever pairs with the plain "every month"
+  // freq (see resolveLineItem) — an item with a specific-month(s) freq
+  // (single or an array, see freqMonthCodes) never has an array amount, so
+  // this only needs to check the "every month" case, not spell out every
+  // other possible freq shape.
+  const isArrayAmount = Array.isArray(item.amount) && freqMonthCodes(item.freq) === null;
 
   // A legacy explicit 12-value array has no single "amount"/"month" the
   // Add/Edit modal's fields can represent, so it keeps its own minimal
@@ -2191,10 +2221,12 @@ function renderBudgetItemRow(item, sub, cat, kind){
     const freqSelect = document.createElement('select');
     freqSelect.className = 'budget-item-freq';
     const freqOptions = [['monthly','Monthly'], ...MONTHS_FULL.map((m,i)=>[MONTH_ABBR[i], m+' (once)'])];
+    // isArrayAmount already guarantees this item's freq is plain "monthly"
+    // (see above), so that's always the initially-selected option.
     freqOptions.forEach(([val,label])=>{
       const opt = document.createElement('option');
       opt.value = val; opt.textContent = label;
-      if (curFreq === val) opt.selected = true;
+      if (val === 'monthly') opt.selected = true;
       freqSelect.appendChild(opt);
     });
     freqSelect.addEventListener('change', ()=>{
@@ -2717,13 +2749,14 @@ function renderRightPlannedList(container, monthFilter){
 // addDraftBudgetItem/updateDraftBudgetItem).
 // `opts`: { kind, category, subcategory } is the initial selection (all
 // changeable in the form itself); `getCategories(kind)` returns the
-// category/subcategory option list for a given Type. In add mode,
-// `onAdd(target, freq, label, amount, amountType, linkedDescriptions)`
-// performs the actual write into budgetDraft, once per selected month for a
-// multi-month one-time item. In edit mode (`opts.editItem` set to the raw
-// item being edited, `opts.onSave(item, target, freq, label, amount,
-// amountType, linkedDescriptions)` provided instead), only a single
-// freq/month applies, since there's exactly one item to relocate/update.
+// category/subcategory option list for a given Type. The Months picker's
+// selection always resolves (see freqArgFromSelection) to exactly one freq
+// value — "monthly", a single month code, or an array of 2-11 month codes
+// (see freqMonthCodes) — so exactly one item is written either way: in add
+// mode via `onAdd(target, freq, label, amount, amountType,
+// linkedDescriptions)`, or in edit mode (`opts.editItem` set to the raw
+// item being edited) via `onSave(item, target, freq, label, amount,
+// amountType, linkedDescriptions)` instead, which relocates/updates it.
 function openAddBudgetItemModal(opts){
   const isEdit = !!opts.editItem;
   let currentKind = opts.kind;
@@ -2946,14 +2979,14 @@ function openAddBudgetItemModal(opts){
   });
 
   // Months picker — a pill toggle group (same look as the Expenses/Income
-  // and YTD/Projection/Plan pills elsewhere) instead of a <select>. In add
-  // mode more than one month can be picked at once — "All" and specific
-  // months are mutually exclusive, but multiple specific months can stay
-  // selected together (e.g. a one-time item in both June and December),
-  // creating one item per selected month on Save. In edit mode there's
-  // exactly one existing item to relocate, so picking a month here simply
-  // replaces the previous choice rather than toggling a set.
-  const selectedFreqs = new Set([isEdit ? (opts.editItem.freq||'monthly').toLowerCase() : 'monthly']);
+  // and YTD/Projection/Plan pills elsewhere) instead of a <select>. "All"
+  // and specific months are mutually exclusive, but any number of specific
+  // months can stay selected together — see freqArgFromSelection below for
+  // how that set of selections becomes the one saved item's freq: a single
+  // month keeps the original one-time-item shape, and 2-11 months become
+  // one item spanning that whole set (see freqMonthCodes) rather than one
+  // separate item per month.
+  const selectedFreqs = new Set(isEdit ? (freqMonthCodes(opts.editItem.freq) || ['monthly']) : ['monthly']);
   const freqPillEls = {};
   const syncFreqPills = () => {
     Object.entries(freqPillEls).forEach(([val,el])=>el.classList.toggle('active', selectedFreqs.has(val)));
@@ -2994,13 +3027,8 @@ function openAddBudgetItemModal(opts){
     b.textContent = m[0];
     b.title = MONTHS_FULL[i];
     b.addEventListener('click', ()=>{
-      if (isEdit){
-        selectedFreqs.clear();
-        selectedFreqs.add(val);
-      } else {
-        selectedFreqs.delete('monthly');
-        if (selectedFreqs.has(val)) selectedFreqs.delete(val); else selectedFreqs.add(val);
-      }
+      selectedFreqs.delete('monthly');
+      if (selectedFreqs.has(val)) selectedFreqs.delete(val); else selectedFreqs.add(val);
       syncFreqPills();
       updateSaveEnabled();
     });
@@ -3009,6 +3037,18 @@ function openAddBudgetItemModal(opts){
   });
   freqSection.appendChild(monthsGrid);
   syncFreqPills();
+
+  // Resolves the Months picker's current selection down to the single freq
+  // value the saved item actually gets (see freqMonthCodes): "monthly" for
+  // "All" (or, equivalently, every individual month picked by hand), a
+  // single month code for exactly one, or an array of codes — sorted into
+  // calendar order regardless of click order — for 2-11 of them together.
+  function freqArgFromSelection(){
+    const freqs = [...selectedFreqs];
+    if (freqs.length === 1) return freqs[0];
+    if (freqs.length === 12) return 'monthly';
+    return freqs.sort((a,b)=>MONTH_ABBR.indexOf(a)-MONTH_ABBR.indexOf(b));
+  }
 
   const actions = document.createElement('div');
   actions.className = 'add-plan-actions';
@@ -3049,15 +3089,10 @@ function openAddBudgetItemModal(opts){
   addBtn.addEventListener('click', ()=>{
     if (addBtn.disabled) return;
     const target = { kind: currentKind, category: catInput.value.trim(), subcategory: subInput.value.trim() };
-    let ok;
-    if (isEdit){
-      ok = opts.onSave(opts.editItem, target, [...selectedFreqs][0], labelInput.value, amountInput.value, amountType, pendingLinkedDescriptions);
-    } else {
-      ok = false;
-      selectedFreqs.forEach(freq=>{
-        if (opts.onAdd(target, freq, labelInput.value, amountInput.value, amountType, pendingLinkedDescriptions)) ok = true;
-      });
-    }
+    const freqArg = freqArgFromSelection();
+    const ok = isEdit
+      ? opts.onSave(opts.editItem, target, freqArg, labelInput.value, amountInput.value, amountType, pendingLinkedDescriptions)
+      : opts.onAdd(target, freqArg, labelInput.value, amountInput.value, amountType, pendingLinkedDescriptions);
     if (!ok){
       amountInput.focus();
       return;
