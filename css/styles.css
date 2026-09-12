@@ -205,44 +205,25 @@
     border:1px solid var(--border);
     border-radius:999px;
     color:var(--text-primary);
-    padding:12px 92px 12px 32px;
+    padding:12px 32px 12px 32px;
     font-size:13px;
     outline:none;
   }
   .search-input::placeholder{color:var(--text-muted);}
   .search-input:focus{border-color:var(--accent-teal-dim);}
-  /* Field-scope picker (see SEARCH_FIELDS/renderTransactionsPage), embedded
-     inside the search box itself — same "badge inside the input" treatment
-     as the Add/Edit line item modal's "add links" control (see
-     .modal-link-badge): a plain-text-at-rest control anchored to the
-     input's own right edge, rather than a separate field beside it. Native
-     <select> styling is suppressed (appearance:none) in favor of blending
-     in as text; it already shows whichever field is currently chosen on
-     its own, with no extra markup needed. */
-  .search-field-badge{
-    position:absolute;
-    right:4px;
-    top:50%;
-    transform:translateY(-50%);
-    height:1.75rem;
-    max-width:78px;
-    padding:0 10px;
-    border:none;
-    border-radius:999px;
-    background:transparent;
-    color:var(--text-muted);
-    font-size:11.5px;
+  /* Replaced by .search-clear-btn below (this app's own icon set, rather
+     than the browser's own type="search" cancel glyph). */
+  .search-input::-webkit-search-cancel-button{-webkit-appearance:none;display:none;}
+  .search-clear-btn{
+    position:absolute;right:6px;top:50%;transform:translateY(-50%);
+    width:20px;height:20px;
+    display:flex;align-items:center;justify-content:center;
+    background:transparent;border:none;border-radius:50%;
     cursor:pointer;
-    outline:none;
-    appearance:none;
-    -webkit-appearance:none;
-    -moz-appearance:none;
-    overflow:hidden;
-    white-space:nowrap;
-    text-overflow:ellipsis;
   }
-  .search-field-badge:hover{color:var(--text-primary);}
-  .search-field-badge.scoped{color:var(--accent-teal);}
+  .search-clear-btn img{width:11px;height:11px;opacity:0.4;}
+  .search-clear-btn:hover{background:var(--bg-row-hover);}
+  .search-clear-btn:hover img{opacity:0.8;}
 
   .tf-list{display:flex;flex-direction:column;gap:0.25rem;}
   .tf-item{
@@ -403,10 +384,6 @@
 
   .search-heading{
     flex-shrink:0; /* sits above the scrolling .table-scroll, not inside it */
-    display:flex;
-    justify-content:space-between;
-    align-items:baseline;
-    gap:16px;
     font-size:13px;color:var(--text-muted);margin-bottom:24px;font-weight:600;
     padding:0 12px; /* Transactions tab is the only user of this heading;
       its sticky title bar sits flush above .mid-body (which has no top
@@ -414,12 +391,29 @@
       separates the heading from the bar. */
   }
   .search-heading b{color:var(--text-primary);}
-  /* Sum of whatever's currently visible (see renderTransactionsBody) —
-     recalculates live as the user types in the search box. */
-  .search-heading-total{flex-shrink:0;white-space:nowrap;}
-  .search-heading-total .amt{font-weight:700;color:var(--text-primary);margin-left:4px;}
-  .search-heading-total .amt.pos{color:var(--positive);}
-  .search-heading-total .amt.neg{color:var(--negative);}
+  .search-heading .amt.pos{color:var(--positive);}
+  .search-heading .amt.neg{color:var(--negative);}
+  /* Field-scope picker (see SEARCH_FIELDS), inline in the results blurb
+     itself rather than a separate control — only appears once there's a
+     search term to scope (see renderTransactionsBody). Styled to blend in
+     as plain text at rest, like the rest of the sentence around it, with
+     just a dotted underline hinting it's interactive; native <select>
+     styling is otherwise suppressed. */
+  .search-heading-field{
+    appearance:none;
+    -webkit-appearance:none;
+    -moz-appearance:none;
+    background:transparent;
+    border:none;
+    border-bottom:1px dotted var(--text-muted);
+    color:var(--text-primary);
+    font:inherit;
+    font-weight:700;
+    padding:0;
+    cursor:pointer;
+  }
+  .search-heading-field:hover,
+  .search-heading-field:focus{color:var(--accent-teal);border-bottom-color:var(--accent-teal-dim);outline:none;}
 
   table.ledger-year th.month-link{cursor:pointer;}
   table.ledger-year th.month-link:hover{color:var(--text-primary);}

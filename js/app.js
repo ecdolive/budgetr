@@ -1591,16 +1591,17 @@ function renderMonthTable(){
 // mid-keystroke the way a full renderMid() would.
 // Columns the Transactions tab's search box can match against — 'all'
 // (the original concatenated-field behavior) or one specific transaction
-// property, picked via the field-scope select next to the search box. Each
+// property, picked via the field-scope select inline in the results blurb
+// (see renderTransactionsBody) once there's a search term to scope. Each
 // value is also the transaction object's own property name (see
 // filteredSearchTxns), so no separate getter map is needed.
 const SEARCH_FIELDS = [
-  ['all', 'All fields'],
-  ['description', 'Description'],
-  ['category', 'Category'],
-  ['subcategory', 'Subcategory'],
-  ['account', 'Account'],
-  ['type', 'Type'],
+  ['all', 'any column'],
+  ['description', 'description'],
+  ['category', 'category'],
+  ['subcategory', 'subcategory'],
+  ['account', 'account'],
+  ['type', 'type'],
 ];
 
 function renderTransactionsPage(mid){
@@ -1616,26 +1617,20 @@ function renderTransactionsPage(mid){
   const input = document.createElement('input');
   input.type = 'search';
   input.className = 'search-input';
+  input.placeholder = 'Search transactions…';
   input.value = searchQuery;
   searchWrap.appendChild(input);
 
-  // Field-scope picker, embedded inside the search box itself — same
-  // "badge inside the input" treatment as the Add/Edit line item modal's
-  // "add links" control (see openAddBudgetItemModal): a native <select>
-  // styled to blend in as plain text at rest (so it already displays
-  // whichever field is currently chosen with no extra JS needed to sync
-  // that text), turning accent-colored once scoped to one specific field
-  // rather than "All fields".
-  const fieldSelect = document.createElement('select');
-  fieldSelect.className = 'search-field-badge';
-  SEARCH_FIELDS.forEach(([val,label])=>{
-    const opt = document.createElement('option');
-    opt.value = val;
-    opt.textContent = label;
-    if (val === searchField) opt.selected = true;
-    fieldSelect.appendChild(opt);
-  });
-  searchWrap.appendChild(fieldSelect);
+  // A custom clear button in place of the browser's own native
+  // type="search" cancel icon (hidden via ::-webkit-search-cancel-button —
+  // see styles.css) so it can use this app's own icon set.
+  const clearBtn = document.createElement('button');
+  clearBtn.type = 'button';
+  clearBtn.className = 'search-clear-btn';
+  clearBtn.setAttribute('aria-label', 'Clear search');
+  clearBtn.innerHTML = `<img src="icons/close.svg" alt="">`;
+  clearBtn.hidden = !searchQuery;
+  searchWrap.appendChild(clearBtn);
   titleBar.appendChild(searchWrap);
   mid.appendChild(titleBar);
 
@@ -1647,42 +1642,72 @@ function renderTransactionsPage(mid){
     body.innerHTML = '';
     body.appendChild(renderTransactionsBody(refresh));
   }
-  function updatePlaceholder(){
-    const label = SEARCH_FIELDS.find(([v])=>v===searchField)[1];
-    input.placeholder = searchField === 'all' ? 'Search transactions…' : `Search ${label.toLowerCase()}…`;
-    fieldSelect.classList.toggle('scoped', searchField !== 'all');
-  }
-  updatePlaceholder();
   input.addEventListener('input', (e)=>{
     searchQuery = e.target.value.trim();
+    clearBtn.hidden = !searchQuery;
     refresh();
   });
-  fieldSelect.addEventListener('change', ()=>{
-    searchField = fieldSelect.value;
-    updatePlaceholder();
+  clearBtn.addEventListener('click', ()=>{
+    searchQuery = '';
+    input.value = '';
+    clearBtn.hidden = true;
     refresh();
+    input.focus();
   });
   refresh();
   input.focus();
   input.setSelectionRange(input.value.length, input.value.length);
 }
+// The results blurb doubles as the field-scope picker's home once there's
+// a search term to scope: "N transactions matching '...' in [field
+// select], totaling [amount]" — with no query, it's just "N transactions,
+// totaling [amount]" (see refresh() above, which rebuilds this on every
+// keystroke and field-select change alike, since both live in
+// module-level searchQuery/searchField state).
 function renderTransactionsBody(onSortChange){
   const wrap = document.createDocumentFragment();
   const heading = document.createElement('div');
   heading.className = 'search-heading';
   const rows = filteredSearchTxns();
-  const fieldLabel = SEARCH_FIELDS.find(([v])=>v===searchField)[1];
-  const countText = searchQuery
-    ? `<b>${rows.length}</b> transaction${rows.length===1?'':'s'} matching "<b>${escapeHTML(searchQuery)}</b>"` +
-      (searchField === 'all' ? '' : ` in <b>${fieldLabel}</b>`)
-    : `<b>${rows.length}</b> transaction${rows.length===1?'':'s'}`;
   // Sum of whatever's currently visible — recalculates with every
-  // search/filter keystroke (see refresh() in renderTransactionsPage)
-  // since it's derived from the same filteredSearchTxns() rows the table
-  // itself renders, not the full unfiltered transaction list.
+  // search/filter keystroke and field-select change, since it's derived
+  // from the same filteredSearchTxns() rows the table itself renders, not
+  // the full unfiltered transaction list.
   const total = rows.reduce((a,t)=>a+t.amount,0);
-  heading.innerHTML = `<span>${countText}</span>` +
-    `<span class="search-heading-total">Total <span class="amt ${signCls(total)}">${fmtSigned(total)}</span></span>`;
+
+  const countEl = document.createElement('b');
+  countEl.textContent = rows.length;
+  heading.appendChild(countEl);
+  heading.appendChild(document.createTextNode(` transaction${rows.length===1?'':'s'}`));
+
+  if (searchQuery){
+    heading.appendChild(document.createTextNode(' matching "'));
+    const queryEl = document.createElement('b');
+    queryEl.textContent = searchQuery;
+    heading.appendChild(queryEl);
+    heading.appendChild(document.createTextNode('" in '));
+
+    const fieldSelect = document.createElement('select');
+    fieldSelect.className = 'search-heading-field';
+    SEARCH_FIELDS.forEach(([val,label])=>{
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = label;
+      if (val === searchField) opt.selected = true;
+      fieldSelect.appendChild(opt);
+    });
+    fieldSelect.addEventListener('change', ()=>{
+      searchField = fieldSelect.value;
+      onSortChange();
+    });
+    heading.appendChild(fieldSelect);
+  }
+
+  heading.appendChild(document.createTextNode(', totaling '));
+  const totalEl = document.createElement('b');
+  totalEl.className = 'amt ' + signCls(total);
+  totalEl.textContent = fmtSigned(total);
+  heading.appendChild(totalEl);
   wrap.appendChild(heading);
 
   const table = document.createElement('table');
