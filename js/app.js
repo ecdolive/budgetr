@@ -3321,10 +3321,25 @@ function currentMonthProjectedRows(m){
 
   const actualRows = [];
   const remainingRows = [];
+  // A transaction description can be linked to more than one item (see
+  // descriptionLinksElsewhere) — each item still independently compares
+  // its own full matched actual against its own plan below (so a shared
+  // transaction can count toward more than one item's "remaining" gap, by
+  // design), but it must still only ever appear once in the displayed
+  // list itself: pushing it again per additional item that also claims it
+  // would double (or triple, ...) it into this panel's own total, on top
+  // of the real dollar amount, which is a real bug — not the same thing
+  // as the deliberate double-counting the Forecast pill's aggregate
+  // figure already accepts for a shared link.
+  const displayedTxns = new Set();
 
   linkedItems.forEach(it=>{
     const matchedTxns = monthTxns.filter(t=>it.linkedDescriptions.includes(t.description));
-    matchedTxns.forEach(t=>actualRows.push(txnRow(t)));
+    matchedTxns.forEach(t=>{
+      if (displayedTxns.has(t)) return;
+      displayedTxns.add(t);
+      actualRows.push(txnRow(t));
+    });
     const matched = matchedTxns.reduce((a,t)=>a+t.amount,0);
     const planned = it.monthly[m] || 0;
     if (Math.abs(planned) > Math.abs(matched)){
