@@ -288,7 +288,25 @@
   /* Transactions tab: title bar also holds the filter field, so it needs
      its own two-ended layout instead of the single-child default above. */
   .transactions-toolbar{justify-content:space-between;gap:24px;}
+  /* Groups the field-scope select with the search box itself so both sit
+     together on the toolbar's right side. */
+  .search-group{display:flex;align-items:center;gap:8px;flex-shrink:0;}
   .transactions-toolbar .search-wrap{width:280px;flex-shrink:0;}
+  /* Limits the search box above to one specific column (see
+     filteredSearchTxns) instead of every field at once — same pill shape
+     as .search-input so the two visually read as one control. */
+  .search-field-select{
+    height:2.5rem;
+    background:var(--bg-input);
+    border:1px solid var(--border);
+    border-radius:999px;
+    color:var(--text-primary);
+    padding:0 12px;
+    font-size:13px;
+    outline:none;
+    flex-shrink:0;
+  }
+  .search-field-select:focus{border-color:var(--accent-teal-dim);}
   /* Budget (year) tab: title bar holds the year label + YTD/Forecast/Budget
      pill group on the left, and the Export/Edit actions on the right. */
   .year-toolbar{justify-content:space-between;}

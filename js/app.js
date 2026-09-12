@@ -672,6 +672,7 @@ function enterBudgetEditor(){
   budgetSummaryEls = null;
   budgetRightSubTotalEl = null;
   searchQuery = '';
+  searchField = 'all';
   // The status bar's Open/Change file inputs are disabled for the duration
   // of edit mode (renderStatusBar reads budgetEditMode directly), so no
   // manual enable/disable bookkeeping is needed here.
@@ -791,6 +792,10 @@ let openGroups = new Set(['income','expenses']);
 let selectedSub = null;      // { kind:'expense'|'income', category, subcategory } | null — for income, category is the
                               // top-level income source and subcategory is a rolled-up transaction description
 let searchQuery = '';
+// Which field the Transactions tab's search box matches against — 'all'
+// (the original concatenated-field behavior) or one specific column name,
+// see SEARCH_FIELDS/filteredSearchTxns.
+let searchField = 'all';
 let txnSort = { key: 'date', dir: -1 }; // default: newest first
 
 // Budget editor — a distinct "mode" (like search) that takes over the mid
@@ -998,6 +1003,7 @@ function navItem(label, key, isActive){
     // The transactions filter is local to that tab — leaving it resets the
     // filter so Transactions is back to showing everything next time.
     searchQuery = '';
+    searchField = 'all';
     renderAll();
   });
   return div;
@@ -1583,6 +1589,20 @@ function renderMonthTable(){
 // built once per visit to the tab; typing only rebuilds the results body
 // below it via refresh(), so the input never gets torn down and re-focused
 // mid-keystroke the way a full renderMid() would.
+// Columns the Transactions tab's search box can match against — 'all'
+// (the original concatenated-field behavior) or one specific transaction
+// property, picked via the field-scope select next to the search box. Each
+// value is also the transaction object's own property name (see
+// filteredSearchTxns), so no separate getter map is needed.
+const SEARCH_FIELDS = [
+  ['all', 'All fields'],
+  ['description', 'Description'],
+  ['category', 'Category'],
+  ['subcategory', 'Subcategory'],
+  ['account', 'Account'],
+  ['type', 'Type'],
+];
+
 function renderTransactionsPage(mid){
   const titleBar = document.createElement('div');
   titleBar.className = 'mid-title transactions-toolbar';
@@ -1590,16 +1610,30 @@ function renderTransactionsPage(mid){
   titleSpan.textContent = 'Transactions';
   titleBar.appendChild(titleSpan);
 
+  const searchGroup = document.createElement('div');
+  searchGroup.className = 'search-group';
+
+  const fieldSelect = document.createElement('select');
+  fieldSelect.className = 'search-field-select';
+  SEARCH_FIELDS.forEach(([val,label])=>{
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = label;
+    if (val === searchField) opt.selected = true;
+    fieldSelect.appendChild(opt);
+  });
+  searchGroup.appendChild(fieldSelect);
+
   const searchWrap = document.createElement('div');
   searchWrap.className = 'search-wrap';
   searchWrap.innerHTML = `<img class="search-icon" src="icons/search.svg" alt="">`;
   const input = document.createElement('input');
   input.type = 'search';
   input.className = 'search-input';
-  input.placeholder = 'Search transactions…';
   input.value = searchQuery;
   searchWrap.appendChild(input);
-  titleBar.appendChild(searchWrap);
+  searchGroup.appendChild(searchWrap);
+  titleBar.appendChild(searchGroup);
   mid.appendChild(titleBar);
 
   const body = document.createElement('div');
@@ -1610,8 +1644,18 @@ function renderTransactionsPage(mid){
     body.innerHTML = '';
     body.appendChild(renderTransactionsBody(refresh));
   }
+  function updatePlaceholder(){
+    const label = SEARCH_FIELDS.find(([v])=>v===searchField)[1];
+    input.placeholder = searchField === 'all' ? 'Search transactions…' : `Search ${label.toLowerCase()}…`;
+  }
+  updatePlaceholder();
   input.addEventListener('input', (e)=>{
     searchQuery = e.target.value.trim();
+    refresh();
+  });
+  fieldSelect.addEventListener('change', ()=>{
+    searchField = fieldSelect.value;
+    updatePlaceholder();
     refresh();
   });
   refresh();
@@ -1623,8 +1667,10 @@ function renderTransactionsBody(onSortChange){
   const heading = document.createElement('div');
   heading.className = 'search-heading';
   const rows = filteredSearchTxns();
+  const fieldLabel = SEARCH_FIELDS.find(([v])=>v===searchField)[1];
   const countText = searchQuery
-    ? `<b>${rows.length}</b> transaction${rows.length===1?'':'s'} matching "<b>${escapeHTML(searchQuery)}</b>"`
+    ? `<b>${rows.length}</b> transaction${rows.length===1?'':'s'} matching "<b>${escapeHTML(searchQuery)}</b>"` +
+      (searchField === 'all' ? '' : ` in <b>${fieldLabel}</b>`)
     : `<b>${rows.length}</b> transaction${rows.length===1?'':'s'}`;
   // Sum of whatever's currently visible — recalculates with every
   // search/filter keystroke (see refresh() in renderTransactionsPage)
@@ -1666,8 +1712,12 @@ function renderTransactionsBody(onSortChange){
 }
 function filteredSearchTxns(){
   const q = searchQuery.toLowerCase();
-  let rows = DATA.transactions.filter(t =>
-    (t.description+' '+t.category+' '+t.subcategory+' '+t.account+' '+t.type).toLowerCase().includes(q)
+  // searchField (see SEARCH_FIELDS) is either 'all' — the original
+  // concatenated-field match — or one specific column, whose name doubles
+  // as the transaction object's own property name.
+  let rows = DATA.transactions.filter(t => searchField === 'all'
+    ? (t.description+' '+t.category+' '+t.subcategory+' '+t.account+' '+t.type).toLowerCase().includes(q)
+    : String(t[searchField]||'').toLowerCase().includes(q)
   );
   const { key, dir } = txnSort;
   rows = rows.slice().sort((a,b)=>{
