@@ -1408,11 +1408,19 @@ function yearRowValues(actualMonthly, budgetMonthly, flatCmi, perDiemRemainingCm
 /* ---- Month table (Plan / Actual / Difference) ---- */
 function renderMonthTable(){
   const mi = timeframe;
+  const cmi = DATA.currentMonthIndex;
   // Forecasted only means anything for the month actually in progress —
   // every other month is either fully actual already (past) or hasn't
   // started (future, where "forecast" is just the plan) — so the column
   // only appears here, never in a past/future month's drill-down.
-  const isCurrentMonth = mi === DATA.currentMonthIndex;
+  const isCurrentMonth = mi === cmi;
+  // A future month's Actual is always empty (nothing has happened yet), so
+  // its "difference" from Budget would just restate -Budget for every row
+  // — not a real difference, so the whole column is dropped rather than
+  // showing that. A past month keeps it (Actual is real there); so does
+  // the current month, alongside Forecasted's own.
+  const isFutureMonth = cmi !== null && mi > cmi;
+  const showDiff = !isFutureMonth;
   // No standalone "Difference" header anymore — each of Actual/Forecasted
   // carries its own difference-from-Budget as a muted "(+/-N)" right after
   // its own value, in an unlabeled column of its own (see .num-diff-col)
@@ -1420,8 +1428,9 @@ function renderMonthTable(){
   // lets every row's Actual (and every row's Forecasted) values themselves
   // stay right-aligned with each other, independent of how wide each row's
   // parenthesized diff happens to be. Column count is label + Budget +
-  // Actual + its diff (+ Forecasted + its diff, current month only).
-  const colCount = isCurrentMonth ? 6 : 4;
+  // Actual (+ its diff, unless a future month) (+ Forecasted + its diff,
+  // current month only).
+  const colCount = isCurrentMonth ? 6 : (showDiff ? 4 : 3);
   const table = document.createElement('table');
   table.className = 'ledger ledger-month ledger-grouped';
   const thead = document.createElement('thead');
@@ -1429,7 +1438,7 @@ function renderMonthTable(){
   // body cells) — it's what drops the column's right padding, so header
   // text and column values share the exact same right edge instead of the
   // header sitting the normal 12px further left.
-  thead.innerHTML = `<tr><th></th><th>Budget</th><th class="num-value">Actual</th><th></th>${isCurrentMonth?'<th class="num-value">Forecasted</th><th></th>':''}</tr>`;
+  thead.innerHTML = `<tr><th></th><th>Budget</th><th class="num-value">Actual</th>${showDiff?'<th></th>':''}${isCurrentMonth?'<th class="num-value">Forecasted</th><th></th>':''}</tr>`;
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   table.appendChild(tbody);
@@ -1440,9 +1449,12 @@ function renderMonthTable(){
   // column always stays muted regardless. No difference (this column's own
   // value equals planVal) renders as a blank cell rather than a "(–)"
   // nobody needs to see — deliberately not distinguishing a genuine exact
-  // match from a row with nothing going on this month; both blank.
+  // match from a row with nothing going on this month; both blank. A
+  // future month (showDiff false) skips the diff cell entirely — see
+  // isFutureMonth above.
   const numDiffCell = (value, planVal, mainClass) => {
     const cls = mainClass ? ` ${mainClass}` : '';
+    if (!showDiff) return `<td class="num num-value${cls}">${fmt(value)}</td>`;
     const diffText = Math.round(value-planVal) === 0 ? '' : `(${fmtSigned(value-planVal)})`;
     return `<td class="num num-value${cls}">${fmt(value)}</td><td class="num num-diff-col">${diffText}</td>`;
   };
@@ -2649,7 +2661,17 @@ function renderRight(){
   if (timeframe !== 'year'){
     eyebrowEl.className = 'right-eyebrow';
     eyebrowEl.textContent = `${monthFullName(timeframe)} Transactions`;
-    renderRightActualList(body, timeframe);
+    // The month actually in progress also gets whatever's left of its
+    // budgeted/forecasted amounts below its real transactions (same
+    // actual-then-remaining list, and the same muted "planned" styling for
+    // the remaining rows, as the Year table's Forecast pill — see
+    // currentMonthProjectedRows) — a past or future month has no such
+    // "remaining" concept, so it's still a plain actual list.
+    if (timeframe === DATA.currentMonthIndex){
+      renderRightTxnTable(body, currentMonthProjectedRows(timeframe));
+    } else {
+      renderRightActualList(body, timeframe);
+    }
     return;
   }
 
@@ -3267,71 +3289,96 @@ function openEditDraftItemModal(item, sub, cat, kind){
   });
 }
 
-function renderRightProjectedList(container){
-  const cmi = DATA.currentMonthIndex;
+// Row list for the CURRENT (possibly partial) month specifically, for
+// whichever subcategory is selected — mirrors resolveBudgets' current-
+// month split exactly, at that one subcategory's own item granularity:
+//   - linked items: their own matched transactions, plus a "(remaining)"
+//     row for whatever's left of their plan (the spending-cap comparison
+//     — see itemMatchedActual).
+//   - unlinked items + whatever actual isn't claimed by a linked item: the
+//     old whichever's-bigger choice between showing as actual or as
+//     planned rows, just scoped to that leftover pool.
+//   - per diem items: always a "(remaining)" row for their own remaining
+//     days, regardless of actual.
+// Built as two separate passes (rather than one interleaved-per-item
+// pass) so every real transaction this month lists before any remaining
+// budgeted/forecasted amount, regardless of which item produced which.
+// Shared by renderRightProjectedList (the Year table's Forecast pill) and
+// renderRight's Month-view branch (see renderRight), so a selected row's
+// current-month drill-down shows the same "actual, then remaining" list
+// either way.
+function currentMonthProjectedRows(m){
   const currentDay = DATA.currentDay;
   const items = getSelectedBudgetItems();
   const flatItems = items.filter(it=>!isPerDiemItem(it));
   const perDiemItems = items.filter(it=>isPerDiemItem(it));
   const txnRow = (t) => ({ dateLabel: (parseInt(t.date.slice(5,7),10))+'/'+(parseInt(t.date.slice(8,10),10)), description: t.description, amount: t.amount, planned: false });
+  const monthTxns = getSelectedTxns(m);
+  const linkedItems = flatItems.filter(it=>it.linkedDescriptions && it.linkedDescriptions.length);
+  const unlinkedItems = flatItems.filter(it=>!(it.linkedDescriptions && it.linkedDescriptions.length));
+  const claimedDescriptions = new Set();
+  linkedItems.forEach(it=>it.linkedDescriptions.forEach(d=>claimedDescriptions.add(d)));
+
+  const actualRows = [];
+  const remainingRows = [];
+  // A transaction description can be linked to more than one item (see
+  // descriptionLinksElsewhere) — each item still independently compares
+  // its own full matched actual against its own plan below (so a shared
+  // transaction can count toward more than one item's "remaining" gap, by
+  // design), but it must still only ever appear once in the displayed
+  // list itself: pushing it again per additional item that also claims it
+  // would double (or triple, ...) it into this panel's own total, on top
+  // of the real dollar amount, which is a real bug — not the same thing
+  // as the deliberate double-counting the Forecast pill's aggregate
+  // figure already accepts for a shared link.
+  const displayedTxns = new Set();
+
+  linkedItems.forEach(it=>{
+    const matchedTxns = monthTxns.filter(t=>it.linkedDescriptions.includes(t.description));
+    matchedTxns.forEach(t=>{
+      if (displayedTxns.has(t)) return;
+      displayedTxns.add(t);
+      actualRows.push(txnRow(t));
+    });
+    const matched = matchedTxns.reduce((a,t)=>a+t.amount,0);
+    const planned = it.monthly[m] || 0;
+    if (Math.abs(planned) > Math.abs(matched)){
+      const remaining = Math.round((planned-matched)*100)/100;
+      if (remaining) remainingRows.push({ dateLabel: MONTHS[m], description: `${it.label} (remaining)`, amount: remaining, planned: true });
+    }
+  });
+
+  const residualTxns = monthTxns.filter(t=>!claimedDescriptions.has(t.description));
+  const residualActual = residualTxns.reduce((a,t)=>a+t.amount,0);
+  const unlinkedPlan = unlinkedItems.reduce((a,it)=>a+(it.monthly[m]||0),0);
+  if (Math.abs(residualActual) > Math.abs(unlinkedPlan)){
+    residualTxns.forEach(t=>actualRows.push(txnRow(t)));
+  } else {
+    unlinkedItems.forEach(it=>{
+      const v = it.monthly[m];
+      if (v) remainingRows.push({ dateLabel: MONTHS[m], description: it.label, amount: v, planned: true });
+    });
+  }
+
+  perDiemItems.forEach(it=>{
+    const remainingDays = remainingDaysInMonth(DATA.year, m, currentDay);
+    if (remainingDays <= 0) return;
+    const rate = Number(it.amount) || 0;
+    const v = Math.round(rate * remainingDays * 100)/100;
+    if (v) remainingRows.push({ dateLabel: MONTHS[m], description: `${it.label} (remaining)`, amount: v, planned: true });
+  });
+
+  return [...actualRows, ...remainingRows];
+}
+
+function renderRightProjectedList(container){
+  const cmi = DATA.currentMonthIndex;
+  const items = getSelectedBudgetItems();
+  const txnRow = (t) => ({ dateLabel: (parseInt(t.date.slice(5,7),10))+'/'+(parseInt(t.date.slice(8,10),10)), description: t.description, amount: t.amount, planned: false });
   const rows = [];
   for (let m=0;m<12;m++){
     if (cmi !== null && m === cmi){
-      // Current (partial) month — mirrors resolveBudgets' current-month
-      // split exactly, at this one subcategory's own item granularity:
-      //   - linked items: their own matched transactions, plus a
-      //     "(remaining)" row for whatever's left of their plan (the
-      //     spending-cap comparison — see itemMatchedActual).
-      //   - unlinked items + whatever actual isn't claimed by a linked
-      //     item: the old whichever's-bigger choice between showing as
-      //     actual or as planned rows, just scoped to that leftover pool.
-      //   - per diem items: unchanged, always a "(remaining)" row for
-      //     their own remaining days, regardless of actual.
-      const monthTxns = getSelectedTxns(m);
-      const linkedItems = flatItems.filter(it=>it.linkedDescriptions && it.linkedDescriptions.length);
-      const unlinkedItems = flatItems.filter(it=>!(it.linkedDescriptions && it.linkedDescriptions.length));
-      const claimedDescriptions = new Set();
-      linkedItems.forEach(it=>it.linkedDescriptions.forEach(d=>claimedDescriptions.add(d)));
-
-      // Built as two separate passes (rather than one interleaved-per-item
-      // pass) so every real transaction this month lists before any
-      // remaining budgeted/forecasted amount, regardless of which item
-      // produced which — see rows.push(...) below.
-      const actualRows = [];
-      const remainingRows = [];
-
-      linkedItems.forEach(it=>{
-        const matchedTxns = monthTxns.filter(t=>it.linkedDescriptions.includes(t.description));
-        matchedTxns.forEach(t=>actualRows.push(txnRow(t)));
-        const matched = matchedTxns.reduce((a,t)=>a+t.amount,0);
-        const planned = it.monthly[m] || 0;
-        if (Math.abs(planned) > Math.abs(matched)){
-          const remaining = Math.round((planned-matched)*100)/100;
-          if (remaining) remainingRows.push({ dateLabel: MONTHS[m], description: `${it.label} (remaining)`, amount: remaining, planned: true });
-        }
-      });
-
-      const residualTxns = monthTxns.filter(t=>!claimedDescriptions.has(t.description));
-      const residualActual = residualTxns.reduce((a,t)=>a+t.amount,0);
-      const unlinkedPlan = unlinkedItems.reduce((a,it)=>a+(it.monthly[m]||0),0);
-      if (Math.abs(residualActual) > Math.abs(unlinkedPlan)){
-        residualTxns.forEach(t=>actualRows.push(txnRow(t)));
-      } else {
-        unlinkedItems.forEach(it=>{
-          const v = it.monthly[m];
-          if (v) remainingRows.push({ dateLabel: MONTHS[m], description: it.label, amount: v, planned: true });
-        });
-      }
-
-      perDiemItems.forEach(it=>{
-        const remainingDays = remainingDaysInMonth(DATA.year, m, currentDay);
-        if (remainingDays <= 0) return;
-        const rate = Number(it.amount) || 0;
-        const v = Math.round(rate * remainingDays * 100)/100;
-        if (v) remainingRows.push({ dateLabel: MONTHS[m], description: `${it.label} (remaining)`, amount: v, planned: true });
-      });
-
-      rows.push(...actualRows, ...remainingRows);
+      rows.push(...currentMonthProjectedRows(m));
       continue;
     }
     if (cmi !== null && m < cmi){
