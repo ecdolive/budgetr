@@ -371,6 +371,10 @@
 
   .search-heading{
     flex-shrink:0; /* sits above the scrolling .table-scroll, not inside it */
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    gap:16px;
     font-size:13px;color:var(--text-muted);margin-bottom:24px;font-weight:600;
     padding:0 12px; /* Transactions tab is the only user of this heading;
       its sticky title bar sits flush above .mid-body (which has no top
@@ -378,6 +382,12 @@
       separates the heading from the bar. */
   }
   .search-heading b{color:var(--text-primary);}
+  /* Sum of whatever's currently visible (see renderTransactionsBody) —
+     recalculates live as the user types in the search box. */
+  .search-heading-total{flex-shrink:0;white-space:nowrap;}
+  .search-heading-total .amt{font-weight:700;color:var(--text-primary);margin-left:4px;}
+  .search-heading-total .amt.pos{color:var(--positive);}
+  .search-heading-total .amt.neg{color:var(--negative);}
 
   table.ledger-year th.month-link{cursor:pointer;}
   table.ledger-year th.month-link:hover{color:var(--text-primary);}

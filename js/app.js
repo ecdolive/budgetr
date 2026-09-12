@@ -1623,9 +1623,16 @@ function renderTransactionsBody(onSortChange){
   const heading = document.createElement('div');
   heading.className = 'search-heading';
   const rows = filteredSearchTxns();
-  heading.innerHTML = searchQuery
+  const countText = searchQuery
     ? `<b>${rows.length}</b> transaction${rows.length===1?'':'s'} matching "<b>${escapeHTML(searchQuery)}</b>"`
     : `<b>${rows.length}</b> transaction${rows.length===1?'':'s'}`;
+  // Sum of whatever's currently visible — recalculates with every
+  // search/filter keystroke (see refresh() in renderTransactionsPage)
+  // since it's derived from the same filteredSearchTxns() rows the table
+  // itself renders, not the full unfiltered transaction list.
+  const total = rows.reduce((a,t)=>a+t.amount,0);
+  heading.innerHTML = `<span>${countText}</span>` +
+    `<span class="search-heading-total">Total <span class="amt ${signCls(total)}">${fmtSigned(total)}</span></span>`;
   wrap.appendChild(heading);
 
   const table = document.createElement('table');
