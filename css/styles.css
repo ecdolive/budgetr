@@ -205,12 +205,44 @@
     border:1px solid var(--border);
     border-radius:999px;
     color:var(--text-primary);
-    padding:12px 16px 12px 32px;
+    padding:12px 92px 12px 32px;
     font-size:13px;
     outline:none;
   }
   .search-input::placeholder{color:var(--text-muted);}
   .search-input:focus{border-color:var(--accent-teal-dim);}
+  /* Field-scope picker (see SEARCH_FIELDS/renderTransactionsPage), embedded
+     inside the search box itself — same "badge inside the input" treatment
+     as the Add/Edit line item modal's "add links" control (see
+     .modal-link-badge): a plain-text-at-rest control anchored to the
+     input's own right edge, rather than a separate field beside it. Native
+     <select> styling is suppressed (appearance:none) in favor of blending
+     in as text; it already shows whichever field is currently chosen on
+     its own, with no extra markup needed. */
+  .search-field-badge{
+    position:absolute;
+    right:4px;
+    top:50%;
+    transform:translateY(-50%);
+    height:1.75rem;
+    max-width:78px;
+    padding:0 10px;
+    border:none;
+    border-radius:999px;
+    background:transparent;
+    color:var(--text-muted);
+    font-size:11.5px;
+    cursor:pointer;
+    outline:none;
+    appearance:none;
+    -webkit-appearance:none;
+    -moz-appearance:none;
+    overflow:hidden;
+    white-space:nowrap;
+    text-overflow:ellipsis;
+  }
+  .search-field-badge:hover{color:var(--text-primary);}
+  .search-field-badge.scoped{color:var(--accent-teal);}
 
   .tf-list{display:flex;flex-direction:column;gap:0.25rem;}
   .tf-item{
@@ -288,25 +320,7 @@
   /* Transactions tab: title bar also holds the filter field, so it needs
      its own two-ended layout instead of the single-child default above. */
   .transactions-toolbar{justify-content:space-between;gap:24px;}
-  /* Groups the field-scope select with the search box itself so both sit
-     together on the toolbar's right side. */
-  .search-group{display:flex;align-items:center;gap:8px;flex-shrink:0;}
   .transactions-toolbar .search-wrap{width:280px;flex-shrink:0;}
-  /* Limits the search box above to one specific column (see
-     filteredSearchTxns) instead of every field at once — same pill shape
-     as .search-input so the two visually read as one control. */
-  .search-field-select{
-    height:2.5rem;
-    background:var(--bg-input);
-    border:1px solid var(--border);
-    border-radius:999px;
-    color:var(--text-primary);
-    padding:0 12px;
-    font-size:13px;
-    outline:none;
-    flex-shrink:0;
-  }
-  .search-field-select:focus{border-color:var(--accent-teal-dim);}
   /* Budget (year) tab: title bar holds the year label + YTD/Forecast/Budget
      pill group on the left, and the Export/Edit actions on the right. */
   .year-toolbar{justify-content:space-between;}

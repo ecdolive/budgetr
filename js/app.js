@@ -1610,20 +1610,6 @@ function renderTransactionsPage(mid){
   titleSpan.textContent = 'Transactions';
   titleBar.appendChild(titleSpan);
 
-  const searchGroup = document.createElement('div');
-  searchGroup.className = 'search-group';
-
-  const fieldSelect = document.createElement('select');
-  fieldSelect.className = 'search-field-select';
-  SEARCH_FIELDS.forEach(([val,label])=>{
-    const opt = document.createElement('option');
-    opt.value = val;
-    opt.textContent = label;
-    if (val === searchField) opt.selected = true;
-    fieldSelect.appendChild(opt);
-  });
-  searchGroup.appendChild(fieldSelect);
-
   const searchWrap = document.createElement('div');
   searchWrap.className = 'search-wrap';
   searchWrap.innerHTML = `<img class="search-icon" src="icons/search.svg" alt="">`;
@@ -1632,8 +1618,25 @@ function renderTransactionsPage(mid){
   input.className = 'search-input';
   input.value = searchQuery;
   searchWrap.appendChild(input);
-  searchGroup.appendChild(searchWrap);
-  titleBar.appendChild(searchGroup);
+
+  // Field-scope picker, embedded inside the search box itself — same
+  // "badge inside the input" treatment as the Add/Edit line item modal's
+  // "add links" control (see openAddBudgetItemModal): a native <select>
+  // styled to blend in as plain text at rest (so it already displays
+  // whichever field is currently chosen with no extra JS needed to sync
+  // that text), turning accent-colored once scoped to one specific field
+  // rather than "All fields".
+  const fieldSelect = document.createElement('select');
+  fieldSelect.className = 'search-field-badge';
+  SEARCH_FIELDS.forEach(([val,label])=>{
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = label;
+    if (val === searchField) opt.selected = true;
+    fieldSelect.appendChild(opt);
+  });
+  searchWrap.appendChild(fieldSelect);
+  titleBar.appendChild(searchWrap);
   mid.appendChild(titleBar);
 
   const body = document.createElement('div');
@@ -1647,6 +1650,7 @@ function renderTransactionsPage(mid){
   function updatePlaceholder(){
     const label = SEARCH_FIELDS.find(([v])=>v===searchField)[1];
     input.placeholder = searchField === 'all' ? 'Search transactions…' : `Search ${label.toLowerCase()}…`;
+    fieldSelect.classList.toggle('scoped', searchField !== 'all');
   }
   updatePlaceholder();
   input.addEventListener('input', (e)=>{
