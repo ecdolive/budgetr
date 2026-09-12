@@ -448,6 +448,13 @@
      the value's own color (net rows color Actual/Forecasted via signCls,
      applied to .num-value only). */
   table.ledger-month .num-value{padding-right:0;}
+  /* A future month has no diff column at all (see renderMonthTable's
+     showDiff) — Actual is the row's last cell there, not the first half of
+     a tightly-paired value+diff, so it needs the table's normal 12px right
+     padding back instead of the 0 above (:last-child only ever matches in
+     that case — a diff column, when present, is always the actual last
+     cell instead). */
+  table.ledger-month .num-value:last-child{padding-right:12px;}
   table.ledger-month .num-diff-col{
     width:6.5rem;
     padding-left:0.5rem;
