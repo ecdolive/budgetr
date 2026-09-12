@@ -3293,14 +3293,21 @@ function renderRightProjectedList(container){
       const claimedDescriptions = new Set();
       linkedItems.forEach(it=>it.linkedDescriptions.forEach(d=>claimedDescriptions.add(d)));
 
+      // Built as two separate passes (rather than one interleaved-per-item
+      // pass) so every real transaction this month lists before any
+      // remaining budgeted/forecasted amount, regardless of which item
+      // produced which — see rows.push(...) below.
+      const actualRows = [];
+      const remainingRows = [];
+
       linkedItems.forEach(it=>{
         const matchedTxns = monthTxns.filter(t=>it.linkedDescriptions.includes(t.description));
-        matchedTxns.forEach(t=>rows.push(txnRow(t)));
+        matchedTxns.forEach(t=>actualRows.push(txnRow(t)));
         const matched = matchedTxns.reduce((a,t)=>a+t.amount,0);
         const planned = it.monthly[m] || 0;
         if (Math.abs(planned) > Math.abs(matched)){
           const remaining = Math.round((planned-matched)*100)/100;
-          if (remaining) rows.push({ dateLabel: MONTHS[m], description: `${it.label} (remaining)`, amount: remaining, planned: true });
+          if (remaining) remainingRows.push({ dateLabel: MONTHS[m], description: `${it.label} (remaining)`, amount: remaining, planned: true });
         }
       });
 
@@ -3308,11 +3315,11 @@ function renderRightProjectedList(container){
       const residualActual = residualTxns.reduce((a,t)=>a+t.amount,0);
       const unlinkedPlan = unlinkedItems.reduce((a,it)=>a+(it.monthly[m]||0),0);
       if (Math.abs(residualActual) > Math.abs(unlinkedPlan)){
-        residualTxns.forEach(t=>rows.push(txnRow(t)));
+        residualTxns.forEach(t=>actualRows.push(txnRow(t)));
       } else {
         unlinkedItems.forEach(it=>{
           const v = it.monthly[m];
-          if (v) rows.push({ dateLabel: MONTHS[m], description: it.label, amount: v, planned: true });
+          if (v) remainingRows.push({ dateLabel: MONTHS[m], description: it.label, amount: v, planned: true });
         });
       }
 
@@ -3321,8 +3328,10 @@ function renderRightProjectedList(container){
         if (remainingDays <= 0) return;
         const rate = Number(it.amount) || 0;
         const v = Math.round(rate * remainingDays * 100)/100;
-        if (v) rows.push({ dateLabel: MONTHS[m], description: `${it.label} (remaining)`, amount: v, planned: true });
+        if (v) remainingRows.push({ dateLabel: MONTHS[m], description: `${it.label} (remaining)`, amount: v, planned: true });
       });
+
+      rows.push(...actualRows, ...remainingRows);
       continue;
     }
     if (cmi !== null && m < cmi){
