@@ -205,12 +205,37 @@
     border:1px solid var(--border);
     border-radius:999px;
     color:var(--text-primary);
-    padding:12px 16px 12px 32px;
+    padding:12px 32px 12px 32px;
     font-size:13px;
     outline:none;
   }
   .search-input::placeholder{color:var(--text-muted);}
   .search-input:focus{border-color:var(--accent-teal-dim);}
+  /* Replaced by .search-clear-btn below (this app's own icon set, rather
+     than the browser's own type="search" cancel glyph). */
+  .search-input::-webkit-search-cancel-button{-webkit-appearance:none;display:none;}
+  .search-clear-btn{
+    /* right matches the button's own vertical centering gap
+       ((.search-wrap's ~41.5px height - this button's 20px) / 2 = 10.75px)
+       so its clearance from the input's right edge equals its clearance
+       from the top/bottom edges, rather than the tighter 6px an
+       arbitrary value would give it. */
+    position:absolute;right:10.75px;top:50%;transform:translateY(-50%);
+    width:20px;height:20px;
+    display:flex;align-items:center;justify-content:center;
+    background:transparent;border:none;border-radius:50%;
+    cursor:pointer;
+  }
+  /* Its own display:flex above otherwise beats the browser's default
+     [hidden]{display:none} (an author-stylesheet class rule always wins
+     over a UA-stylesheet attribute rule, regardless of specificity or
+     source order), silently defeating clearBtn.hidden — this restores it,
+     at the higher specificity a class+attribute selector gets over a
+     plain class alone. */
+  .search-clear-btn[hidden]{display:none;}
+  .search-clear-btn img{width:11px;height:11px;opacity:0.4;}
+  .search-clear-btn:hover{background:var(--bg-row-hover);}
+  .search-clear-btn:hover img{opacity:0.8;}
 
   .tf-list{display:flex;flex-direction:column;gap:0.25rem;}
   .tf-item{
@@ -378,6 +403,40 @@
       separates the heading from the bar. */
   }
   .search-heading b{color:var(--text-primary);}
+  .search-heading .amt.pos{color:var(--positive);}
+  .search-heading .amt.neg{color:var(--negative);}
+  /* Field-scope picker (see SEARCH_FIELDS), inline in the results blurb
+     itself rather than a separate control — only appears once there's a
+     search term to scope (see renderTransactionsBody). A native <select>
+     sizes its own closed-state box to its widest OPTION rather than its
+     current selection — a browser quirk no CSS property fixes — so it's
+     split into a visible label span (hugs only its own current text, the
+     normal inline-block way) plus the real <select>, invisible and
+     stretched with position:absolute to exactly match that span's box
+     instead of sizing itself. The label reflects the dotted-underline
+     "interactive text" look; the select still does the actual work
+     (click target, keyboard, native picker), just with nothing of its own
+     to look at. */
+  .search-heading-field{position:relative;display:inline-block;}
+  .search-heading-field-label{
+    color:var(--text-primary);
+    font-weight:700;
+    border-bottom:1px dotted var(--text-muted);
+  }
+  .search-heading-field:hover .search-heading-field-label,
+  .search-heading-field:focus-within .search-heading-field-label{
+    color:var(--accent-teal);border-bottom-color:var(--accent-teal-dim);
+  }
+  .search-heading-field-select{
+    position:absolute;
+    inset:0;
+    width:100%;
+    height:100%;
+    opacity:0;
+    border:none;
+    padding:0;
+    cursor:pointer;
+  }
 
   table.ledger-year th.month-link{cursor:pointer;}
   table.ledger-year th.month-link:hover{color:var(--text-primary);}

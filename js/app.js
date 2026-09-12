@@ -672,6 +672,7 @@ function enterBudgetEditor(){
   budgetSummaryEls = null;
   budgetRightSubTotalEl = null;
   searchQuery = '';
+  searchField = 'all';
   // The status bar's Open/Change file inputs are disabled for the duration
   // of edit mode (renderStatusBar reads budgetEditMode directly), so no
   // manual enable/disable bookkeeping is needed here.
@@ -791,6 +792,10 @@ let openGroups = new Set(['income','expenses']);
 let selectedSub = null;      // { kind:'expense'|'income', category, subcategory } | null — for income, category is the
                               // top-level income source and subcategory is a rolled-up transaction description
 let searchQuery = '';
+// Which field the Transactions tab's search box matches against — 'all'
+// (the original concatenated-field behavior) or one specific column name,
+// see SEARCH_FIELDS/filteredSearchTxns.
+let searchField = 'all';
 let txnSort = { key: 'date', dir: -1 }; // default: newest first
 
 // Budget editor — a distinct "mode" (like search) that takes over the mid
@@ -998,6 +1003,7 @@ function navItem(label, key, isActive){
     // The transactions filter is local to that tab — leaving it resets the
     // filter so Transactions is back to showing everything next time.
     searchQuery = '';
+    searchField = 'all';
     renderAll();
   });
   return div;
@@ -1583,6 +1589,21 @@ function renderMonthTable(){
 // built once per visit to the tab; typing only rebuilds the results body
 // below it via refresh(), so the input never gets torn down and re-focused
 // mid-keystroke the way a full renderMid() would.
+// Columns the Transactions tab's search box can match against — 'all'
+// (the original concatenated-field behavior) or one specific transaction
+// property, picked via the field-scope select inline in the results blurb
+// (see renderTransactionsBody) once there's a search term to scope. Each
+// value is also the transaction object's own property name (see
+// filteredSearchTxns), so no separate getter map is needed.
+const SEARCH_FIELDS = [
+  ['all', 'any column'],
+  ['description', 'description'],
+  ['category', 'category'],
+  ['subcategory', 'subcategory'],
+  ['account', 'account'],
+  ['type', 'type'],
+];
+
 function renderTransactionsPage(mid){
   const titleBar = document.createElement('div');
   titleBar.className = 'mid-title transactions-toolbar';
@@ -1599,6 +1620,17 @@ function renderTransactionsPage(mid){
   input.placeholder = 'Search transactions…';
   input.value = searchQuery;
   searchWrap.appendChild(input);
+
+  // A custom clear button in place of the browser's own native
+  // type="search" cancel icon (hidden via ::-webkit-search-cancel-button —
+  // see styles.css) so it can use this app's own icon set.
+  const clearBtn = document.createElement('button');
+  clearBtn.type = 'button';
+  clearBtn.className = 'search-clear-btn';
+  clearBtn.setAttribute('aria-label', 'Clear search');
+  clearBtn.innerHTML = `<img src="icons/close.svg" alt="">`;
+  clearBtn.hidden = !searchQuery;
+  searchWrap.appendChild(clearBtn);
   titleBar.appendChild(searchWrap);
   mid.appendChild(titleBar);
 
@@ -1612,20 +1644,88 @@ function renderTransactionsPage(mid){
   }
   input.addEventListener('input', (e)=>{
     searchQuery = e.target.value.trim();
+    clearBtn.hidden = !searchQuery;
     refresh();
+  });
+  clearBtn.addEventListener('click', ()=>{
+    searchQuery = '';
+    input.value = '';
+    clearBtn.hidden = true;
+    refresh();
+    input.focus();
   });
   refresh();
   input.focus();
   input.setSelectionRange(input.value.length, input.value.length);
 }
+// The results blurb doubles as the field-scope picker's home once there's
+// a search term to scope: "N transactions matching '...' in [field
+// select], totaling [amount]" — with no query, it's just "N transactions,
+// totaling [amount]" (see refresh() above, which rebuilds this on every
+// keystroke and field-select change alike, since both live in
+// module-level searchQuery/searchField state).
 function renderTransactionsBody(onSortChange){
   const wrap = document.createDocumentFragment();
   const heading = document.createElement('div');
   heading.className = 'search-heading';
   const rows = filteredSearchTxns();
-  heading.innerHTML = searchQuery
-    ? `<b>${rows.length}</b> transaction${rows.length===1?'':'s'} matching "<b>${escapeHTML(searchQuery)}</b>"`
-    : `<b>${rows.length}</b> transaction${rows.length===1?'':'s'}`;
+  // Sum of whatever's currently visible — recalculates with every
+  // search/filter keystroke and field-select change, since it's derived
+  // from the same filteredSearchTxns() rows the table itself renders, not
+  // the full unfiltered transaction list.
+  const total = rows.reduce((a,t)=>a+t.amount,0);
+
+  const countEl = document.createElement('b');
+  countEl.textContent = rows.length;
+  heading.appendChild(countEl);
+  heading.appendChild(document.createTextNode(` transaction${rows.length===1?'':'s'}`));
+
+  if (searchQuery){
+    heading.appendChild(document.createTextNode(' matching "'));
+    const queryEl = document.createElement('b');
+    queryEl.textContent = searchQuery;
+    heading.appendChild(queryEl);
+    heading.appendChild(document.createTextNode('" in '));
+
+    // A plain <select> here sizes its own closed-state box to its widest
+    // OPTION, not its current selection (a native, CSS-unfixable quirk),
+    // so a short pick like "account" would sit in a box wide enough for
+    // "subcategory" — visible empty space no matter which side the text
+    // aligns to. Instead: a visible text span, sized to hug only its own
+    // current label the normal inline-block way, with the actual <select>
+    // stretched via position:absolute to exactly match that span's box
+    // (see .search-heading-field/-select) rather than sizing itself —
+    // invisible, but still the thing that's actually clicked/focused/
+    // opened, with the native picker and full keyboard support intact.
+    const fieldWrap = document.createElement('span');
+    fieldWrap.className = 'search-heading-field';
+    const fieldLabel = document.createElement('span');
+    fieldLabel.className = 'search-heading-field-label';
+    fieldLabel.textContent = SEARCH_FIELDS.find(([v])=>v===searchField)[1];
+    fieldWrap.appendChild(fieldLabel);
+
+    const fieldSelect = document.createElement('select');
+    fieldSelect.className = 'search-heading-field-select';
+    SEARCH_FIELDS.forEach(([val,label])=>{
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = label;
+      if (val === searchField) opt.selected = true;
+      fieldSelect.appendChild(opt);
+    });
+    fieldSelect.addEventListener('change', ()=>{
+      searchField = fieldSelect.value;
+      onSortChange();
+    });
+    fieldWrap.appendChild(fieldSelect);
+    heading.appendChild(fieldWrap);
+  }
+
+  heading.appendChild(document.createTextNode(', totaling '));
+  const totalEl = document.createElement('b');
+  totalEl.className = 'amt ' + signCls(total);
+  totalEl.textContent = fmtSigned(total);
+  heading.appendChild(totalEl);
   wrap.appendChild(heading);
 
   const table = document.createElement('table');
@@ -1659,8 +1759,12 @@ function renderTransactionsBody(onSortChange){
 }
 function filteredSearchTxns(){
   const q = searchQuery.toLowerCase();
-  let rows = DATA.transactions.filter(t =>
-    (t.description+' '+t.category+' '+t.subcategory+' '+t.account+' '+t.type).toLowerCase().includes(q)
+  // searchField (see SEARCH_FIELDS) is either 'all' — the original
+  // concatenated-field match — or one specific column, whose name doubles
+  // as the transaction object's own property name.
+  let rows = DATA.transactions.filter(t => searchField === 'all'
+    ? (t.description+' '+t.category+' '+t.subcategory+' '+t.account+' '+t.type).toLowerCase().includes(q)
+    : String(t[searchField]||'').toLowerCase().includes(q)
   );
   const { key, dir } = txnSort;
   rows = rows.slice().sort((a,b)=>{
