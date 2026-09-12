@@ -215,7 +215,12 @@
      than the browser's own type="search" cancel glyph). */
   .search-input::-webkit-search-cancel-button{-webkit-appearance:none;display:none;}
   .search-clear-btn{
-    position:absolute;right:6px;top:50%;transform:translateY(-50%);
+    /* right matches the button's own vertical centering gap
+       ((.search-wrap's ~41.5px height - this button's 20px) / 2 = 10.75px)
+       so its clearance from the input's right edge equals its clearance
+       from the top/bottom edges, rather than the tighter 6px an
+       arbitrary value would give it. */
+    position:absolute;right:10.75px;top:50%;transform:translateY(-50%);
     width:20px;height:20px;
     display:flex;align-items:center;justify-content:center;
     background:transparent;border:none;border-radius:50%;
