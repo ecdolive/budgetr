@@ -1687,8 +1687,25 @@ function renderTransactionsBody(onSortChange){
     heading.appendChild(queryEl);
     heading.appendChild(document.createTextNode('" in '));
 
+    // A plain <select> here sizes its own closed-state box to its widest
+    // OPTION, not its current selection (a native, CSS-unfixable quirk),
+    // so a short pick like "account" would sit in a box wide enough for
+    // "subcategory" — visible empty space no matter which side the text
+    // aligns to. Instead: a visible text span, sized to hug only its own
+    // current label the normal inline-block way, with the actual <select>
+    // stretched via position:absolute to exactly match that span's box
+    // (see .search-heading-field/-select) rather than sizing itself —
+    // invisible, but still the thing that's actually clicked/focused/
+    // opened, with the native picker and full keyboard support intact.
+    const fieldWrap = document.createElement('span');
+    fieldWrap.className = 'search-heading-field';
+    const fieldLabel = document.createElement('span');
+    fieldLabel.className = 'search-heading-field-label';
+    fieldLabel.textContent = SEARCH_FIELDS.find(([v])=>v===searchField)[1];
+    fieldWrap.appendChild(fieldLabel);
+
     const fieldSelect = document.createElement('select');
-    fieldSelect.className = 'search-heading-field';
+    fieldSelect.className = 'search-heading-field-select';
     SEARCH_FIELDS.forEach(([val,label])=>{
       const opt = document.createElement('option');
       opt.value = val;
@@ -1700,7 +1717,8 @@ function renderTransactionsBody(onSortChange){
       searchField = fieldSelect.value;
       onSortChange();
     });
-    heading.appendChild(fieldSelect);
+    fieldWrap.appendChild(fieldSelect);
+    heading.appendChild(fieldWrap);
   }
 
   heading.appendChild(document.createTextNode(', totaling '));

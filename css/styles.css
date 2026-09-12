@@ -402,33 +402,36 @@
   .search-heading .amt.neg{color:var(--negative);}
   /* Field-scope picker (see SEARCH_FIELDS), inline in the results blurb
      itself rather than a separate control — only appears once there's a
-     search term to scope (see renderTransactionsBody). Styled to blend in
-     as plain text at rest, like the rest of the sentence around it, with
-     just a dotted underline hinting it's interactive; native <select>
-     styling is otherwise suppressed. */
-  .search-heading-field{
-    appearance:none;
-    -webkit-appearance:none;
-    -moz-appearance:none;
-    background:transparent;
-    border:none;
-    border-bottom:1px dotted var(--text-muted);
+     search term to scope (see renderTransactionsBody). A native <select>
+     sizes its own closed-state box to its widest OPTION rather than its
+     current selection — a browser quirk no CSS property fixes — so it's
+     split into a visible label span (hugs only its own current text, the
+     normal inline-block way) plus the real <select>, invisible and
+     stretched with position:absolute to exactly match that span's box
+     instead of sizing itself. The label reflects the dotted-underline
+     "interactive text" look; the select still does the actual work
+     (click target, keyboard, native picker), just with nothing of its own
+     to look at. */
+  .search-heading-field{position:relative;display:inline-block;}
+  .search-heading-field-label{
     color:var(--text-primary);
-    font:inherit;
     font-weight:700;
+    border-bottom:1px dotted var(--text-muted);
+  }
+  .search-heading-field:hover .search-heading-field-label,
+  .search-heading-field:focus-within .search-heading-field-label{
+    color:var(--accent-teal);border-bottom-color:var(--accent-teal-dim);
+  }
+  .search-heading-field-select{
+    position:absolute;
+    inset:0;
+    width:100%;
+    height:100%;
+    opacity:0;
+    border:none;
     padding:0;
     cursor:pointer;
-    /* A native <select>'s closed-state box reserves a little extra width
-       past its own label text (browser-drawn dropdown-affordance space
-       that appearance:none doesn't remove) — left-aligned by default, this
-       shows up as a stray gap between the label and whatever follows it
-       (", totaling ..."). Right-aligning tucks that reserved space against
-       "in " right before it instead, where the existing word-space already
-       hides it. */
-    text-align:right;
   }
-  .search-heading-field:hover,
-  .search-heading-field:focus{color:var(--accent-teal);border-bottom-color:var(--accent-teal-dim);outline:none;}
 
   table.ledger-year th.month-link{cursor:pointer;}
   table.ledger-year th.month-link:hover{color:var(--text-primary);}
