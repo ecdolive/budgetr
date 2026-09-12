@@ -939,7 +939,17 @@
     cursor:pointer;
   }
   .link-txn-option:hover{background:var(--bg-row-hover);}
+  /* Description + (when shared) its muted "also linked to" note stack as
+     two lines rather than crowding onto one, so a long description isn't
+     squeezed down to a near-unreadable truncation just to make room. */
+  .link-txn-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;}
+  .link-txn-desc{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .link-txn-empty{font-size:12.5px;color:var(--text-muted);padding:8px;}
+  /* Called out on a description already linked to some other item (see
+     descriptionLinksElsewhere) — links aren't exclusive, so this is just a
+     heads-up that the two items will share the same actual dollars, not a
+     restriction. */
+  .link-txn-shared-note{font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
   .add-item-btn{
     align-self:flex-start;

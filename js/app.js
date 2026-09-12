@@ -2312,17 +2312,28 @@ function distinctDescriptionsFor(category, subcategory){
   return [...set].sort((a,b)=>a.localeCompare(b));
 }
 
-// Every description already linked to some OTHER item in the draft (any
-// category/subcategory) — excluded from a picker so the same actual
-// dollars can never be claimed by two line items at once.
-function claimedDescriptionsExcept(kind, exceptItemId){
+// Every OTHER item (in the draft, any category/subcategory) that already
+// links a given description, keyed by description — a description can be
+// linked to more than one line item at once (e.g. a shared charge that
+// counts toward more than one budget item's cap), so this is purely
+// informational: the picker (see openLinkTransactionsModal) annotates an
+// already-shared description with who else claims it rather than hiding
+// it, so sharing one is a visible, deliberate choice. Each item that
+// claims a description still compares its own full matched actual against
+// its own plan independently (see itemMatchedActual/resolveBudgets), so
+// the same actual dollars can count toward more than one item's forecast
+// figure once shared.
+function descriptionLinksElsewhere(kind, exceptItemId){
   const list = kind === 'income' ? budgetDraft.income : budgetDraft.expenses;
-  const set = new Set();
+  const map = new Map();
   list.forEach(c=>c.subcategories.forEach(s=>s.items.forEach(it=>{
     if (it.id === exceptItemId) return;
-    (it.linkedDescriptions||[]).forEach(d=>set.add(d));
+    (it.linkedDescriptions||[]).forEach(d=>{
+      if (!map.has(d)) map.set(d, []);
+      map.get(d).push(it.label || s.name);
+    });
   })));
-  return set;
+  return map;
 }
 
 // Modal for choosing which actual transaction descriptions (in this
@@ -2332,8 +2343,7 @@ function claimedDescriptionsExcept(kind, exceptItemId){
 // re-rendering the whole editor.
 function openLinkTransactionsModal(item, cat, sub, kind, onSaved){
   const available = distinctDescriptionsFor(cat.name, sub.name);
-  const claimedElsewhere = claimedDescriptionsExcept(kind, item.id);
-  const pickable = available.filter(d=>!claimedElsewhere.has(d));
+  const linkedElsewhere = descriptionLinksElsewhere(kind, item.id);
   const currentlyLinked = new Set(item.linkedDescriptions || []);
 
   const scrim = document.createElement('div');
@@ -2355,25 +2365,38 @@ function openLinkTransactionsModal(item, cat, sub, kind, onSaved){
 
   const list = document.createElement('div');
   list.className = 'link-txn-list';
-  if (pickable.length === 0){
+  if (available.length === 0){
     const empty = document.createElement('div');
     empty.className = 'link-txn-empty';
-    empty.textContent = available.length === 0
-      ? 'No transactions loaded yet for this category/subcategory.'
-      : 'Every transaction description here is already linked to another line item.';
+    empty.textContent = 'No transactions loaded yet for this category/subcategory.';
     list.appendChild(empty);
   } else {
-    pickable.forEach(desc=>{
+    available.forEach(desc=>{
       const option = document.createElement('label');
       option.className = 'link-txn-option';
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
       checkbox.value = desc;
       checkbox.checked = currentlyLinked.has(desc);
+      const textWrap = document.createElement('div');
+      textWrap.className = 'link-txn-text';
       const text = document.createElement('span');
+      text.className = 'link-txn-desc';
       text.textContent = desc;
+      textWrap.appendChild(text);
+      // A description already linked elsewhere isn't excluded — it can be
+      // shared across more than one item (see descriptionLinksElsewhere) —
+      // just called out here (as a second, muted line) so sharing one is a
+      // visible, deliberate choice rather than a surprise later.
+      const others = linkedElsewhere.get(desc);
+      if (others && others.length){
+        const note = document.createElement('span');
+        note.className = 'link-txn-shared-note';
+        note.textContent = `also linked to ${others.join(', ')}`;
+        textWrap.appendChild(note);
+      }
       option.appendChild(checkbox);
-      option.appendChild(text);
+      option.appendChild(textWrap);
       list.appendChild(option);
     });
   }
@@ -2601,7 +2624,7 @@ function addDraftBudgetItem(target, freq, label, rawAmount, amountType, linkedDe
 // needed, same find-or-create as addDraftBudgetItem above) — which may be a
 // different Income/Spending list than it started in, since the modal's Type
 // toggle stays editable — and overwrites its fields in place. The item's id
-// (and thus its identity for claimedDescriptionsExcept) stays stable across
+// (and thus its identity for descriptionLinksElsewhere) stays stable across
 // the move, since this relocates the actual item object rather than
 // creating a new one.
 function updateDraftBudgetItem(item, target, freq, label, rawAmount, amountType, linkedDescriptions){
