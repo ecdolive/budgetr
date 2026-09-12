@@ -360,7 +360,19 @@ function itemMatchedActual(transactions, txnType, catName, subName, cmi, linkedD
   const set = new Set(linkedDescriptions);
   return transactions.reduce((sum,t)=>{
     if (t.type !== txnType || t.month !== cmi || !set.has(t.description)) return sum;
-    if (!transactionMatchesBudgetSlot(t, txnType, catName, subName)) return sum;
+    // A linked description already pins the match precisely — for Income
+    // this only needs the transaction's source (subcategory) to agree with
+    // the item's own Category, not its own (freely-typed) Subcategory too.
+    // transactionMatchesBudgetSlot's exact description-equals-Subcategory
+    // check assumes the older one-description-per-item model, which an
+    // item that explicitly links a different-named set of descriptions
+    // (see openAddBudgetItemModal's income linking) intentionally breaks
+    // away from.
+    if (txnType === 'Income'){
+      if (t.subcategory !== catName) return sum;
+    } else if (!transactionMatchesBudgetSlot(t, txnType, catName, subName)){
+      return sum;
+    }
     return sum + t.amount;
   }, 0);
 }
@@ -866,12 +878,58 @@ function mergedExpenseCategories(){
   });
   return result;
 }
+// Every income budget slot (Category/Subcategory pair) that has at least
+// one linked description, plus — per category — the full union of
+// descriptions claimed by ANY of its slots. A linked description no longer
+// gets its own separate row in the ledger (see mergedIncomeSubcats); its
+// actual dollars surface on its linked item's own subcategory row instead
+// (see incomeActualMonthlyForDescriptions), and its individual
+// transactions on that row's own drill-down (see getSelectedTxns).
+function incomeLinkedSlots(){
+  const bySlot = new Map(); // "cat||sub" -> Set(description)
+  const byCategory = new Map(); // cat -> Set(description)
+  Object.entries(BUDGETS.income || {}).forEach(([catName, subs])=>{
+    Object.entries(subs || {}).forEach(([subName, subData])=>{
+      const set = new Set();
+      (subData.items||[]).forEach(it=>(it.linkedDescriptions||[]).forEach(d=>set.add(d)));
+      if (!set.size) return;
+      bySlot.set(catName+'||'+subName, set);
+      if (!byCategory.has(catName)) byCategory.set(catName, new Set());
+      set.forEach(d=>byCategory.get(catName).add(d));
+    });
+  });
+  return { bySlot, byCategory };
+}
+
+// Sums actual Income transactions under `catName` whose description is one
+// of `descriptions`, per month — the ledger's substitute for a linked
+// income subcategory row's own actual, since its Subcategory (unlike an
+// expense subcategory) has no real transaction-side field to match on
+// directly (see distinctDescriptionsFor).
+function incomeActualMonthlyForDescriptions(catName, descriptions){
+  const arr = new Array(12).fill(0);
+  if (!descriptions || !descriptions.size) return arr;
+  DATA.transactions.forEach(t=>{
+    if (t.type==='Income' && t.subcategory===catName && descriptions.has(t.description)) arr[t.month] += t.amount;
+  });
+  return arr.map(v=>Math.round(v*100)/100);
+}
+
 function mergedIncomeSubcats(){
-  const result = DATA.incomeSubcats.map(cat=>({
-    name: cat.name,
-    monthly: cat.monthly,
-    subcategories: cat.subcategories.map(s=>({ name: s.name, monthly: s.monthly })),
-  }));
+  const { bySlot, byCategory } = incomeLinkedSlots();
+  const result = DATA.incomeSubcats.map(cat=>{
+    const linkedHere = byCategory.get(cat.name);
+    return {
+      name: cat.name,
+      monthly: cat.monthly,
+      // A description claimed by some income item's link no longer gets
+      // its own row here — its actual dollars surface on that item's own
+      // subcategory row instead, added back in below.
+      subcategories: cat.subcategories
+        .filter(s=>!(linkedHere && linkedHere.has(s.name)))
+        .map(s=>({ name: s.name, monthly: s.monthly })),
+    };
+  });
   const byName = new Map(result.map(c=>[c.name, c]));
   Object.entries(BUDGETS.income||{}).forEach(([catName, subs])=>{
     let cat = byName.get(catName);
@@ -882,7 +940,19 @@ function mergedIncomeSubcats(){
     }
     const subByName = new Map(cat.subcategories.map(s=>[s.name, s]));
     Object.keys(subs||{}).forEach(subName=>{
-      if (!subByName.has(subName)){
+      const linkedDescs = bySlot.get(catName+'||'+subName);
+      if (linkedDescs){
+        // This row's actual always comes from its linked descriptions —
+        // even if a same-named real description also happens to exist —
+        // since the link is the source of truth once it's set.
+        const sub = { name: subName, monthly: incomeActualMonthlyForDescriptions(catName, linkedDescs) };
+        if (subByName.has(subName)){
+          cat.subcategories = cat.subcategories.map(s=>s.name===subName ? sub : s);
+        } else {
+          cat.subcategories.push(sub);
+        }
+        subByName.set(subName, sub);
+      } else if (!subByName.has(subName)){
         const sub = { name: subName, monthly: new Array(12).fill(0) };
         cat.subcategories.push(sub);
         subByName.set(subName, sub);
@@ -2188,7 +2258,7 @@ function budgetItemSummaryText(item, kind){
   const amtText = perDiem ? `${fmt(Math.abs(Number(item.amount)||0))}/day` : fmt(Math.abs(Number(item.amount)||0));
   const parts = [amtText, budgetItemFreqText(item)];
   const n = item.linkedDescriptions ? item.linkedDescriptions.length : 0;
-  if (kind === 'expense' && !perDiem && n) parts.push(`${n} link${n===1?'':'s'}`);
+  if (!perDiem && n) parts.push(`${n} link${n===1?'':'s'}`);
   return parts.join(' · ');
 }
 
@@ -2301,13 +2371,25 @@ function renderBudgetItemRow(item, sub, cat, kind){
 }
 
 // Every distinct actual transaction description on record for a given
-// category/subcategory, across every month/year currently loaded — not
-// just the current month, since a linked description should keep matching
-// whatever month later becomes "current" as fresh CSVs get loaded.
-function distinctDescriptionsFor(category, subcategory){
+// category (income) or category/subcategory (expense), across every
+// month/year currently loaded — not just the current month, since a linked
+// description should keep matching whatever month later becomes "current"
+// as fresh CSVs get loaded. Income has no real per-transaction field
+// corresponding to a budget item's own (freely-typed) Subcategory — a
+// transaction's "subcategory" is really its source (the budget Category),
+// and its description is what would otherwise become its own separate
+// leaf row in the ledger (see aggregate()'s income tree) — so linking
+// there scopes only by category, offering every description under that
+// source regardless of which item's Subcategory the picker was opened
+// from.
+function distinctDescriptionsFor(kind, category, subcategory){
   const set = new Set();
   DATA.transactions.forEach(t=>{
-    if (t.type==='Expenses' && t.category===category && t.subcategory===subcategory) set.add(t.description);
+    if (kind === 'income'){
+      if (t.type==='Income' && t.subcategory===category) set.add(t.description);
+    } else if (t.type==='Expenses' && t.category===category && t.subcategory===subcategory){
+      set.add(t.description);
+    }
   });
   return [...set].sort((a,b)=>a.localeCompare(b));
 }
@@ -2342,7 +2424,7 @@ function descriptionLinksElsewhere(kind, exceptItemId){
 // save so the caller can refresh just its own trigger button rather than
 // re-rendering the whole editor.
 function openLinkTransactionsModal(item, cat, sub, kind, onSaved){
-  const available = distinctDescriptionsFor(cat.name, sub.name);
+  const available = distinctDescriptionsFor(kind, cat.name, sub.name);
   const linkedElsewhere = descriptionLinksElsewhere(kind, item.id);
   const currentlyLinked = new Set(item.linkedDescriptions || []);
 
@@ -2360,7 +2442,12 @@ function openLinkTransactionsModal(item, cat, sub, kind, onSaved){
 
   const hint = document.createElement('div');
   hint.className = 'modal-hint';
-  hint.textContent = `Transactions in ${cat.name} › ${sub.name} that count toward "${item.label || sub.name}".`;
+  // Income scopes by category alone (see distinctDescriptionsFor) — its
+  // hint drops the "› Subcategory" segment accordingly, since that field
+  // has no real transaction-side counterpart to speak of there.
+  hint.textContent = kind === 'income'
+    ? `Transactions in ${cat.name} that count toward "${item.label || sub.name}".`
+    : `Transactions in ${cat.name} › ${sub.name} that count toward "${item.label || sub.name}".`;
   dialog.appendChild(hint);
 
   const list = document.createElement('div');
@@ -2368,7 +2455,9 @@ function openLinkTransactionsModal(item, cat, sub, kind, onSaved){
   if (available.length === 0){
     const empty = document.createElement('div');
     empty.className = 'link-txn-empty';
-    empty.textContent = 'No transactions loaded yet for this category/subcategory.';
+    empty.textContent = kind === 'income'
+      ? 'No transactions loaded yet for this category.'
+      : 'No transactions loaded yet for this category/subcategory.';
     list.appendChild(empty);
   } else {
     available.forEach(desc=>{
@@ -2609,7 +2698,7 @@ function addDraftBudgetItem(target, freq, label, rawAmount, amountType, linkedDe
     id: nextBudgetId(),
     freq,
     amountType: resolvedAmountType,
-    linkedDescriptions: (target.kind==='expense' && resolvedAmountType!=='perDiem' && linkedDescriptions) ? [...linkedDescriptions] : [],
+    linkedDescriptions: (resolvedAmountType!=='perDiem' && linkedDescriptions) ? [...linkedDescriptions] : [],
     label: (label && label.trim()) || target.subcategory,
     amount: target.kind==='expense' ? -amt : amt,
   });
@@ -2652,7 +2741,7 @@ function updateDraftBudgetItem(item, target, freq, label, rawAmount, amountType,
   item.amountType = resolvedAmountType;
   item.label = (label && label.trim()) || target.subcategory;
   item.amount = target.kind==='expense' ? -amt : amt;
-  item.linkedDescriptions = (target.kind==='expense' && resolvedAmountType!=='perDiem' && linkedDescriptions) ? [...linkedDescriptions] : [];
+  item.linkedDescriptions = (resolvedAmountType!=='perDiem' && linkedDescriptions) ? [...linkedDescriptions] : [];
   sub.items.push(item);
   budgetOpenCats.add(cat.id);
   budgetSelection = { kind: target.kind, catId: cat.id, subId: sub.id };
@@ -2695,11 +2784,22 @@ function draftCategoriesFor(kind){
 }
 
 function getSelectedTxns(monthFilter){
+  // An income subcategory row backed by a linked item (see
+  // incomeLinkedSlots/mergedIncomeSubcats) has no real transaction field
+  // matching its own (freely-typed) Subcategory name directly — its actual
+  // transactions are whichever descriptions that item(s) actually link, so
+  // drilling into that row falls back to matching on those instead of an
+  // exact description match.
+  const incomeLinkedDescs = selectedSub.kind === 'income'
+    ? incomeLinkedSlots().bySlot.get(selectedSub.category+'||'+selectedSub.subcategory)
+    : null;
   return DATA.transactions.filter(t=>{
     if (selectedSub.kind==='expense'){
       if (t.type!=='Expenses' || t.category!==selectedSub.category || t.subcategory!==selectedSub.subcategory) return false;
     } else {
-      if (t.type!=='Income' || t.subcategory!==selectedSub.category || t.description!==selectedSub.subcategory) return false;
+      if (t.type!=='Income' || t.subcategory!==selectedSub.category) return false;
+      const matches = incomeLinkedDescs ? incomeLinkedDescs.has(t.description) : t.description===selectedSub.subcategory;
+      if (!matches) return false;
     }
     if (monthFilter!==null && monthFilter!==undefined && t.month!==monthFilter) return false;
     return true;
@@ -2932,7 +3032,10 @@ function openAddBudgetItemModal(opts){
     linkBadge.classList.toggle('linked', n > 0);
   }
   function syncLinkBadgeVisibility(){
-    const show = currentKind === 'expense' && amountType !== 'perDiem';
+    // Available for both Income and Spending — only per-diem items have no
+    // single "planned" figure a matched transaction could compare against
+    // (see itemMatchedActual/resolveBudgets).
+    const show = amountType !== 'perDiem';
     linkBadge.hidden = !show;
     labelWrap.classList.toggle('has-badge', show);
   }
