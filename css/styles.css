@@ -682,7 +682,12 @@
      for short field labels, wrong for a full descriptive sentence. */
   .modal-hint{font-size:12.5px;color:var(--text-muted);margin-top:-8px;line-height:1.4;}
   .modal-dialog select,
-  .modal-dialog input{width:100%;}
+  /* :not([type="checkbox"]) — a plain text/number field should fill its
+     row, but the Link Transactions list's checkboxes (see
+     .link-txn-option) are flex items alongside their description text,
+     not full-width fields; forcing width:100% on them blows up that row's
+     layout instead of just sizing the little checkbox control itself. */
+  .modal-dialog input:not([type="checkbox"]){width:100%;}
 
   /* Groups the category/subcategory fields, and separately the
      description/amount fields, so each pair stays visually tied together
