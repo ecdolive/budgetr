@@ -711,7 +711,7 @@
     flex-shrink:0;
   }
   .right-toggle-btn:hover{background:var(--bg-row-hover);color:var(--text-primary);}
-  .right-toggle-btn img{width:14px;height:14px;}
+  .right-toggle-btn img{width:24px;height:24px;}
   /* Collapsed: just the rail with its expand button — everything
      renderRight draws into .right-content stays rendered underneath (so
      it's ready the instant the panel re-expands) but hidden here. The
