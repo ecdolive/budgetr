@@ -664,8 +664,30 @@ function updateBudgetRightSummary(){
   budgetSummaryEls.net.className = 'right-total-value num ' + signCls(t.net);
 }
 
+// Whether BUDGETS_RAW currently holds any real content — drives the
+// Create-vs-Edit wording everywhere the budget-editor entry point appears
+// (its own header title, and the status bar's launch button).
+function budgetHasSavedContent(){
+  return !!(Object.keys(BUDGETS_RAW.Expenses||{}).length || Object.keys(BUDGETS_RAW.Income||{}).length);
+}
+
+// Whether the in-progress draft still matches what it was on entering
+// create/edit mode — drives both the Cancel button's confirm-skip and the
+// "Apply changes" button's disabled state (see syncBudgetSaveButton).
+function budgetDraftUnchanged(){
+  return JSON.stringify(budgetDraft) === budgetDraftSnapshot;
+}
+// Keeps the "Apply changes" button disabled until the draft actually
+// differs from its starting snapshot. Most mutations go through a full
+// renderMid() (which rebuilds the button fresh via renderBudgetEditor), but
+// a few keystroke-level edits patch the DOM directly to preserve focus —
+// those call this explicitly instead.
+function syncBudgetSaveButton(){
+  if (budgetSaveBtnEl) budgetSaveBtnEl.disabled = budgetDraftUnchanged();
+}
 function enterBudgetEditor(){
   budgetDraft = budgetsRawToDraft(BUDGETS_RAW);
+  budgetDraftSnapshot = JSON.stringify(budgetDraft);
   budgetEditMode = true;
   budgetOpenCats = new Set();
   budgetSelection = null;
@@ -681,6 +703,8 @@ function enterBudgetEditor(){
 function exitBudgetEditor(){
   budgetEditMode = false;
   budgetDraft = null;
+  budgetDraftSnapshot = null;
+  budgetSaveBtnEl = null;
   budgetSelection = null;
   budgetSummaryEls = null;
   budgetRightSubTotalEl = null;
@@ -802,6 +826,14 @@ let txnSort = { key: 'date', dir: -1 }; // default: newest first
 // and right panels. See the BUDGET EDITOR section below.
 let budgetEditMode = false;
 let budgetDraft = null;      // { expenses:[{id,name,subcategories:[{id,name,items:[{id,freq,label,amount}]}]}], income:[{id,name,subcategories:[...]}] }
+let budgetDraftSnapshot = null;  // JSON.stringify(budgetDraft) as of enterBudgetEditor — lets
+                                  // Cancel (see renderBudgetEditor) tell whether anything's
+                                  // actually changed since, and skip the confirm if not.
+let budgetSaveBtnEl = null;      // live reference to the editor's "Apply changes" button,
+                                  // so keystroke-only edits that skip a full renderMid() (see
+                                  // refreshBudgetLiveTotals and the name-input handlers in
+                                  // renderBudgetTable) can still keep its disabled state in
+                                  // sync via syncBudgetSaveButton().
 let budgetOpenCats = new Set();  // open category ids, editor-local (separate from openCats)
 let budgetFocusPending = null;   // { catId } — after Enter commits a pending category or
                                   // subcategory row (see buildPendingCatRow/buildGroup),
@@ -984,8 +1016,11 @@ function renderLeftNav(){
   // The Budget tab stays selected while viewing a month, too — a month
   // view is reached from (and its back button returns to) the Budget tab,
   // so it reads as a drill-down within Budget rather than a separate page.
-  wrap.appendChild(navItem('Budget', 'year', timeframe === 'year' || typeof timeframe === 'number'));
-  wrap.appendChild(navItem('Transactions', 'transactions'));
+  // The budget editor is its own view, entered from the status bar rather
+  // than a nav tab, so neither tab is shown active while it's open — even
+  // though it's launched without touching `timeframe`.
+  wrap.appendChild(navItem('Budget', 'year', !budgetEditMode && (timeframe === 'year' || typeof timeframe === 'number')));
+  wrap.appendChild(navItem('Transactions', 'transactions', !budgetEditMode && timeframe === 'transactions'));
 
   // Individual month tabs used to live here, each showing that month's net
   // value (via monthPlanNet/DATA.net) — a month view is now reached by
@@ -1091,9 +1126,6 @@ function renderMid(opts){
     left.appendChild(yearLabel);
     left.appendChild(renderPills());
     bar.appendChild(left);
-    // Export/Edit only make sense while looking at the plan itself, not
-    // the YTD/Forecast actuals-driven views.
-    if (pill === 'plan') bar.appendChild(renderBudgetActions());
     mid.appendChild(bar);
     // No summary cards here — the Net/Income/Spending rows built into the
     // table below (see renderYearTable) replace them.
@@ -1160,24 +1192,6 @@ function renderMid(opts){
   }
   mid.appendChild(body);
   restoreScroll();
-}
-
-// Export/Edit actions — shown top-right of the Year toolbar, but only
-// while the "Budget" pill (the plan itself) is active; hidden on the
-// YTD/Forecast pills, the month drill-down, and the Transactions page,
-// none of which are viewing the plan directly.
-function renderBudgetActions(){
-  const wrap = document.createElement('div');
-  wrap.className = 'mid-title-actions';
-  // Export now lives in the status bar (see renderStatusBar), appearing
-  // there only once there's actually something unexported to save.
-  const editBtn = document.createElement('button');
-  editBtn.type = 'button';
-  editBtn.className = 'file-btn primary';
-  editBtn.textContent = 'Edit';
-  editBtn.addEventListener('click', enterBudgetEditor);
-  wrap.appendChild(editBtn);
-  return wrap;
 }
 
 function renderPills(){
@@ -1811,7 +1825,7 @@ function selectSub(sub){
 function renderBudgetEditor(mid){
   const header = document.createElement('div');
   header.className = 'budget-editor-header';
-  const hasSaved = Object.keys(BUDGETS_RAW.Expenses||{}).length || Object.keys(BUDGETS_RAW.Income||{}).length;
+  const hasSaved = budgetHasSavedContent();
   const title = document.createElement('div');
   title.className = 'budget-editor-title';
   title.textContent = hasSaved ? 'Edit Budget' : 'Create Budget';
@@ -1845,16 +1859,18 @@ function renderBudgetEditor(mid){
   cancelBtn.type = 'button';
   cancelBtn.textContent = 'Cancel';
   cancelBtn.addEventListener('click', ()=>{
-    if (confirm('Discard changes to this budget?')) cancelBudgetEdit();
+    if (budgetDraftUnchanged() || confirm('Discard changes to this budget?')) cancelBudgetEdit();
   });
   actions.appendChild(cancelBtn);
 
   const saveBtn = document.createElement('button');
   saveBtn.className = 'file-btn primary';
   saveBtn.type = 'button';
-  saveBtn.textContent = 'Save budget';
+  saveBtn.textContent = 'Apply changes';
+  saveBtn.disabled = budgetDraftUnchanged();
   saveBtn.addEventListener('click', saveBudgetEdit);
   actions.appendChild(saveBtn);
+  budgetSaveBtnEl = saveBtn;
 
   header.appendChild(actions);
   mid.appendChild(header);
@@ -2154,6 +2170,7 @@ function renderBudgetTable(){
         value: cat.name, placeholder: label, arrow,
         onNameInput: (e)=>{
           cat.name = e.target.value;
+          syncBudgetSaveButton();
           // Live-update the pending subcategory row's visibility and
           // "New {category}" placeholder as the category is named/renamed,
           // without a full renderMid() (which would drop focus out of this
@@ -2192,7 +2209,7 @@ function renderBudgetTable(){
         sr.dataset.subId = sub.id;
         const { td: subTd } = budgetNameCell({
           value: sub.name, placeholder: 'Subcategory name', isSub: true,
-          onNameInput: (e)=>{ sub.name = e.target.value; },
+          onNameInput: (e)=>{ sub.name = e.target.value; syncBudgetSaveButton(); },
           onDelete: ()=>{
             if (!confirm(`Delete "${sub.name || '(unnamed)'}"?`)) return;
             cat.subcategories = cat.subcategories.filter(s=>s.id!==sub.id);
@@ -2401,6 +2418,7 @@ function renderBudgetItemRow(item, sub, cat, kind){
     labelInput.addEventListener('input', ()=>{
       item.label = labelInput.value;
       refreshBudgetLiveTotals(kind, cat, sub);
+      syncBudgetSaveButton();
     });
     row.appendChild(labelInput);
 
@@ -2419,6 +2437,7 @@ function renderBudgetItemRow(item, sub, cat, kind){
       item.freq = freqSelect.value;
       refreshBudgetLiveTotals(kind, cat, sub);
       updateBudgetRightSummary();
+      syncBudgetSaveButton();
     });
     row.appendChild(freqSelect);
 
@@ -2654,7 +2673,7 @@ function renderBudgetSummaryPanel(right){
       <div class="right-total-row"><span class="right-total-label">Income</span><span class="right-total-value num" id="budgetSumIncome">${fmt(t.incomeTotal)}</span></div>
       <div class="right-total-row"><span class="right-total-label">Expenses</span><span class="right-total-value num" id="budgetSumExpenses">${fmt(t.expenseTotal)}</span></div>
       <div class="right-total-row"><span class="right-total-label">Net</span><span class="right-total-value num ${signCls(t.net)}" id="budgetSumNet">${fmtSigned(t.net)}</span></div>
-      <div class="right-empty">Select a subcategory to edit its line items. Nothing is saved until you click <b>Save budget</b>.</div>
+      <div class="right-empty">Select a subcategory to edit its line items. Nothing is saved until you click <b>Apply changes</b>.</div>
     </div>
   `;
   budgetSummaryEls = {
@@ -3553,6 +3572,34 @@ async function onBudgetPickerChange(e){
   }
 }
 
+// The status bar's Transactions chip "X" — drops the loaded CSV(s)
+// entirely and reverts that chip to its empty "Open..." state, rather than
+// reopening the picker (see fileChipRemoveBtn/renderTransactionsChip).
+function clearTransactions(){
+  if (!DATA.sourceFiles.length) return;
+  if (!confirm('Remove the loaded transactions?')) return;
+  DATA = emptyData();
+  recomputeDerived();
+  // A month drill-down or the Transactions page itself has nothing left to
+  // show once its data is gone, so fall back to the Year view.
+  if (timeframe === 'transactions' || typeof timeframe === 'number') timeframe = 'year';
+  renderAll();
+}
+
+// The status bar's Budget chip "X" — same idea as clearTransactions, but
+// warns specifically about losing unsaved edits when the draft is dirty.
+function clearBudget(){
+  const msg = budgetDirty
+    ? 'Discard this budget and its unsaved changes?'
+    : 'Remove the loaded budget?';
+  if (!confirm(msg)) return;
+  BUDGETS_RAW = emptyBudgets();
+  budgetFileName = null;
+  budgetDirty = false;
+  recomputeDerived();
+  renderAll();
+}
+
 // Every export gets a freshly timestamped filename, regardless of whether
 // this budget was loaded from a file, previously exported, or created from
 // scratch — e.g. "Budget-2026-09071423.json".
@@ -3599,17 +3646,17 @@ async function tryAutoFetch(){
 }
 
 /* ============================================================
-   STATUS BAR (bottom panel) — the persistent Transactions/Budget file
-   chip. Rebuilt from scratch on every render rather than patched in
+   STATUS BAR (bottom panel) — two independent file chips (Transactions,
+   Budget). Rebuilt from scratch on every render rather than patched in
    place: it's cheap (a handful of nodes) and, since it owns the actual
-   csvPicker/budgetPicker <input>s, rebuilding is what lets the
-   Open.../Change... labels, filenames and Export button all stay in sync
-   with DATA.sourceFiles/budgetFileName/budgetDirty without separate
+   csvPicker/budgetPicker <input>s, rebuilding is what lets the icon,
+   filename, and available actions all stay in sync with
+   DATA.sourceFiles/budgetFileName/budgetDirty without separate
    bookkeeping.
    ============================================================ */
-function buildFilePickerLabel(labelText, { id, accept, multiple, cssClass, onChange }){
+function buildFilePickerLabel(labelText, { id, accept, multiple, onChange }){
   const label = document.createElement('label');
-  label.className = cssClass;
+  label.className = 'file-chip-action';
   label.textContent = labelText;
   const input = document.createElement('input');
   input.type = 'file';
@@ -3625,75 +3672,117 @@ function buildFilePickerLabel(labelText, { id, accept, multiple, cssClass, onCha
   return label;
 }
 
+function fileChipIcon(src){
+  const img = document.createElement('img');
+  img.className = 'file-chip-icon';
+  img.src = src;
+  img.alt = '';
+  return img;
+}
+
+function fileChipRemoveBtn(title, onClick){
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'file-chip-remove';
+  btn.title = title;
+  btn.innerHTML = `<img src="icons/close.svg" alt="${title}">`;
+  // Same reasoning as the file pickers above — removing the loaded file
+  // out from under an in-progress edit would be surprising.
+  btn.disabled = budgetEditMode;
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+function renderTransactionsChip(){
+  const el = document.createElement('div');
+  const loaded = !!DATA.sourceFiles.length;
+  el.className = 'file-chip' + (loaded ? ' loaded' : '');
+  el.appendChild(fileChipIcon('icons/transactions.svg'));
+  const actions = document.createElement('div');
+  actions.className = 'file-chip-actions';
+  if (!loaded){
+    const label = document.createElement('span');
+    label.className = 'file-chip-label';
+    label.textContent = 'Transactions';
+    el.appendChild(label);
+    actions.appendChild(buildFilePickerLabel('Open...', {
+      id:'csvPicker', accept:'.csv', multiple:true, onChange:onCSVPickerChange,
+    }));
+  } else {
+    const name = document.createElement('span');
+    name.className = 'file-chip-name';
+    name.textContent = DATA.sourceFiles.join(', ');
+    el.appendChild(name);
+    actions.appendChild(fileChipRemoveBtn('Remove transactions', clearTransactions));
+  }
+  el.appendChild(actions);
+  return el;
+}
+
+function renderBudgetChip(){
+  const el = document.createElement('div');
+  // A budget "counts" as loaded for display purposes once it either came
+  // from a file or has unexported edits (a from-scratch draft that's been
+  // saved at least once) — either way there's now something to Save or
+  // remove, so it's no longer the empty "Open.../Create" state.
+  const loaded = !!(budgetFileName || budgetDirty);
+  el.className = 'file-chip' + (loaded ? ' loaded' : '');
+  el.appendChild(fileChipIcon('icons/budget.svg'));
+  // The editor's own entry point (see enterBudgetEditor) — lives here so
+  // it's reachable regardless of which page/pill is currently showing, not
+  // just the Year toolbar's "Budget" pill. Labeled Create/Edit the same way
+  // the editor's own header title is (see budgetHasSavedContent), and
+  // disabled while already mid-edit so a second click can't silently
+  // re-seed the draft from BUDGETS_RAW and drop unsaved changes.
+  const editBtn = document.createElement('button');
+  editBtn.type = 'button';
+  editBtn.className = 'file-chip-action';
+  editBtn.textContent = budgetHasSavedContent() ? 'Edit' : 'Create';
+  editBtn.disabled = budgetEditMode;
+  editBtn.addEventListener('click', enterBudgetEditor);
+
+  const actions = document.createElement('div');
+  actions.className = 'file-chip-actions';
+  if (!loaded){
+    const label = document.createElement('span');
+    label.className = 'file-chip-label';
+    label.textContent = 'Budget';
+    el.appendChild(label);
+    actions.appendChild(buildFilePickerLabel('Open...', {
+      id:'budgetPicker', accept:'.json', onChange:onBudgetPickerChange,
+    }));
+    actions.appendChild(editBtn);
+  } else {
+    const name = document.createElement('span');
+    name.className = 'file-chip-name' + (budgetDirty ? ' dimmed' : '');
+    name.textContent = budgetFileName || 'New budget';
+    el.appendChild(name);
+    if (budgetDirty){
+      const edited = document.createElement('span');
+      edited.className = 'file-chip-edited';
+      edited.textContent = 'edited';
+      el.appendChild(edited);
+    }
+    actions.appendChild(editBtn);
+    if (budgetDirty){
+      const saveBtn = document.createElement('button');
+      saveBtn.type = 'button';
+      saveBtn.className = 'file-chip-action primary';
+      saveBtn.textContent = 'Save';
+      saveBtn.addEventListener('click', downloadBudgetsJSON);
+      actions.appendChild(saveBtn);
+    }
+    actions.appendChild(fileChipRemoveBtn('Remove budget', clearBudget));
+  }
+  el.appendChild(actions);
+  return el;
+}
+
 function renderStatusBar(){
   const chip = document.getElementById('statusChip');
   chip.innerHTML = '';
-
-  const txnSeg = document.createElement('div');
-  txnSeg.className = 'status-segment';
-  const txnLabel = document.createElement('span');
-  txnLabel.className = 'status-label';
-  txnLabel.textContent = 'Transactions:';
-  txnSeg.appendChild(txnLabel);
-  if (!DATA.sourceFiles.length){
-    txnSeg.appendChild(buildFilePickerLabel('Open...', {
-      id:'csvPicker', accept:'.csv', multiple:true,
-      cssClass:'status-open-link', onChange:onCSVPickerChange,
-    }));
-  } else {
-    const name = document.createElement('span');
-    name.className = 'status-filename';
-    name.textContent = DATA.sourceFiles.join(', ');
-    txnSeg.appendChild(name);
-    txnSeg.appendChild(buildFilePickerLabel('Change...', {
-      id:'csvPicker', accept:'.csv', multiple:true,
-      cssClass:'status-change-link', onChange:onCSVPickerChange,
-    }));
-  }
-  chip.appendChild(txnSeg);
-
-  const divider = document.createElement('div');
-  divider.className = 'status-divider';
-  chip.appendChild(divider);
-
-  const budgetSeg = document.createElement('div');
-  budgetSeg.className = 'status-segment';
-  const budgetLabel = document.createElement('span');
-  budgetLabel.className = 'status-label';
-  budgetLabel.textContent = 'Budget:';
-  budgetSeg.appendChild(budgetLabel);
-  // A budget "counts" as loaded for display purposes once it either came
-  // from a file or has unexported edits (a from-scratch draft that's been
-  // saved at least once) — either way there's now something to Export or
-  // Change away from, so it's no longer the empty "Open..." state.
-  if (!budgetFileName && !budgetDirty){
-    budgetSeg.appendChild(buildFilePickerLabel('Open...', {
-      id:'budgetPicker', accept:'.json',
-      cssClass:'status-open-link', onChange:onBudgetPickerChange,
-    }));
-  } else {
-    const name = document.createElement('span');
-    name.className = 'status-filename';
-    name.textContent = budgetFileName || 'New budget';
-    budgetSeg.appendChild(name);
-    if (budgetDirty){
-      const edited = document.createElement('span');
-      edited.className = 'status-edited';
-      edited.textContent = '(edited)';
-      budgetSeg.appendChild(edited);
-      const exportBtn = document.createElement('button');
-      exportBtn.type = 'button';
-      exportBtn.className = 'status-export';
-      exportBtn.textContent = 'Export';
-      exportBtn.addEventListener('click', downloadBudgetsJSON);
-      budgetSeg.appendChild(exportBtn);
-    }
-    budgetSeg.appendChild(buildFilePickerLabel('Change...', {
-      id:'budgetPicker', accept:'.json',
-      cssClass:'status-change-link', onChange:onBudgetPickerChange,
-    }));
-  }
-  chip.appendChild(budgetSeg);
+  chip.appendChild(renderTransactionsChip());
+  chip.appendChild(renderBudgetChip());
 }
 
 /* ============================================================

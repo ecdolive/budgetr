@@ -99,61 +99,88 @@
   /* ================= STATUS BAR ================= */
   .status{
     grid-area:status;
-    background:var(--bg-left);
     display:flex;
     flex-direction:row;
     align-items:center;
     gap:12px;
-    padding:0 16px;
+    padding:0;
   }
-  /* Rounded card holding the Transactions/Budget file state — the status
-     bar's only real content; the bar itself just gives it a full-width
-     strip to sit in (and somewhere for #ioStatus to appear alongside it). */
+  /* The status bar's only real content is a pair of independent rounded
+     chips, one per file slot (Transactions, Budget) — #statusChip is just
+     the flex row they sit in, not a shared card. */
   .status-chip{
     display:flex;
     align-items:center;
-    gap:16px;
-    background:var(--bg-input);
-    border:1px solid var(--border);
-    border-radius:999px;
-    padding:10px 20px;
-    font-size:12.5px;
+    gap:0.5rem;
   }
-  .status-segment{display:flex;align-items:center;gap:8px;}
-  .status-divider{width:1px;align-self:stretch;background:var(--border);}
-  .status-label{color:var(--text-muted);}
-  .status-filename{color:var(--text-primary);font-weight:700;}
-  .status-edited{color:var(--text-muted);font-style:italic;}
-  /* "Open..."/"Change..." — a <label> wrapping the actual (hidden) file
-     input, same trick as .file-btn elsewhere. Open (nothing loaded yet) is
-     the primary call to action, so it reads as an accent link; Change
-     (something's already loaded) is deliberately quieter. */
-  .status-open-link,
-  .status-change-link{
+  .file-chip{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    height:48px;
+    background:var(--bg-input);
+    border-radius:var(--radius-lg);
+    padding:8px 8px 8px 16px;
+    font-size:.875rem;
+  }
+  /* Groups the chip's action buttons (Open.../Create/Edit/Save/remove) so
+     they get their own tighter gap, independent of the chip's own gap
+     between its icon/label/name and this group. */
+  .file-chip-actions{display:flex;align-items:center;gap:8px;}
+  /* Icon is a fixed white stroke (see icons/) dimmed to read as muted in
+     the empty state, brought to full opacity once a file's loaded — same
+     trick as the search icon elsewhere rather than a second colored asset. */
+  .file-chip-icon{width:16px;height:16px;opacity:0.4;flex-shrink:0;}
+  .file-chip.loaded .file-chip-icon{opacity:1;}
+  .file-chip-label{color:var(--text-muted);}
+  .file-chip-name{color:var(--text-primary);}
+  .file-chip-name.dimmed{color:var(--text-muted);font-weight:400;font-style:italic;}
+  .file-chip-edited{color:var(--text-primary);font-style:italic;}
+  /* Open.../Create/Edit — a secondary "pill within a pill", one shade up
+     from the chip's own background, cyan text. Open... is a <label>
+     wrapping a hidden file input (same trick as .file-btn elsewhere); the
+     others are plain buttons — all three share this look since none is
+     more urgent than the others until there's something to Save. */
+  .file-chip-action{
+    background:var(--bg-pill-inactive);
+    color:var(--accent-teal);
+    border:none;
+    height:2rem;
+    padding:0 14px;
+    border-radius:.25rem;
+    font-size:.875rem;
+    font-weight:700;
     cursor:pointer;
     display:inline-flex;
     align-items:center;
   }
-  .status-open-link{color:var(--accent-teal);font-weight:700;}
-  .status-open-link:hover{opacity:0.85;}
-  .status-change-link{color:var(--text-muted);font-weight:400;}
-  .status-change-link:hover{color:var(--text-primary);}
-  .status-open-link input,
-  .status-change-link input{display:none;}
-  .status-open-link:has(input:disabled),
-  .status-change-link:has(input:disabled){opacity:0.4;pointer-events:none;cursor:not-allowed;}
-  .status-export{
-    background:var(--accent-teal);
+  .file-chip-action:hover{background:var(--surface-interactive-hover);}
+  .file-chip-action input{display:none;}
+  .file-chip-action:disabled,
+  .file-chip-action:has(input:disabled){opacity:0.4;pointer-events:none;cursor:not-allowed;}
+  /* Save is the one genuinely urgent action (unexported edits), so it's the
+     only filled/bright pill in the chip. */
+  .file-chip-action.primary{background:var(--accent-teal);color:var(--surface-page);}
+  .file-chip-action.primary:hover{background:var(--accent-teal);opacity:0.88;}
+  /* Removes the loaded file/budget outright (back to the empty "Open..."
+     state) rather than reopening the picker — a plain icon button, quiet
+     until hovered. */
+  .file-chip-remove{
+    background:none;
     border:none;
-    color:var(--surface-page);
-    height:1.75rem;
-    padding:0 14px;
-    border-radius:999px;
-    font-size:12px;
-    font-weight:700;
+    border-radius:.25rem;
+    padding:0;
+    width:2rem;
+    height:2rem;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
     cursor:pointer;
+    opacity:0.5;
   }
-  .status-export:hover{opacity:0.88;}
+  .file-chip-remove:hover{opacity:1;}
+  .file-chip-remove img{width:24px;height:24px;}
+  .file-chip-remove:disabled{opacity:0.25;pointer-events:none;cursor:not-allowed;}
 
   /* ================= LEFT PANEL ================= */
   .left{
