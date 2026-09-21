@@ -712,12 +712,19 @@
   }
   .right-toggle-btn:hover{background:var(--bg-row-hover);color:var(--text-primary);}
   .right-toggle-btn img{width:14px;height:14px;}
-  /* Collapsed: just the rail with its expand button, centered in the
-     3rem-wide column (see .app.right-collapsed) — everything renderRight
-     draws into .right-content stays rendered underneath (so it's ready the
-     instant the panel re-expands) but hidden here. */
+  /* Collapsed: just the rail with its expand button — everything
+     renderRight draws into .right-content stays rendered underneath (so
+     it's ready the instant the panel re-expands) but hidden here. The
+     button itself grows to cover the whole rail (rather than just its own
+     28px circle) so the entire collapsed panel is clickable to expand,
+     with its icon staying centered via the flex-centering already set up
+     above. */
   .right.collapsed .right-content{display:none;}
-  .right.collapsed .right-toggle-btn{left:50%;right:auto;transform:translateX(-50%);}
+  .right.collapsed .right-toggle-btn{
+    top:0;right:0;bottom:0;left:0;
+    width:100%;height:100%;
+    border-radius:0;
+  }
   /* .right-header carries its own inset — top, sides, and the trailing
      gap before .right-body — as padding (not .right's padding or a
      margin) so its painted box reaches the panel's true left/right/top
