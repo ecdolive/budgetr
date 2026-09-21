@@ -560,14 +560,18 @@
      its own content, drifting between pills. table-layout:fixed only
      honors explicit column widths when the table itself has an explicit
      (non-auto, non-percentage) width — hence the literal px sum below,
-     rather than 100%, so a wider table still overflows into the existing
-     .table-scroll horizontal scroll instead of being squeezed to fit.
+     rather than plain 100%, so a narrower container still overflows into
+     the existing .table-scroll horizontal scroll instead of squeezing the
+     columns to fit. The max() also lets it grow past that sum to fill a
+     container that's wider still — e.g. the extra room freed up when the
+     right panel is collapsed (see .right.collapsed) — rather than leaving
+     it as dead space past the table's trailing edge.
      Month columns are 76px — wide enough for a 6-figure comma'd value
      (e.g. "12,012") plus its 20px of padding without overflowing; at the
      old 64px, a value that wide would overrun the column's left edge
      (right-aligned text overflows toward the left), throwing off
      alignment against every narrower value in the same column. */
-  table.ledger.ledger-year{table-layout:fixed;width:1172px;}
+  table.ledger.ledger-year{table-layout:fixed;width:max(1172px, 100%);}
   table.ledger-year th:first-child,
   table.ledger-year td:first-child{width:180px;}
   table.ledger-year th:not(:first-child):not(:last-child),
