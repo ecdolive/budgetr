@@ -847,6 +847,14 @@ let budgetSelection = null;      // { kind:'expense'|'income', catId, subId } | 
                                   // currently selected in the editor's table, shown/edited in the right panel
 let budgetRightSubTotalEl = null; // right-panel live-total <span> ref for the selected subcategory
 
+// Right panel starts collapsed to a slim rail (see .right.collapsed in
+// styles.css) and auto-expands whenever renderRight sees the *selected*
+// subcategory change to a new one (tracked as a string key in
+// rightPanelLastSelectionKey) — not on every render — so a manual collapse
+// sticks until the user actually picks a different subcategory.
+let rightPanelCollapsed = true;
+let rightPanelLastSelectionKey = null;
+
 /* ============================================================
    HELPERS
    ============================================================ */
@@ -2736,7 +2744,7 @@ function renderBudgetSelectionPanel(right){
    RIGHT PANEL
    ============================================================ */
 function renderRight(){
-  const right = document.getElementById('rightPanel');
+  const right = document.getElementById('rightPanelBody');
   right.innerHTML = '';
   // .right-header's height varies (a long subcategory name can wrap to a
   // second line), unlike the mid panel's fixed-height .mid-title, so any
@@ -2749,6 +2757,16 @@ function renderRight(){
     const headerEl = right.querySelector('.right-header');
     right.style.setProperty('--right-sticky-top', (headerEl ? headerEl.getBoundingClientRect().height : 0) + 'px');
   });
+
+  // Auto-expand whenever the selected subcategory changes to a new one
+  // (a fresh key here), not on every render while the same one stays
+  // selected — so a manual collapse sticks until the user picks a
+  // *different* subcategory, but picking any new one always reveals it.
+  const selectionKey = budgetEditMode
+    ? (budgetSelection ? `budget:${budgetSelection.kind}:${budgetSelection.catId}:${budgetSelection.subId}` : null)
+    : (timeframe !== 'transactions' && selectedSub ? `sub:${selectedSub.kind}:${selectedSub.category}:${selectedSub.subcategory}` : null);
+  if (selectionKey && selectionKey !== rightPanelLastSelectionKey) setRightPanelCollapsed(false);
+  rightPanelLastSelectionKey = selectionKey;
 
   if (budgetEditMode){
     budgetRightSubTotalEl = null;
@@ -3784,6 +3802,23 @@ function renderStatusBar(){
   chip.appendChild(renderTransactionsChip());
   chip.appendChild(renderBudgetChip());
 }
+
+// Toggles the right panel between its full width and a 3rem collapsed
+// rail (see .app.right-collapsed/.right.collapsed in styles.css) — driven
+// either by the user clicking #rightPanelToggle or by renderRight
+// auto-expanding on a fresh selection (see rightPanelLastSelectionKey).
+function setRightPanelCollapsed(collapsed){
+  rightPanelCollapsed = collapsed;
+  document.querySelector('.app').classList.toggle('right-collapsed', collapsed);
+  document.getElementById('rightPanel').classList.toggle('collapsed', collapsed);
+  const toggleBtn = document.getElementById('rightPanelToggle');
+  toggleBtn.setAttribute('aria-expanded', String(!collapsed));
+  toggleBtn.setAttribute('aria-label', collapsed ? 'Expand panel' : 'Collapse panel');
+  toggleBtn.querySelector('img').src = `icons/chevron-${collapsed ? 'left' : 'right'}.svg`;
+}
+document.getElementById('rightPanelToggle').addEventListener('click', ()=>{
+  setRightPanelCollapsed(!rightPanelCollapsed);
+});
 
 /* ============================================================
    BOOTSTRAP

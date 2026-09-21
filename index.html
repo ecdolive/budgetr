@@ -12,7 +12,7 @@
 </head>
 <body>
 
-<div class="app">
+<div class="app right-collapsed">
 
   <!-- ================= LEFT PANEL ================= -->
   <div class="left panel">
@@ -26,7 +26,12 @@
   <div class="mid panel" id="midPanel"></div>
 
   <!-- ================= RIGHT PANEL ================= -->
-  <div class="right panel" id="rightPanel"></div>
+  <div class="right panel collapsed" id="rightPanel">
+    <button type="button" class="right-toggle-btn" id="rightPanelToggle" aria-expanded="false" aria-label="Expand panel">
+      <img src="icons/chevron-left.svg" alt="">
+    </button>
+    <div class="right-content" id="rightPanelBody"></div>
+  </div>
 
   <!-- ================= STATUS BAR ================= -->
   <div class="status panel">

@@ -95,6 +95,13 @@
   @media (max-width:1000px){
     .app{grid-template-columns:11rem 1fr 300px;min-width:0;}
   }
+  /* Right panel collapsed to a slim rail — see .right.collapsed below for
+     the panel's own contents. Overrides the 3rd column's width from both
+     the base and narrow-viewport rules above. */
+  .app.right-collapsed{grid-template-columns:11rem 1fr 3rem;}
+  @media (max-width:1000px){
+    .app.right-collapsed{grid-template-columns:11rem 1fr 3rem;}
+  }
 
   /* ================= STATUS BAR ================= */
   .status{
@@ -677,7 +684,36 @@
     grid-area:right;
     background:var(--bg-right);
     padding:0;
+    position:relative;
   }
+  /* Sits fixed at the panel's top-right corner, overlapping whatever
+     renderRight has drawn into .right-content, rather than taking up
+     layout space itself — so it doesn't shift .right-header's own
+     sticky-offset math (see --right-sticky-top). Circular per this app's
+     icon-only-button convention (see .icon-btn). */
+  .right-toggle-btn{
+    position:absolute;
+    top:12px;right:12px;
+    z-index:5;
+    width:28px;height:28px;
+    border-radius:50%;
+    background:transparent;
+    border:none;
+    cursor:pointer;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    color:var(--text-muted);
+    flex-shrink:0;
+  }
+  .right-toggle-btn:hover{background:var(--bg-row-hover);color:var(--text-primary);}
+  .right-toggle-btn img{width:14px;height:14px;}
+  /* Collapsed: just the rail with its expand button, centered in the
+     3rem-wide column (see .app.right-collapsed) — everything renderRight
+     draws into .right-content stays rendered underneath (so it's ready the
+     instant the panel re-expands) but hidden here. */
+  .right.collapsed .right-content{display:none;}
+  .right.collapsed .right-toggle-btn{left:50%;right:auto;transform:translateX(-50%);}
   /* .right-header carries its own inset — top, sides, and the trailing
      gap before .right-body — as padding (not .right's padding or a
      margin) so its painted box reaches the panel's true left/right/top
@@ -693,7 +729,7 @@
     display: flex;
     align-items: start;
     justify-content: center;
-    padding:16px;
+    padding:16px 44px 16px 16px;
   }
   .right-eyebrow{font-size:11.5px;color:var(--text-muted);font-weight:600;padding-bottom:2px;}
   .right-title{font-size:18px;font-weight:700;}
