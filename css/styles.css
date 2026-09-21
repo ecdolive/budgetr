@@ -775,6 +775,14 @@
     padding:12px 8px 12px 0;font-size:12.5px;border-bottom:1px solid var(--border-soft);
     vertical-align:top;overflow-wrap:break-word;
   }
+  /* Description: one line per row, truncated rather than wrapped — a long
+     description just ellipsizes instead of pushing the row (and the
+     amount beside it) to a second line. */
+  table.txn-list td:nth-child(2){
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
   table.txn-list td:last-child{text-align:right;white-space:nowrap;padding-right:0;}
   table.txn-list td.amt.neg{color:var(--negative);}
   table.txn-list td.amt.pos{color:var(--positive);}
