@@ -52,18 +52,20 @@
   /* Scrollbars stay invisible at rest and only appear while the
      .scrolling class is toggled on by app.js during an active scroll.
      Applies to panels (vertical) and .table-scroll wrappers (horizontal). */
-  .panel,.table-scroll{scrollbar-width:thin;scrollbar-color:transparent transparent;}
-  .panel.scrolling,.table-scroll.scrolling{scrollbar-color:var(--text-muted) transparent;}
+  .panel,.table-scroll,.right-content{scrollbar-width:thin;scrollbar-color:transparent transparent;}
+  .panel.scrolling,.table-scroll.scrolling,.right-content.scrolling{scrollbar-color:var(--text-muted) transparent;}
   ::-webkit-scrollbar{width:10px;height:10px;}
   ::-webkit-scrollbar-thumb{background:transparent;border-radius:8px;}
   ::-webkit-scrollbar-track{background:transparent;}
   .panel.scrolling::-webkit-scrollbar-thumb,
-  .table-scroll.scrolling::-webkit-scrollbar-thumb{background:var(--text-muted);}
+  .table-scroll.scrolling::-webkit-scrollbar-thumb,
+  .right-content.scrolling::-webkit-scrollbar-thumb{background:var(--text-muted);}
 
   /* ================= APP SHELL ================= */
   .app{
     display:grid;
-    grid-template-columns:11rem 1fr 360px;
+    --right-width:360px;
+    grid-template-columns:11rem 1fr var(--right-width);
     grid-template-rows:1fr 3rem;
     grid-template-areas:
       "left mid right"
@@ -72,13 +74,33 @@
     height:100vh;
     padding:0.5rem;
     min-width:1080px;
+    /* Animates the right column's width between --right-width and the 3rem
+       collapsed rail (see .app.right-collapsed below) whenever
+       .right-collapsed is toggled. .right itself (see .right below) stays
+       --right-width wide throughout — it's the grid *cell* that narrows,
+       sliding the fixed-width panel's start edge along with it so most of
+       it ends up past the app's own right edge (clipped by this element's
+       own overflow-x below) rather than the panel shrinking/hiding its
+       content. */
+    transition:grid-template-columns 200ms ease;
+    overflow-x:hidden;
   }
   /* overflow-x is explicitly hidden (not left to auto-promote) so a panel
      only ever scrolls vertically as a whole; any content that needs to
      scroll horizontally (e.g. a wide table) does so in its own nested
      .table-scroll wrapper instead, which keeps sticky headers — which
-     live outside that wrapper — from moving when that content is scrolled. */
-  .panel{overflow-y:auto;overflow-x:hidden;border-radius:var(--radius-lg);}
+     live outside that wrapper — from moving when that content is scrolled.
+     isolation:isolate scopes each panel's own sticky headers' z-index
+     (.mid-title, table.ledger th, etc.) to a stacking context of their
+     own — without it, none of .left/.mid/.right/.status are themselves
+     positioned/z-indexed, so those z-indexes compete directly in the
+     shared root context instead: .mid's sticky title (z-index:2) would
+     otherwise paint in front of the collapsed .right panel wherever its
+     hover-peek (see .right.collapsed:hover) overlaps .mid, even though
+     the rest of .mid's unstickied content correctly sits behind it. With
+     each panel isolated, .right — later in the DOM than .mid — simply
+     paints in front of it as a whole, as intended. */
+  .panel{overflow-y:auto;overflow-x:hidden;border-radius:var(--radius-lg);isolation:isolate;}
   /* The mid panel's tables need their own sticky column-header row, not
      just the sticky title bar above them — and position:sticky can't work
      across a scrolling ancestor boundary (any non-visible overflow, even
@@ -91,9 +113,16 @@
      axes), via the flex chain below (.mid > .mid-body > .table-scroll);
      .mid itself no longer scrolls at all. */
   .mid.panel{overflow-y:hidden;}
+  /* The right panel's own collapse/expand buttons are absolutely-positioned
+     siblings of .right-content (see .right-collapse-btn/.right-expand-btn
+     below) — for them to stay put while the panel's content scrolls,
+     scrolling has to happen in .right-content itself, not in .right, the
+     same nested-scroll-wrapper
+     trick as .mid/.table-scroll above. */
+  .right.panel{overflow-y:hidden;}
   .table-scroll{overflow-x:auto;flex:1 1 auto;min-height:0;}
   @media (max-width:1000px){
-    .app{grid-template-columns:11rem 1fr 300px;min-width:0;}
+    .app{--right-width:300px;min-width:0;}
   }
   /* Right panel collapsed to a slim rail — see .right.collapsed below for
      the panel's own contents. Overrides the 3rd column's width from both
@@ -134,10 +163,12 @@
      they get their own tighter gap, independent of the chip's own gap
      between its icon/label/name and this group. */
   .file-chip-actions{display:flex;align-items:center;gap:8px;}
-  /* Icon is a fixed white stroke (see icons/) dimmed to read as muted in
-     the empty state, brought to full opacity once a file's loaded — same
-     trick as the search icon elsewhere rather than a second colored asset. */
-  .file-chip-icon{width:16px;height:16px;opacity:0.4;flex-shrink:0;}
+  /* Icon assets (see icons/) are a fixed black fill/stroke, inverted to
+     white here since this app's panels are dark; dimmed to read as muted
+     in the empty state and brought to full opacity once a file's loaded —
+     same trick as the search icon elsewhere rather than a second colored
+     asset. */
+  .file-chip-icon{width:16px;height:16px;opacity:0.4;flex-shrink:0;filter:invert(1);}
   .file-chip.loaded .file-chip-icon{opacity:1;}
   .file-chip-label{color:var(--text-muted);}
   .file-chip-name{color:var(--text-primary);}
@@ -231,7 +262,8 @@
   .search-wrap .search-icon{
     position:absolute;left:12px;top:50%;transform:translateY(-50%);
     width:15px;height:15px;pointer-events:none;
-    opacity:0.35; /* approximates --text-muted against --bg-input; icon is a fixed white stroke */
+    opacity:0.35; /* approximates --text-muted against --bg-input; icon is a fixed black stroke, inverted to white */
+    filter:invert(1);
   }
   .search-input{
     width:100%;
@@ -267,7 +299,7 @@
      at the higher specificity a class+attribute selector gets over a
      plain class alone. */
   .search-clear-btn[hidden]{display:none;}
-  .search-clear-btn img{width:11px;height:11px;opacity:0.4;}
+  .search-clear-btn img{width:11px;height:11px;opacity:0.4;filter:invert(1);}
   .search-clear-btn:hover{background:var(--bg-row-hover);}
   .search-clear-btn:hover img{opacity:0.8;}
 
@@ -380,7 +412,7 @@
   .back-btn:hover{background:var(--bg-row-hover);opacity:1;}
   .back-btn:disabled{opacity:0.2;cursor:default;}
   .back-btn:disabled:hover{background:transparent;}
-  .back-btn img{width:16px;height:16px;}
+  .back-btn img{width:16px;height:16px;filter:invert(1);}
   .pills{display:flex;align-items:center;gap:8px;}
   /* The actual bounded, scrolling region below the fixed-height title bar
      — a flex column so a non-scrolling child (.search-heading, on the
@@ -605,7 +637,8 @@
   }
   .arrow img{
     width:1rem;height:1rem;
-    opacity:0.35; /* approximates --text-muted; icon is a fixed white stroke */
+    opacity:0.35; /* approximates --text-muted; icon is a fixed black stroke, inverted to white */
+    filter:invert(1);
     transition:transform 0.15s ease;
   }
   .arrow.open img{transform:rotate(90deg);}
@@ -686,21 +719,47 @@
   /* ================= RIGHT PANEL ================= */
   .right{
     grid-area:right;
+    /* Always --right-width wide, regardless of collapsed state — see the
+       .app comment above. Collapsing shrinks the *grid cell* .right sits
+       in, not .right itself: since this width is explicit (not the default
+       stretch-to-fit-the-cell), the grid places this box at the cell's
+       start edge and lets it overflow past the cell's (now much narrower)
+       end — so as the cell shrinks toward the 3rem rail, .right's own box
+       slides along with that edge, ending up mostly past the app's right
+       boundary (clipped there, see .app's overflow-x) with only its
+       leading 3rem left on screen. This not "collapsing" the panel's own
+       box at all is exactly what keeps its content visible (peeking
+       through that 3rem sliver) instead of shrinking/hiding it. */
+    width:var(--right-width);
     background:var(--bg-right);
     padding:0;
     position:relative;
+    transition:transform 150ms ease;
   }
-  /* Sits fixed at the panel's top-right corner, overlapping whatever
-     renderRight has drawn into .right-content, rather than taking up
-     layout space itself — so it doesn't shift .right-header's own
-     sticky-offset math (see --right-sticky-top). Circular per this app's
-     icon-only-button convention (see .icon-btn). */
-  .right-toggle-btn{
+  /* Collapsed rail's own hover affordance: nudge the whole (still
+     --right-width-wide, see above) panel a bit further left, past its
+     resting position, so a bit more of it peeks into view — hinting
+     that there's a full panel to click open, the way a partly-open
+     drawer invites a pull. Only while collapsed; the expanded panel sits
+     flush and has no reason to shift on hover. */
+  .right.collapsed:hover{transform:translateX(-10px);}
+  /* .right itself no longer scrolls (see .right.panel above) — this does,
+     so .right-collapse-btn/.right-expand-btn, its non-scrolling siblings,
+     can stay anchored to the panel's corner/rail instead of scrolling away
+     with the content. */
+  .right-content{height:100%;overflow-y:auto;overflow-x:hidden;}
+  /* Two separate, fixed-in-place buttons rather than one button whose
+     position/size/icon is swapped between states — a single morphing
+     button visibly slid and resized itself across the panel (top-right
+     corner to rail-center) when the collapse animated, which read as a
+     glitch. Each button instead just fades in/out at its own fixed spot.
+     Overlapping whatever renderRight has drawn into .right-content, rather
+     than taking up layout space itself, so neither shifts .right-header's
+     own sticky-offset math (see --right-sticky-top). Circular per this
+     app's icon-only-button convention (see .icon-btn). */
+  .right-collapse-btn,.right-expand-btn{
     position:absolute;
-    top:12px;right:12px;
     z-index:5;
-    width:28px;height:28px;
-    border-radius:50%;
     background:transparent;
     border:none;
     cursor:pointer;
@@ -710,25 +769,60 @@
     color:var(--text-muted);
     flex-shrink:0;
   }
-  .right-toggle-btn:hover{background:var(--bg-row-hover);color:var(--text-primary);}
-  .right-toggle-btn img{width:24px;height:24px;}
-  /* Collapsed: just the rail with its expand button — everything
-     renderRight draws into .right-content stays rendered underneath (so
-     it's ready the instant the panel re-expands) but hidden here. The
-     button itself grows to cover the whole rail (rather than just its own
-     28px circle) so the entire collapsed panel is clickable to expand,
-     with its icon staying centered via the flex-centering already set up
-     above. */
-  .right.collapsed .right-content{display:none;}
-  .right.collapsed .right-toggle-btn{
+  .right-collapse-btn:hover,.right-expand-btn:hover{background:var(--bg-row-hover);color:var(--text-primary);}
+  .right-collapse-btn img,.right-expand-btn img{width:24px;height:24px;filter:invert(1);}
+  /* Sits on the header's left, tucked out of view (translated left and
+     transparent) until the pointer is somewhere inside the expanded panel
+     (or, for keyboard use, until something inside it has focus) — same
+     "claims no room until hovered" trick as a ledger row's own .arrow (see
+     table.ledger tbody tr.group-row .arrow) — at which point it slides in
+     and .right-header's padding-left (below) grows to match, shifting
+     .right-eyebrow/.right-title over to make room for it, same as that
+     arrow pushing its row's label over. */
+  .right-collapse-btn{
+    top:12px;left:12px;
+    width:32px;height:32px;
+    border-radius:50%;
+    opacity:0;
+    transform:translateX(-8px);
+    pointer-events:none;
+    transition:opacity 150ms ease,transform 150ms ease;
+  }
+  /* :focus-within covers keyboard focus (tabbing to the button without a
+     hover to reveal it first) the same way :hover covers the mouse. */
+  .right:not(.collapsed):hover .right-collapse-btn,
+  .right:not(.collapsed):focus-within .right-collapse-btn{
+    opacity:1;
+    transform:translateX(0);
+    pointer-events:auto;
+  }
+  /* Covers all of .right (rather than just a small circle) so the entire
+     collapsed rail is clickable to expand — since .right stays its full
+     --right-width wide even while collapsed (see .right above), only this
+     button's leading edge actually lands on screen then, matching the
+     visible rail exactly, with its icon staying centered via the
+     flex-centering shared above. */
+  .right-expand-btn{
     top:0;right:0;bottom:0;left:0;
     width:100%;height:100%;
     border-radius:0;
+    opacity:1;visibility:visible;
+    transition:opacity 200ms ease,visibility 0s linear 0s;
+  }
+  /* .right-content is never faded/hidden, so whatever's rendered inside it
+     keeps showing through the collapsed rail's 3rem sliver instead of
+     disappearing with it — only this button fades in step with the
+     collapse animation. */
+  .right:not(.collapsed) .right-expand-btn{
+    opacity:0;visibility:hidden;pointer-events:none;
+    transition:opacity 200ms ease,visibility 0s linear 200ms;
   }
   /* .right-header carries its own inset — top, sides, and the trailing
      gap before .right-body — as padding (not .right's padding or a
      margin) so its painted box reaches the panel's true left/right/top
-     edges and fully occludes content scrolling behind it — see .logo. */
+     edges and fully occludes content scrolling behind it — see .logo.
+     padding-left grows on hover (see .right:not(.collapsed):hover below)
+     to make room for .right-collapse-btn sliding in over it. */
   .right-header{
     position:sticky;
     top:0;
@@ -740,8 +834,21 @@
     display: flex;
     align-items: start;
     justify-content: center;
-    padding:16px 44px 16px 16px;
+    padding:16px 16px 16px 16px;
+    transition:padding-left 150ms ease;
   }
+  .right:not(.collapsed):hover .right-header,
+  .right:not(.collapsed):focus-within .right-header{padding-left:48px;}
+  /* Reserves the same width .right-eyebrow/.right-title get once
+     padding-left grows to 48px (above) at all times, hover or not — so a
+     long subcategory name wraps exactly the same whether or not the
+     collapse button happens to be showing right now. Without this, the
+     32px padding-left only grown on hover would narrow the box a long
+     .right-title is wrapping in and could push it onto an extra line
+     right as the button appears, changing the header's height (and
+     throwing off --right-sticky-top, computed once per render rather
+     than on every hover) purely from a mouse move. */
+  .right-eyebrow,.right-title{max-width:calc(var(--right-width) - 64px);}
   .right-eyebrow{font-size:11.5px;color:var(--text-muted);font-weight:600;padding-bottom:2px;}
   .right-title{font-size:18px;font-weight:700;}
   .right-body{padding:0 16px 16px;}

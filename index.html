@@ -27,10 +27,13 @@
 
   <!-- ================= RIGHT PANEL ================= -->
   <div class="right panel collapsed" id="rightPanel">
-    <button type="button" class="right-toggle-btn" id="rightPanelToggle" aria-expanded="false" aria-label="Expand panel">
+    <button type="button" class="right-collapse-btn" id="rightPanelCollapseBtn" aria-label="Collapse panel" aria-hidden="true" tabindex="-1">
+      <img src="icons/collapse.svg" alt="">
+    </button>
+    <button type="button" class="right-expand-btn" id="rightPanelExpandBtn" aria-label="Expand panel">
       <img src="icons/chevron-left.svg" alt="">
     </button>
-    <div class="right-content" id="rightPanelBody"></div>
+    <div class="right-content" id="rightPanelBody" inert></div>
   </div>
 
   <!-- ================= STATUS BAR ================= -->

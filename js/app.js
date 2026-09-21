@@ -2746,17 +2746,6 @@ function renderBudgetSelectionPanel(right){
 function renderRight(){
   const right = document.getElementById('rightPanelBody');
   right.innerHTML = '';
-  // .right-header's height varies (a long subcategory name can wrap to a
-  // second line), unlike the mid panel's fixed-height .mid-title, so any
-  // sticky table thead underneath it (table.txn-list, see styles.css)
-  // can't just use a constant offset — measure the header actually
-  // rendered below and publish it as a CSS var for that thead's `top`.
-  // Scheduled for next frame so it runs after every branch below has
-  // finished mutating `right`, regardless of which one ran.
-  requestAnimationFrame(()=>{
-    const headerEl = right.querySelector('.right-header');
-    right.style.setProperty('--right-sticky-top', (headerEl ? headerEl.getBoundingClientRect().height : 0) + 'px');
-  });
 
   // Auto-expand whenever the selected subcategory changes to a new one
   // (a fresh key here), not on every render while the same one stays
@@ -2767,6 +2756,21 @@ function renderRight(){
     : (timeframe !== 'transactions' && selectedSub ? `sub:${selectedSub.kind}:${selectedSub.category}:${selectedSub.subcategory}` : null);
   if (selectionKey && selectionKey !== rightPanelLastSelectionKey) setRightPanelCollapsed(false);
   rightPanelLastSelectionKey = selectionKey;
+
+  // .right-header's height varies (a long subcategory name can wrap to a
+  // second line), unlike the mid panel's fixed-height .mid-title, so any
+  // sticky table thead underneath it (table.txn-list, see styles.css)
+  // can't just use a constant offset — measure the header actually
+  // rendered below and publish it as a CSS var for that thead's `top`.
+  // .right itself stays a constant width whether collapsed or not (see
+  // .right in styles.css), so unlike the collapse animation itself, this
+  // measurement is never thrown off by an in-between width — scheduling
+  // it for next frame (after every branch below has finished mutating
+  // `right`, regardless of which one ran) is enough.
+  requestAnimationFrame(()=>{
+    const headerEl = right.querySelector('.right-header');
+    right.style.setProperty('--right-sticky-top', (headerEl ? headerEl.getBoundingClientRect().height : 0) + 'px');
+  });
 
   if (budgetEditMode){
     budgetRightSubTotalEl = null;
@@ -3805,19 +3809,36 @@ function renderStatusBar(){
 
 // Toggles the right panel between its full width and a 3rem collapsed
 // rail (see .app.right-collapsed/.right.collapsed in styles.css) — driven
-// either by the user clicking #rightPanelToggle or by renderRight
-// auto-expanding on a fresh selection (see rightPanelLastSelectionKey).
+// either by the user clicking #rightPanelCollapseBtn/#rightPanelExpandBtn
+// or by renderRight auto-expanding on a fresh selection (see
+// rightPanelLastSelectionKey). Two separate fixed-position buttons (rather
+// than one button whose position/size/icon got swapped) so the collapse
+// animation fades each in/out in place instead of visibly sliding a single
+// button across the panel — only the one for the current state stays
+// reachable by keyboard/screen reader (see the CSS fading the other one
+// out with pointer-events:none).
 function setRightPanelCollapsed(collapsed){
   rightPanelCollapsed = collapsed;
   document.querySelector('.app').classList.toggle('right-collapsed', collapsed);
   document.getElementById('rightPanel').classList.toggle('collapsed', collapsed);
-  const toggleBtn = document.getElementById('rightPanelToggle');
-  toggleBtn.setAttribute('aria-expanded', String(!collapsed));
-  toggleBtn.setAttribute('aria-label', collapsed ? 'Expand panel' : 'Collapse panel');
-  toggleBtn.querySelector('img').src = `icons/chevron-${collapsed ? 'left' : 'right'}.svg`;
+  const collapseBtn = document.getElementById('rightPanelCollapseBtn');
+  const expandBtn = document.getElementById('rightPanelExpandBtn');
+  collapseBtn.tabIndex = collapsed ? -1 : 0;
+  collapseBtn.setAttribute('aria-hidden', String(collapsed));
+  expandBtn.tabIndex = collapsed ? 0 : -1;
+  expandBtn.setAttribute('aria-hidden', String(!collapsed));
+  // Collapsed still shows .right-content — .right stays full width and
+  // simply slides mostly off-screen (see .right in styles.css) rather
+  // than hiding, so most of whatever's inside it sits past the visible
+  // 3rem rail. `inert` keeps that off-screen part out of the tab order
+  // and away from screen readers without touching how it looks.
+  document.getElementById('rightPanelBody').inert = collapsed;
 }
-document.getElementById('rightPanelToggle').addEventListener('click', ()=>{
-  setRightPanelCollapsed(!rightPanelCollapsed);
+document.getElementById('rightPanelCollapseBtn').addEventListener('click', ()=>{
+  setRightPanelCollapsed(true);
+});
+document.getElementById('rightPanelExpandBtn').addEventListener('click', ()=>{
+  setRightPanelCollapsed(false);
 });
 
 /* ============================================================
@@ -3845,12 +3866,13 @@ tryAutoFetch();
   const HIDE_DELAY_MS = 600;
   const hideTimers = new WeakMap();
   // Delegated on document (capture phase) rather than attached to each
-  // .panel/.table-scroll directly: 'scroll' doesn't bubble, but a capture
-  // listener still sees it on its way down, and this way it also covers
-  // .table-scroll wrappers, which are recreated on every render.
+  // .panel/.table-scroll/.right-content directly: 'scroll' doesn't bubble,
+  // but a capture listener still sees it on its way down, and this way it
+  // also covers .table-scroll/.right-content wrappers, which are recreated
+  // on every render.
   document.addEventListener('scroll', (e) => {
     const el = e.target;
-    if (!(el instanceof Element) || !el.matches('.panel, .table-scroll')) return;
+    if (!(el instanceof Element) || !el.matches('.panel, .table-scroll, .right-content')) return;
     el.classList.add('scrolling');
     clearTimeout(hideTimers.get(el));
     hideTimers.set(el, setTimeout(() => el.classList.remove('scrolling'), HIDE_DELAY_MS));
