@@ -1844,23 +1844,29 @@ function renderBudgetEditor(mid){
 
   // Import CSV sits beside Cancel/Save as a third header action rather than
   // its own toolbar row — it's a starting-point convenience for the draft,
-  // not a distinct step in the Cancel/Save flow.
-  const importLabel = document.createElement('label');
-  importLabel.className = 'file-btn ghost';
-  importLabel.textContent = 'Import CSV';
-  const importInput = document.createElement('input');
-  importInput.type = 'file';
-  importInput.accept = '.csv';
-  importInput.multiple = true;
-  importLabel.appendChild(importInput);
-  importInput.addEventListener('change', async (e)=>{
-    const fileList = Array.from(e.target.files || []);
-    if (!fileList.length) return;
-    const files = await Promise.all(fileList.map(f => f.text().then(text=>({name:f.name, text}))));
-    importLastYearCSVIntoDraft(files);
-    e.target.value = '';
-  });
-  actions.appendChild(importLabel);
+  // not a distinct step in the Cancel/Save flow. Only offered when creating
+  // a brand-new budget (no saved content yet) — once a budget exists,
+  // importing last year's CSV into an in-progress edit would clobber
+  // categories/subcategories the user is deliberately editing rather than
+  // just seeding an empty draft.
+  if (!hasSaved){
+    const importLabel = document.createElement('label');
+    importLabel.className = 'file-btn ghost';
+    importLabel.textContent = 'Import CSV';
+    const importInput = document.createElement('input');
+    importInput.type = 'file';
+    importInput.accept = '.csv';
+    importInput.multiple = true;
+    importLabel.appendChild(importInput);
+    importInput.addEventListener('change', async (e)=>{
+      const fileList = Array.from(e.target.files || []);
+      if (!fileList.length) return;
+      const files = await Promise.all(fileList.map(f => f.text().then(text=>({name:f.name, text}))));
+      importLastYearCSVIntoDraft(files);
+      e.target.value = '';
+    });
+    actions.appendChild(importLabel);
+  }
 
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'file-btn ghost';
