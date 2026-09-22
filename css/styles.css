@@ -193,6 +193,11 @@
     align-items:center;
   }
   .file-chip-action:hover{background:var(--surface-interactive-hover);}
+  /* The budget chip's entry point once a budget already exists — labeled
+     "Edit" rather than "Create" (see budgetHasSavedContent) — reads as a
+     plain action on the now-loaded budget rather than the accent-teal
+     "start something new" treatment Create/Open.../Save share. */
+  .budget-edit-btn{color:var(--text-primary);}
   .file-chip-action input{display:none;}
   .file-chip-action:disabled,
   .file-chip-action:has(input:disabled){opacity:0.4;pointer-events:none;cursor:not-allowed;}

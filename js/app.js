@@ -3790,10 +3790,11 @@ function renderBudgetChip(){
   // the editor's own header title is (see budgetHasSavedContent), and
   // disabled while already mid-edit so a second click can't silently
   // re-seed the draft from BUDGETS_RAW and drop unsaved changes.
+  const hasSaved = budgetHasSavedContent();
   const editBtn = document.createElement('button');
   editBtn.type = 'button';
-  editBtn.className = 'file-chip-action';
-  editBtn.textContent = budgetHasSavedContent() ? 'Edit' : 'Create';
+  editBtn.className = 'file-chip-action' + (hasSaved ? ' budget-edit-btn' : '');
+  editBtn.textContent = hasSaved ? 'Edit' : 'Create';
   editBtn.disabled = budgetEditMode;
   editBtn.addEventListener('click', enterBudgetEditor);
 
