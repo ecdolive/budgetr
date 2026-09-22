@@ -5,6 +5,14 @@ const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov
 const MONTHS_FULL = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const MONTH_INDEX = Object.fromEntries(MONTHS.map((m,i)=>[m,i]));
 const MONTH_ABBR = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+// Delete-button icon (icons/delete.svg), inlined as markup with
+// fill="currentColor" rather than referenced via <img src> or a CSS
+// mask-image — both of those load the file as an external resource, which
+// some browsers refuse to do for local/file:// pages, silently rendering
+// nothing. Inlining sidesteps that entirely and, as a bonus, lets the
+// button's own `color` (gray at rest, red on hover — see .icon-btn) drive
+// the icon directly, the same way the app's other icon-btn glyphs already do.
+const DELETE_ICON_SVG = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M13.3301 4C14.2401 4.00011 14.9986 4.69762 15.0742 5.60449L15.1904 7H18C18.4142 7 18.75 7.33579 18.75 7.75C18.75 8.16421 18.4142 8.5 18 8.5H17.4678L17.082 17.3691C17.0181 18.8401 15.8073 20 14.335 20H9.66504C8.19271 20 6.98192 18.8401 6.91797 17.3691L6.53223 8.5H6C5.58579 8.5 5.25 8.16421 5.25 7.75C5.25 7.33579 5.58579 7 6 7H8.80957L8.92578 5.60449C9.00143 4.69762 9.75991 4.00011 10.6699 4H13.3301ZM8.41602 17.3047C8.44528 17.9731 8.99593 18.5 9.66504 18.5H14.335C15.0041 18.5 15.5547 17.9731 15.584 17.3047L15.9668 8.5H8.0332L8.41602 17.3047ZM10 9.5C10.2761 9.5 10.5 9.72386 10.5 10V17C10.5 17.2761 10.2761 17.5 10 17.5C9.72386 17.5 9.5 17.2761 9.5 17V10C9.5 9.72386 9.72386 9.5 10 9.5ZM12 9.5C12.2761 9.5 12.5 9.72386 12.5 10V17C12.5 17.2761 12.2761 17.5 12 17.5C11.7239 17.5 11.5 17.2761 11.5 17V10C11.5 9.72386 11.7239 9.5 12 9.5ZM14 9.5C14.2761 9.5 14.5 9.72386 14.5 10V17C14.5 17.2761 14.2761 17.5 14 17.5C13.7239 17.5 13.5 17.2761 13.5 17V10C13.5 9.72386 13.7239 9.5 14 9.5ZM10.6699 5.5C10.54 5.50011 10.4317 5.59999 10.4209 5.72949L10.3145 7H13.6855L13.5791 5.72949C13.5683 5.59999 13.46 5.50011 13.3301 5.5H10.6699Z" fill="currentColor"/></svg>';
 
 /* ============================================================
    CSV PARSING (Fidelity Full View export format) — unchanged
@@ -1844,23 +1852,29 @@ function renderBudgetEditor(mid){
 
   // Import CSV sits beside Cancel/Save as a third header action rather than
   // its own toolbar row — it's a starting-point convenience for the draft,
-  // not a distinct step in the Cancel/Save flow.
-  const importLabel = document.createElement('label');
-  importLabel.className = 'file-btn ghost';
-  importLabel.textContent = 'Import CSV';
-  const importInput = document.createElement('input');
-  importInput.type = 'file';
-  importInput.accept = '.csv';
-  importInput.multiple = true;
-  importLabel.appendChild(importInput);
-  importInput.addEventListener('change', async (e)=>{
-    const fileList = Array.from(e.target.files || []);
-    if (!fileList.length) return;
-    const files = await Promise.all(fileList.map(f => f.text().then(text=>({name:f.name, text}))));
-    importLastYearCSVIntoDraft(files);
-    e.target.value = '';
-  });
-  actions.appendChild(importLabel);
+  // not a distinct step in the Cancel/Save flow. Only offered when creating
+  // a brand-new budget (no saved content yet) — once a budget exists,
+  // importing last year's CSV into an in-progress edit would clobber
+  // categories/subcategories the user is deliberately editing rather than
+  // just seeding an empty draft.
+  if (!hasSaved){
+    const importLabel = document.createElement('label');
+    importLabel.className = 'file-btn ghost';
+    importLabel.textContent = 'Import CSV';
+    const importInput = document.createElement('input');
+    importInput.type = 'file';
+    importInput.accept = '.csv';
+    importInput.multiple = true;
+    importLabel.appendChild(importInput);
+    importInput.addEventListener('change', async (e)=>{
+      const fileList = Array.from(e.target.files || []);
+      if (!fileList.length) return;
+      const files = await Promise.all(fileList.map(f => f.text().then(text=>({name:f.name, text}))));
+      importLastYearCSVIntoDraft(files);
+      e.target.value = '';
+    });
+    actions.appendChild(importLabel);
+  }
 
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'file-btn ghost';
@@ -1915,9 +1929,9 @@ function budgetNameCell({ value, placeholder, isSub, arrow, onNameInput, onDelet
     delWrap.className = 'row-delete-wrap';
     const delBtn = document.createElement('button');
     delBtn.type = 'button';
-    delBtn.className = 'icon-btn';
+    delBtn.className = 'icon-btn delete-btn';
     delBtn.title = deleteTitle;
-    delBtn.textContent = '✕';
+    delBtn.innerHTML = DELETE_ICON_SVG;
     delBtn.addEventListener('click', (e)=>{ e.stopPropagation(); onDelete(); });
     delWrap.appendChild(delBtn);
     catname.appendChild(delWrap);
@@ -2394,13 +2408,9 @@ function budgetItemFreqText(item){
   }
   return indices.map(idx=>idx!==-1 ? MONTHS[idx] : '?').join(', ');
 }
-function budgetItemSummaryText(item, kind){
+function budgetItemAmountText(item){
   const perDiem = isPerDiemItem(item);
-  const amtText = perDiem ? `${fmt(Math.abs(Number(item.amount)||0))}/day` : fmt(Math.abs(Number(item.amount)||0));
-  const parts = [amtText, budgetItemFreqText(item)];
-  const n = item.linkedDescriptions ? item.linkedDescriptions.length : 0;
-  if (!perDiem && n) parts.push(`${n} link${n===1?'':'s'}`);
-  return parts.join(' · ');
+  return perDiem ? `${fmt(Math.abs(Number(item.amount)||0))}/day` : fmt(Math.abs(Number(item.amount)||0));
 }
 
 function renderBudgetItemRow(item, sub, cat, kind){
@@ -2466,17 +2476,20 @@ function renderBudgetItemRow(item, sub, cat, kind){
     note.appendChild(convertBtn);
     row.appendChild(note);
 
+    const removeWrap = document.createElement('span');
+    removeWrap.className = 'row-delete-wrap';
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
-    removeBtn.className = 'icon-btn';
+    removeBtn.className = 'icon-btn delete-btn';
     removeBtn.title = 'Remove line item';
-    removeBtn.textContent = '✕';
+    removeBtn.innerHTML = DELETE_ICON_SVG;
     removeBtn.addEventListener('click', ()=>{
       sub.items = sub.items.filter(it=>it.id!==item.id);
       renderMid();
       renderRight();
     });
-    row.appendChild(removeBtn);
+    removeWrap.appendChild(removeBtn);
+    row.appendChild(removeWrap);
     return row;
   }
 
@@ -2486,29 +2499,50 @@ function renderBudgetItemRow(item, sub, cat, kind){
   row.classList.add('clickable');
   const summary = document.createElement('div');
   summary.className = 'budget-item-summary';
+  const summaryLabelRow = document.createElement('div');
+  summaryLabelRow.className = 'budget-item-summary-label-row';
   const summaryLabel = document.createElement('div');
   summaryLabel.className = 'budget-item-summary-label';
   summaryLabel.textContent = item.label || sub.name;
+  summaryLabelRow.appendChild(summaryLabel);
+  const n = item.linkedDescriptions ? item.linkedDescriptions.length : 0;
+  if (!isPerDiemItem(item) && n){
+    const linksTag = document.createElement('span');
+    linksTag.className = 'budget-item-links-tag';
+    linksTag.textContent = `${n} link${n===1?'':'s'}`;
+    summaryLabelRow.appendChild(linksTag);
+  }
   const summaryMeta = document.createElement('div');
   summaryMeta.className = 'budget-item-summary-meta';
-  summaryMeta.textContent = budgetItemSummaryText(item, kind);
-  summary.appendChild(summaryLabel);
+  summaryMeta.textContent = budgetItemFreqText(item);
+  summary.appendChild(summaryLabelRow);
   summary.appendChild(summaryMeta);
   summary.addEventListener('click', ()=>openEditDraftItemModal(item, sub, cat, kind));
   row.appendChild(summary);
 
+  // Right-aligned alongside the remove button (not part of the secondary
+  // label above) so it stays vertically centered in the row regardless of
+  // how tall the label/meta text grows, the same as the remove button.
+  const amountEl = document.createElement('div');
+  amountEl.className = 'budget-item-amount num';
+  amountEl.textContent = budgetItemAmountText(item);
+  row.appendChild(amountEl);
+
+  const removeWrap = document.createElement('span');
+  removeWrap.className = 'row-delete-wrap';
   const removeBtn = document.createElement('button');
   removeBtn.type = 'button';
-  removeBtn.className = 'icon-btn';
+  removeBtn.className = 'icon-btn delete-btn';
   removeBtn.title = 'Remove line item';
-  removeBtn.textContent = '✕';
+  removeBtn.innerHTML = DELETE_ICON_SVG;
   removeBtn.addEventListener('click', (e)=>{
     e.stopPropagation();
     sub.items = sub.items.filter(it=>it.id!==item.id);
     renderMid();
     renderRight();
   });
-  row.appendChild(removeBtn);
+  removeWrap.appendChild(removeBtn);
+  row.appendChild(removeWrap);
 
   return row;
 }
@@ -3756,10 +3790,11 @@ function renderBudgetChip(){
   // the editor's own header title is (see budgetHasSavedContent), and
   // disabled while already mid-edit so a second click can't silently
   // re-seed the draft from BUDGETS_RAW and drop unsaved changes.
+  const hasSaved = budgetHasSavedContent();
   const editBtn = document.createElement('button');
   editBtn.type = 'button';
-  editBtn.className = 'file-chip-action';
-  editBtn.textContent = budgetHasSavedContent() ? 'Edit' : 'Create';
+  editBtn.className = 'file-chip-action' + (hasSaved ? ' budget-edit-btn' : '');
+  editBtn.textContent = hasSaved ? 'Edit' : 'Create';
   editBtn.disabled = budgetEditMode;
   editBtn.addEventListener('click', enterBudgetEditor);
 

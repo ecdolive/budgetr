@@ -193,6 +193,11 @@
     align-items:center;
   }
   .file-chip-action:hover{background:var(--surface-interactive-hover);}
+  /* The budget chip's entry point once a budget already exists — labeled
+     "Edit" rather than "Create" (see budgetHasSavedContent) — reads as a
+     plain action on the now-loaded budget rather than the accent-teal
+     "start something new" treatment Create/Open.../Save share. */
+  .budget-edit-btn{color:var(--text-primary);}
   .file-chip-action input{display:none;}
   .file-chip-action:disabled,
   .file-chip-action:has(input:disabled){opacity:0.4;pointer-events:none;cursor:not-allowed;}
@@ -857,10 +862,11 @@
   .right-eyebrow,.right-title{max-width:calc(var(--right-width) - 72px);}
   .right-eyebrow{font-size:11.5px;color:var(--text-muted);font-weight:600;padding-bottom:2px;}
   .right-title{font-size:18px;font-weight:700;}
-  .right-body{padding:0 16px 16px;}
+  .right-body{padding:0 8px 16px;}
   .right-total-row{
     display:flex;justify-content:space-between;align-items:baseline;
     margin-bottom:24px;
+    padding:0 8px;
   }
   .right-total-label{font-size:14px;font-weight:700;color:var(--text-primary);}
   .right-total-value{font-size:19px;font-weight:700;}
@@ -1080,7 +1086,12 @@
   }
   .file-btn.primary{background:var(--accent-teal);border-color:var(--accent-teal);color:var(--surface-page);font-weight:700;}
   .file-btn.primary:hover{opacity:0.88;color:var(--surface-page);}
-  .file-btn.ghost{background:transparent;}
+  /* Same "ghost" treatment as .back-btn — no border, transparent at rest,
+     a plain background highlight on hover rather than .file-btn's own
+     border-color/text-color hover — for actions (Import CSV, Cancel) that
+     shouldn't read as a bordered pill alongside Save/Apply changes. */
+  .file-btn.ghost{background:transparent;border-color:transparent;}
+  .file-btn.ghost:hover{background:var(--bg-row-hover);border-color:transparent;color:var(--text-primary);}
   button.file-btn:disabled,
   .file-btn:has(input:disabled){opacity:0.4;pointer-events:none;cursor:not-allowed;}
 
@@ -1150,29 +1161,77 @@
     flex-shrink:0;
   }
   .icon-btn:hover{background:var(--bg-row-hover);color:var(--negative);}
-  /* Delete button on a budget editor cat/sub row — reserves no space at
-     rest (same "claims room only on hover" trick as .group-row's chevron
-     elsewhere in the ledger tables) so it never disturbs the name column's
-     fixed width. */
+  /* Delete buttons' icon (icons/delete.svg, see DELETE_ICON_SVG in app.js)
+     is inlined as actual <svg> markup with fill="currentColor" rather than
+     an <img> or a CSS mask-image — both of those load the file as an
+     external resource, which some browsers refuse to do for local/file://
+     pages, silently rendering nothing. Inlining also lets the default/hover
+     color rules above reach the icon directly, same as the app's other
+     icon-btn glyphs. */
+  /* Delete buttons read as red at rest, not just on hover — deleting is
+     what they do, so there's no neutral/muted state for them the way
+     .icon-btn's default color otherwise implies. */
+  .icon-btn.delete-btn{width:32px;height:32px;color:var(--negative);}
+  .icon-btn.delete-btn svg{width:24px;height:24px;flex-shrink:0;}
+  /* Delete button on a budget editor cat/sub row, or a line-item row in the
+     right panel — reserves no space at rest (same "claims room only on
+     hover" trick as .group-row's chevron elsewhere in the ledger tables) so
+     it never disturbs the name column's/row's fixed width. */
   .row-delete-wrap{width:0;overflow:hidden;flex-shrink:0;transition:width 0.15s ease;}
-  tr:hover .row-delete-wrap{width:22px;}
+  tr:hover .row-delete-wrap,
+  .budget-item-row:hover .row-delete-wrap{width:32px;}
 
   /* Right panel's line-item editor for whichever subcategory is selected
      in the budget editor table (see renderBudgetSelectionPanel). */
   .budget-items{margin-top:8px;display:flex;flex-direction:column;gap:8px;}
-  .budget-item-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-radius:var(--radius-sm);}
+  /* Same default/hover background as the mid panel's table.ledger
+     tr.cat-row, so a line item reads as the same kind of row. */
+  .budget-item-row{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;border-radius:var(--radius-sm);background:var(--bg-row);padding:8px;}
+  .budget-item-row:hover{background:var(--bg-row-hover);}
+  /* The row's own remove/close button — wrapped in .row-delete-wrap (a
+     direct child — unlike the array-amount variant's nested "convert"
+     .icon-btn, see .budget-array-note below) so it slides into view on row
+     hover, same as a cat/sub row's delete button — always sits flush
+     against the row's right edge (the row's own padding above) and
+     vertically centered (the row's own align-items:center), regardless of
+     how much summary/label/freq content sits before it. */
+  .budget-item-row > .row-delete-wrap{margin-left:auto;}
+  /* The item's amount, pulled out of .budget-item-summary-meta below and
+     placed as the row's own direct flex child (alongside .icon-btn, which
+     it immediately precedes) so it stays vertically centered — same as the
+     remove button — instead of scrolling up/down with a multi-line label. */
+  .budget-item-amount{flex-shrink:0;font-size:12.5px;font-weight:600;color:var(--text-primary);}
   /* A normal (non-array-amount) item's row is just its summary — clicking
      it opens the Add/Edit line item modal (see renderBudgetItemRow /
      openEditDraftItemModal) rather than editing fields inline. */
   .budget-item-row.clickable{cursor:pointer;}
-  .budget-item-row.clickable:hover{background:var(--bg-row-hover);}
   .budget-item-summary{flex:1 1 auto;min-width:0;padding:6px 4px;}
+  .budget-item-summary-label-row{display:flex;align-items:center;gap:6px;}
   .budget-item-summary-label{font-size:12.5px;font-weight:600;color:var(--text-primary);}
-  .budget-item-summary-meta{font-size:11px;color:var(--text-muted);margin-top:2px;}
+  /* Linked-transaction count, moved out of .budget-item-summary-meta's
+     plain-English "amount · frequency" text into its own small tag beside
+     the primary label — it's a distinct fact about the item (how many real
+     transactions match it), not part of its budgeted amount/schedule. */
+  .budget-item-links-tag{
+    flex-shrink:0;
+    background:var(--bg-input);
+    color:var(--text-muted);
+    font-size:10px;
+    font-weight:600;
+    line-height:1.4;
+    padding:1px 6px;
+    border-radius:999px;
+  }
+  .budget-item-summary-meta{font-size:11px;color:var(--text-muted);margin-top:4px;}
   /* A legacy explicit 12-value array item keeps its own minimal inline
      editor (see renderBudgetItemRow) since the modal has no single
-     amount/month it could represent. flex-wrap so its label/frequency/note
-     fields don't overflow the right panel's fixed width. */
+     amount/month it could represent — its own label/frequency/note fields
+     (unlike the plain summary+remove-button pair above) need to wrap
+     rather than overflow the right panel's fixed width, so this variant
+     opts back into flex-wrap (the base rule stays nowrap — see
+     .budget-item-row above — specifically so a long summary label/meta
+     text wraps *within* .budget-item-summary instead of pushing the
+     remove button onto its own line). */
   .budget-item-row:not(.clickable){flex-wrap:wrap;}
   .budget-item-label{
     flex:1 1 100%;
@@ -1232,7 +1291,9 @@
   .link-txn-shared-note{font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
   .add-item-btn{
-    align-self:flex-start;
+    align-self:stretch;
+    width:100%;
+    margin-top:8px;
     background:transparent;
     border:1px dashed var(--border);
     color:var(--text-secondary);
