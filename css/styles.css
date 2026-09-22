@@ -217,7 +217,7 @@
     opacity:0.5;
   }
   .file-chip-remove:hover{opacity:1;}
-  .file-chip-remove img{width:24px;height:24px;}
+  .file-chip-remove img{width:24px;height:24px;filter:invert(1);}
   .file-chip-remove:disabled{opacity:0.25;pointer-events:none;cursor:not-allowed;}
 
   /* ================= LEFT PANEL ================= */
@@ -771,6 +771,12 @@
   }
   .right-collapse-btn:hover,.right-expand-btn:hover{background:var(--bg-row-hover);color:var(--text-primary);}
   .right-collapse-btn img,.right-expand-btn img{width:24px;height:24px;filter:invert(1);}
+  /* Icon itself dims to read as muted at rest and brightens on hover —
+     the button's own :hover rule above only swaps its background/color,
+     which an <img> ignores, so the icon needs its own opacity step
+     (same trick as .file-chip-icon/.file-chip-remove). */
+  .right-collapse-btn img{opacity:0.5;transition:opacity 150ms ease;}
+  .right-collapse-btn:hover img{opacity:1;}
   /* Sits on the header's left, tucked out of view (translated left and
      transparent) until the pointer is somewhere inside the expanded panel
      (or, for keyboard use, until something inside it has focus) — same
@@ -780,7 +786,7 @@
      .right-eyebrow/.right-title over to make room for it, same as that
      arrow pushing its row's label over. */
   .right-collapse-btn{
-    top:12px;left:12px;
+    top:16px;left:16px;
     width:32px;height:32px;
     border-radius:50%;
     opacity:0;
@@ -838,17 +844,17 @@
     transition:padding-left 150ms ease;
   }
   .right:not(.collapsed):hover .right-header,
-  .right:not(.collapsed):focus-within .right-header{padding-left:48px;}
+  .right:not(.collapsed):focus-within .right-header{padding-left:56px;}
   /* Reserves the same width .right-eyebrow/.right-title get once
-     padding-left grows to 48px (above) at all times, hover or not — so a
+     padding-left grows to 56px (above) at all times, hover or not — so a
      long subcategory name wraps exactly the same whether or not the
      collapse button happens to be showing right now. Without this, the
-     32px padding-left only grown on hover would narrow the box a long
+     40px padding-left only grown on hover would narrow the box a long
      .right-title is wrapping in and could push it onto an extra line
      right as the button appears, changing the header's height (and
      throwing off --right-sticky-top, computed once per render rather
      than on every hover) purely from a mouse move. */
-  .right-eyebrow,.right-title{max-width:calc(var(--right-width) - 64px);}
+  .right-eyebrow,.right-title{max-width:calc(var(--right-width) - 72px);}
   .right-eyebrow{font-size:11.5px;color:var(--text-muted);font-weight:600;padding-bottom:2px;}
   .right-title{font-size:18px;font-weight:700;}
   .right-body{padding:0 16px 16px;}
@@ -901,6 +907,20 @@
   table.txn-list tr.planned td.amt{color:var(--text-muted);}
   .right-empty{
     color:var(--text-muted);font-size:13px;line-height:1.6;padding-top:32px;
+  }
+  /* When the empty message is .right-body's only content (no total rows or
+     header above it — the "nothing selected yet" states), center it in the
+     panel instead of leaving it pinned under the fixed 32px padding-top
+     above, which reads as top-heavy in a tall/empty panel. */
+  .right-body:has(> .right-empty:only-child){
+    height:100%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+  }
+  .right-body:has(> .right-empty:only-child) .right-empty{
+    padding:0 48px;
+    text-align:center;
   }
 
   /* margin-top adds to .modal-dialog's 1rem gap above this row, for 2rem
