@@ -1086,7 +1086,12 @@
   }
   .file-btn.primary{background:var(--accent-teal);border-color:var(--accent-teal);color:var(--surface-page);font-weight:700;}
   .file-btn.primary:hover{opacity:0.88;color:var(--surface-page);}
-  .file-btn.ghost{background:transparent;}
+  /* Same "ghost" treatment as .back-btn — no border, transparent at rest,
+     a plain background highlight on hover rather than .file-btn's own
+     border-color/text-color hover — for actions (Import CSV, Cancel) that
+     shouldn't read as a bordered pill alongside Save/Apply changes. */
+  .file-btn.ghost{background:transparent;border-color:transparent;}
+  .file-btn.ghost:hover{background:var(--bg-row-hover);border-color:transparent;color:var(--text-primary);}
   button.file-btn:disabled,
   .file-btn:has(input:disabled){opacity:0.4;pointer-events:none;cursor:not-allowed;}
 
