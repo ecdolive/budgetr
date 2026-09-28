@@ -552,39 +552,38 @@
   .txn-chart-bar.pos{fill:var(--positive);}
   .txn-chart-bar.neg{fill:var(--negative);}
   .txn-chart-bar.hover{filter:brightness(1.25);}
+  /* .pos/.neg here are the single-series fallback (a search that only
+     turns up one transaction type — see bothTypes in
+     renderTransactionsChart) drawn as a plain solid line; .net is always
+     dashed, whether it's the derived Net line alongside diverging bars or
+     the flat "nothing matched" fallback. */
   .txn-chart-line{fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
-  .txn-chart-line.net{stroke:var(--text-primary);stroke-dasharray:6 4;}
+  .txn-chart-line.pos{stroke:var(--positive);}
+  .txn-chart-line.neg{stroke:var(--negative);}
+  .txn-chart-line.net{stroke:var(--text-primary);stroke-opacity:0.5;stroke-dasharray:6 4;}
+  /* Dots never actually carry the .net variant — a Net-line dot always
+     recolors to .pos/.neg by that point's own sign instead (see
+     drawLine/showAt in renderTransactionsChart); only the line stroke
+     itself stays the neutral .net dash. */
   .txn-chart-dot{stroke:var(--bg-card);stroke-width:2;}
-  .txn-chart-dot.net{fill:var(--text-primary);}
+  .txn-chart-dot.pos{fill:var(--positive);}
+  .txn-chart-dot.neg{fill:var(--negative);}
   .txn-chart-hover-dot{pointer-events:none;opacity:0;stroke:var(--bg-card);stroke-width:2;transition:opacity .1s;}
-  .txn-chart-hover-dot.net{fill:var(--text-primary);}
+  .txn-chart-hover-dot.pos{fill:var(--positive);}
+  .txn-chart-hover-dot.neg{fill:var(--negative);}
   .txn-chart-overlay{fill:transparent;cursor:pointer;}
-  .txn-chart-tooltip{
-    position:absolute;
-    pointer-events:none;
-    background:var(--bg-mid);
-    border:1px solid var(--border);
-    border-radius:var(--radius-sm);
-    padding:8px 10px;
-    font-size:12px;
-    opacity:0;
-    white-space:nowrap;
-    z-index:5;
-    box-shadow:0 4px 12px rgba(0,0,0,0.3);
-    transition:opacity .1s;
+  /* Values live directly on the chart rather than in a hover-only
+     tooltip — muted at rest so a whole chart of numbers doesn't compete
+     with the marks, brought to full contrast for whichever month is
+     hovered (see showAt/hide in renderTransactionsChart). */
+  .txn-chart-value-label{
+    fill:var(--text-muted);
+    font-size:11px;
+    font-variant-numeric:tabular-nums;
+    text-anchor:middle;
+    transition:fill .1s;
   }
-  .txn-chart-tooltip-month{font-weight:700;color:var(--text-primary);margin-bottom:4px;}
-  .txn-chart-tooltip-row{display:flex;align-items:center;gap:6px;}
-  .txn-chart-tooltip-row+.txn-chart-tooltip-row{margin-top:2px;}
-  .txn-chart-tooltip-key{width:10px;height:2px;border-radius:1px;flex-shrink:0;}
-  .txn-chart-tooltip-key.pos{background:var(--positive);}
-  .txn-chart-tooltip-key.neg{background:var(--negative);}
-  .txn-chart-tooltip-key.net{background:var(--text-primary);}
-  .txn-chart-tooltip-label{color:var(--text-secondary);margin-right:12px;}
-  .txn-chart-tooltip-value{font-weight:700;font-variant-numeric:tabular-nums;margin-left:auto;}
-  .txn-chart-tooltip-value.pos{color:var(--positive);}
-  .txn-chart-tooltip-value.neg{color:var(--negative);}
-  .txn-chart-tooltip-value.net{color:var(--text-primary);}
+  .txn-chart-value-label.hover{fill:var(--text-primary);font-weight:700;}
 
   table.ledger-year th.month-link{cursor:pointer;}
   table.ledger-year th.month-link:hover{color:var(--text-primary);}

@@ -1658,9 +1658,8 @@ function niceAxis(values){
   if (yMax === yMin) yMax = step*4; // all-zero data still renders as a flat baseline
   return { yMin, yMax, step };
 }
-// shape mirrors the actual mark: 'bar' for Income/Spend (grouped bars),
-// 'line' for Net (see dataviz skill — legends mirror the mark; only the
-// denser tooltip rows key every series with a plain line stroke).
+// shape mirrors the actual mark: 'bar' for Income/Spend (diverging bars),
+// 'line' for Net (see dataviz skill — legends mirror the mark).
 function txnChartLegendItem(label, cls, shape){
   const item = document.createElement('span');
   item.className = 'txn-chart-legend-item';
@@ -1681,9 +1680,10 @@ function txnChartLegendItem(label, cls, shape){
 // it as a 0 rather than skipping it and collapsing the timeline.
 function monthlyTotalsFromRows(rows){
   const income = new Map(), spend = new Map();
+  let hasIncome = false, hasSpend = false;
   rows.forEach(t=>{
-    if (t.type === 'Income') income.set(t.month, (income.get(t.month)||0) + t.amount);
-    else if (t.type === 'Expenses') spend.set(t.month, (spend.get(t.month)||0) - t.amount);
+    if (t.type === 'Income'){ hasIncome = true; income.set(t.month, (income.get(t.month)||0) + t.amount); }
+    else if (t.type === 'Expenses'){ hasSpend = true; spend.set(t.month, (spend.get(t.month)||0) - t.amount); }
   });
   const months = DATA.monthsPresent;
   const incomeVals = months.map(mi => Math.round((income.get(mi)||0)*100)/100);
@@ -1693,7 +1693,7 @@ function monthlyTotalsFromRows(rows){
   // with the Income/Spend lines beside it even when a search also pulls in
   // rows of some other transaction type.
   const netVals = incomeVals.map((v,i)=>Math.round((v-spendVals[i])*100)/100);
-  return { months, incomeVals, spendVals, netVals };
+  return { months, incomeVals, spendVals, netVals, hasIncome, hasSpend };
 }
 // Monthly income vs. spend vs. net line chart, sitting above the
 // Transactions table — rebuilt on every search/filter keystroke (see
@@ -1716,32 +1716,52 @@ function renderTransactionsChart(host, rows){
   wrap.className = 'txn-chart';
   host.appendChild(wrap);
 
-  const { months, incomeVals, spendVals, netVals } = monthlyTotalsFromRows(rows);
+  const { months, incomeVals, spendVals, netVals, hasIncome, hasSpend } = monthlyTotalsFromRows(rows);
   if (!months.length){
     wrap.classList.add('txn-chart-empty-state');
     wrap.textContent = 'No transaction data yet — import a CSV to see monthly trends.';
     return;
   }
 
+  // Diverging bars (Income up, Spend down from a shared zero baseline)
+  // only make sense once there's something on both sides to diverge
+  // between — a search that only turns up one transaction type (or
+  // neither) instead gets a single plain line, with no bars and no
+  // separate Net (which would just retrace that one line exactly).
+  const bothTypes = hasIncome && hasSpend;
+
   const head = document.createElement('div');
   head.className = 'txn-chart-head';
   const title = document.createElement('div');
   title.className = 'txn-chart-title';
-  title.textContent = 'Monthly income, spend & net';
+  title.textContent = bothTypes ? 'Monthly income, spend & net'
+    : hasIncome ? 'Monthly income' : hasSpend ? 'Monthly spend' : 'Monthly net';
   head.appendChild(title);
-  const legend = document.createElement('div');
-  legend.className = 'txn-chart-legend';
-  legend.appendChild(txnChartLegendItem('Income', 'pos', 'bar'));
-  legend.appendChild(txnChartLegendItem('Spend', 'neg', 'bar'));
-  legend.appendChild(txnChartLegendItem('Net', 'net', 'line'));
-  head.appendChild(legend);
   wrap.appendChild(head);
+  // A single series needs no legend box — its one color is already named
+  // by the title above (see dataviz skill's marks-and-anatomy.md).
+  if (bothTypes){
+    const legend = document.createElement('div');
+    legend.className = 'txn-chart-legend';
+    legend.appendChild(txnChartLegendItem('Income', 'pos', 'bar'));
+    legend.appendChild(txnChartLegendItem('Spend', 'neg', 'bar'));
+    legend.appendChild(txnChartLegendItem('Net', 'net', 'line'));
+    head.appendChild(legend);
+  }
 
   const plotHost = document.createElement('div');
   wrap.appendChild(plotHost);
 
-  const H = 220, padL = 48, padR = 16, padT = 16, padB = 28;
-  const { yMin, yMax, step } = niceAxis([...incomeVals, ...spendVals, ...netVals]);
+  // padT/padB carry extra room (vs. a bare axis) for the direct value
+  // labels sitting just above/below each bar/dot — see draw() below.
+  const H = 220, padL = 48, padR = 16, padT = 28, padB = 40;
+  // The axis domain has to match what's actually plotted: in diverging
+  // mode Spend is drawn *below* zero (see drawBars below), so its
+  // magnitude has to extend the domain downward (-spendVals), not upward;
+  // in single-line mode only that one series' own values are in play.
+  const domainVals = bothTypes ? [...incomeVals, ...spendVals.map(v=>-v), ...netVals]
+    : hasIncome ? incomeVals : hasSpend ? spendVals : netVals;
+  const { yMin, yMax, step } = niceAxis(domainVals);
   const svgNS = 'http://www.w3.org/2000/svg';
 
   // Redrawn on every resize with the plot's own current pixel width as the
@@ -1758,9 +1778,9 @@ function renderTransactionsChart(host, rows){
     svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
 
     const innerW = W - padL - padR, innerH = H - padT - padB;
-    // A categorical band per month (Income/Spend's grouped bars need a
-    // slot to sit in, not just a point) — xFor is each band's center,
-    // which also doubles as the Net line's x position for that month.
+    // A categorical band per month (Income/Spend's bars need a slot to
+    // sit in, not just a point) — xFor is each band's center, which also
+    // doubles as the Net line's x position for that month.
     const bandW = innerW / months.length;
     const xFor = i => padL + bandW*(i+0.5);
     const yFor = v => padT + innerH - innerH * (v-yMin)/(yMax-yMin);
@@ -1811,14 +1831,14 @@ function renderTransactionsChart(host, rows){
       svg.appendChild(t);
     });
 
-    // Income/Spend as a grouped bar per month (see mark specs: <=24px
-    // thick, capped rather than filling the band; 4px rounded data-end,
-    // square at the baseline; a 2px surface gap between the two bars in a
-    // group). Net stays a line — it's the derived, headline series and
-    // reads better as a continuous trend than as a third bar.
-    const barGap = 2;
-    const barW = Math.min(24, Math.max(2, (bandW-8)/2));
-    const groupW = barW*2 + barGap;
+    // Income/Spend: a diverging bar per month when both types are present
+    // — Income up, Spend down from the shared zero baseline (see mark
+    // specs: <=24px thick, capped rather than filling the band; 4px
+    // rounded data-end, square at the baseline) — with Net as a line on
+    // top. A search that only turns up one transaction type has nothing
+    // to diverge between, so it's drawn as a single plain line instead,
+    // with no bars and no separate Net (which would just retrace it).
+    const barW = Math.min(24, Math.max(2, bandW*0.5));
     function barPath(v, cx, w){
       const y0 = yFor(0), y1 = yFor(v);
       const y = Math.min(y0,y1), h = Math.abs(y1-y0);
@@ -1829,10 +1849,9 @@ function renderTransactionsChart(host, rows){
         ? `M${x},${y+h} L${x},${y+r} Q${x},${y} ${x+r},${y} L${x+w-r},${y} Q${x+w},${y} ${x+w},${y+r} L${x+w},${y+h} Z`
         : `M${x},${y} L${x+w},${y} L${x+w},${y+h-r} Q${x+w},${y+h} ${x+w-r},${y+h} L${x+r},${y+h} Q${x},${y+h} ${x},${y+h-r} Z`;
     }
-    function drawBars(vals, cls, side){
+    function drawBars(vals, cls){
       return vals.map((v,i)=>{
-        const cx = xFor(i) + (side==='left' ? -groupW/2+barW/2 : groupW/2-barW/2);
-        const d = barPath(v, cx, barW);
+        const d = barPath(v, xFor(i), barW);
         if (!d) return null;
         const path = document.createElementNS(svgNS,'path');
         path.setAttribute('d', d);
@@ -1841,31 +1860,93 @@ function renderTransactionsChart(host, rows){
         return path;
       });
     }
-    const incomeBars = drawBars(incomeVals, 'pos', 'left');
-    const spendBars = drawBars(spendVals, 'neg', 'right');
+    function drawLine(vals, cls){
+      const points = vals.map((v,i)=>[xFor(i), yFor(v)]);
+      const poly = document.createElementNS(svgNS,'polyline');
+      poly.setAttribute('points', points.map(p=>p.join(',')).join(' '));
+      poly.setAttribute('class','txn-chart-line '+cls);
+      svg.appendChild(poly);
+      points.forEach(([x,y],i)=>{
+        const c = document.createElementNS(svgNS,'circle');
+        c.setAttribute('cx',x); c.setAttribute('cy',y); c.setAttribute('r',4);
+        // The Net line's own stroke stays a neutral dashed white (its
+        // series identity — see the legend), but each dot on it recolors
+        // by that month's sign, since "up" and "down" mean something
+        // different for a derived income-minus-spend line than they do
+        // for Income/Spend's own fixed-color marks.
+        const dotCls = cls === 'net' ? (vals[i] >= 0 ? 'pos' : 'neg') : cls;
+        c.setAttribute('class','txn-chart-dot '+dotCls);
+        svg.appendChild(c);
+      });
+      return points;
+    }
 
-    const netPoints = netVals.map((v,i)=>[xFor(i), yFor(v)]);
-    const netPoly = document.createElementNS(svgNS,'polyline');
-    netPoly.setAttribute('points', netPoints.map(p=>p.join(',')).join(' '));
-    netPoly.setAttribute('class','txn-chart-line net');
-    svg.appendChild(netPoly);
-    netPoints.forEach(([x,y])=>{
-      const c = document.createElementNS(svgNS,'circle');
-      c.setAttribute('cx',x); c.setAttribute('cy',y); c.setAttribute('r',4);
-      c.setAttribute('class','txn-chart-dot net');
-      svg.appendChild(c);
-    });
+    let incomeBars = null, spendBars = null, netPoints = null;
+    let singlePoints = null, singleCls = null, singleVals = null;
+    if (bothTypes){
+      incomeBars = drawBars(incomeVals, 'pos');
+      // Negated so the bar geometry actually grows downward — spendVals
+      // itself stays the plain positive "amount spent" magnitude used
+      // everywhere else (its value label included).
+      spendBars = drawBars(spendVals.map(v=>-v), 'neg');
+      netPoints = drawLine(netVals, 'net');
+    } else {
+      singleCls = hasIncome ? 'pos' : hasSpend ? 'neg' : 'net';
+      singleVals = hasIncome ? incomeVals : hasSpend ? spendVals : netVals;
+      singlePoints = drawLine(singleVals, singleCls);
+    }
 
-    // Shared tooltip + per-month hover: snaps to the nearest month's band
-    // under the pointer and shows every series' value for it (see dataviz
-    // skill — one tooltip, every series, rather than a per-mark hit
-    // target). Bars get their own lift (see showAt below); the hover band
-    // built above is their shared backdrop; Net — still a line — keeps a
+    // Direct value labels, one per mark, drawn last (on top of
+    // everything) — muted by default, brought to full contrast for
+    // whichever month is hovered (see showAt/hide below) instead of a
+    // hover-only tooltip bubble.
+    // fmt() prints "–" for a zero amount — fine in a table cell, but on
+    // the chart a month with literally no income/spend/net still gets a
+    // plain "0" label (this always sees a real 0, never a true JS null —
+    // monthlyTotalsFromRows already defaults a month with no matching
+    // rows to 0 — but the null check stays as a defensive fallback).
+    function fmtChartValue(v){
+      return (v == null || v === 0) ? '0' : fmt(v);
+    }
+    function valueLabel(text, x, y, above, gap){
+      if (gap == null) gap = above ? 8 : 14;
+      const t = document.createElementNS(svgNS,'text');
+      t.setAttribute('x', x);
+      t.setAttribute('y', above ? y-gap : y+gap);
+      t.setAttribute('class','txn-chart-value-label');
+      t.textContent = text;
+      svg.appendChild(t);
+      return t;
+    }
+    let incomeLabels = null, spendLabels = null, netLabels = null, singleLabels = null;
+    if (bothTypes){
+      // Income only ever grows up and Spend only ever grows down (see
+      // drawBars above), so each always labels on the same side of its
+      // bar — even a ~0 month (barPath returned null, no bar drawn)
+      // still gets its "0" label sitting right on the baseline.
+      incomeLabels = incomeVals.map((v,i)=> valueLabel(fmtChartValue(v), xFor(i), yFor(v), true));
+      spendLabels = spendVals.map((v,i)=> valueLabel(fmtChartValue(v), xFor(i), yFor(-v), false));
+      // Net sits at a fixed spot just above the month label instead of
+      // tracking its own dot — that dot wanders all over the chart (it's
+      // wherever Income minus Spend lands) and would otherwise need to
+      // dodge whichever bar label it ends up next to; anchoring it by the
+      // month name instead reads as "the month's net result" and never
+      // collides with anything.
+      netLabels = netVals.map((v,i)=> valueLabel(fmtChartValue(v), xFor(i), H-20, true, 0));
+    } else {
+      singleLabels = singleVals.map((v,i)=> singleCls === 'net'
+        ? valueLabel(fmtChartValue(v), xFor(i), H-20, true, 0)
+        : valueLabel(fmtChartValue(v), xFor(i), singlePoints[i][1], v>=0));
+    }
+
+    // Per-month hover: snaps to the nearest month's band under the
+    // pointer. Bars get their own lift and the direct labels above go
+    // full-contrast (see showAt below); the hover band built earlier is
+    // their shared backdrop; the line (Net, or the single series) keeps a
     // hover dot on its own point.
-    const hoverDotNet = document.createElementNS(svgNS,'circle');
-    hoverDotNet.setAttribute('r',5);
-    hoverDotNet.setAttribute('class','txn-chart-hover-dot net');
-    svg.appendChild(hoverDotNet);
+    const hoverDot = document.createElementNS(svgNS,'circle');
+    hoverDot.setAttribute('r',5);
+    svg.appendChild(hoverDot);
 
     const overlay = document.createElementNS(svgNS,'rect');
     overlay.setAttribute('x',padL); overlay.setAttribute('y',padT);
@@ -1873,73 +1954,39 @@ function renderTransactionsChart(host, rows){
     overlay.setAttribute('class','txn-chart-overlay');
     svg.appendChild(overlay);
 
-    const tooltip = document.createElement('div');
-    tooltip.className = 'txn-chart-tooltip';
-    const ttMonth = document.createElement('div');
-    ttMonth.className = 'txn-chart-tooltip-month';
-    tooltip.appendChild(ttMonth);
-    function tooltipRow(cls, label){
-      const row = document.createElement('div');
-      row.className = 'txn-chart-tooltip-row';
-      const key = document.createElement('span');
-      key.className = 'txn-chart-tooltip-key '+cls;
-      row.appendChild(key);
-      const lbl = document.createElement('span');
-      lbl.className = 'txn-chart-tooltip-label';
-      lbl.textContent = label;
-      row.appendChild(lbl);
-      const val = document.createElement('span');
-      val.className = 'txn-chart-tooltip-value '+cls;
-      row.appendChild(val);
-      tooltip.appendChild(row);
-      return val;
-    }
-    const ttIncomeVal = tooltipRow('pos','Income');
-    const ttSpendVal = tooltipRow('neg','Spend');
-    const ttNetVal = tooltipRow('net','Net');
-    plotHost.appendChild(tooltip);
-
-    let hoveredBars = [];
+    let hoveredBars = [], hoveredLabels = [];
     function showAt(i){
       const x = xFor(i);
-      const yNet = netPoints[i][1];
       hoverBand.setAttribute('x', x - bandW/2);
       hoverBand.setAttribute('width', bandW);
       hoverBand.style.opacity = 1;
-      hoveredBars.forEach(b=>b.classList.remove('hover'));
-      hoveredBars = [incomeBars[i], spendBars[i]].filter(Boolean);
-      hoveredBars.forEach(b=>b.classList.add('hover'));
-      hoverDotNet.setAttribute('cx',x); hoverDotNet.setAttribute('cy', yNet);
-      hoverDotNet.style.opacity = 1;
-      ttMonth.textContent = monthFullName(months[i]);
-      ttIncomeVal.textContent = fmt(incomeVals[i]);
-      ttSpendVal.textContent = fmt(spendVals[i]);
-      ttNetVal.textContent = fmt(netVals[i]);
-      tooltip.style.opacity = 1;
+      hoveredLabels.forEach(l=>l.classList.remove('hover'));
 
-      // Positioned in wrap-relative pixels (not viewBox %) and clamped to
-      // the card's bounds, rather than a plain centered translate(-50%) —
-      // that would let the bubble spill past the chart's right edge for
-      // months near the end of the line (e.g. December).
-      const barTopY = v => Math.min(yFor(0), yFor(v));
-      const topY = Math.min(barTopY(incomeVals[i]), barTopY(spendVals[i]), yNet);
-      const wrapRect = wrap.getBoundingClientRect();
-      const svgRect = svg.getBoundingClientRect();
-      const pointX = svgRect.left - wrapRect.left + (x/W) * svgRect.width;
-      const pointY = svgRect.top - wrapRect.top + (topY/H) * svgRect.height;
-      const margin = 4;
-      const tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
-      const left = Math.max(margin, Math.min(pointX - tw/2, wrapRect.width - tw - margin));
-      const top = Math.max(margin, pointY - th - 10);
-      tooltip.style.left = left + 'px';
-      tooltip.style.top = top + 'px';
+      if (bothTypes){
+        hoveredBars.forEach(b=>b.classList.remove('hover'));
+        hoveredBars = [incomeBars[i], spendBars[i]].filter(Boolean);
+        hoveredBars.forEach(b=>b.classList.add('hover'));
+        hoveredLabels = [incomeLabels[i], spendLabels[i], netLabels[i]].filter(Boolean);
+        const yNet = netPoints[i][1];
+        hoverDot.setAttribute('cx',x); hoverDot.setAttribute('cy', yNet);
+        hoverDot.setAttribute('class','txn-chart-hover-dot '+(netVals[i]>=0?'pos':'neg'));
+      } else {
+        hoveredLabels = [singleLabels[i]].filter(Boolean);
+        const y = singlePoints[i][1];
+        hoverDot.setAttribute('cx',x); hoverDot.setAttribute('cy', y);
+        const dotCls = singleCls === 'net' ? (singleVals[i]>=0?'pos':'neg') : singleCls;
+        hoverDot.setAttribute('class','txn-chart-hover-dot '+dotCls);
+      }
+      hoveredLabels.forEach(l=>l.classList.add('hover'));
+      hoverDot.style.opacity = 1;
     }
     function hide(){
       hoverBand.style.opacity = 0;
       hoveredBars.forEach(b=>b.classList.remove('hover'));
       hoveredBars = [];
-      hoverDotNet.style.opacity = 0;
-      tooltip.style.opacity = 0;
+      hoveredLabels.forEach(l=>l.classList.remove('hover'));
+      hoveredLabels = [];
+      hoverDot.style.opacity = 0;
     }
     overlay.addEventListener('pointermove', (e)=>{
       const pt = svg.createSVGPoint();
