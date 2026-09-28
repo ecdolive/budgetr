@@ -508,6 +508,21 @@
     padding:0;
     cursor:pointer;
   }
+  /* Month filter chip (see txnMonthFilter) — same dotted-underline
+     "interactive text" look as the field-scope label above, but a real
+     button here (clicking it clears the filter) rather than a decoy over
+     a native <select>. */
+  .search-heading-month-chip{
+    background:none;
+    border:none;
+    padding:0;
+    font:inherit;
+    color:var(--text-primary);
+    font-weight:700;
+    border-bottom:1px dotted var(--text-muted);
+    cursor:pointer;
+  }
+  .search-heading-month-chip:hover{color:var(--accent-teal);border-bottom-color:var(--accent-teal-dim);}
 
   /* Transactions tab: monthly income/spend line chart, sitting between the
      title bar and the scrolling table body — flex-shrink:0 like the title
@@ -537,7 +552,19 @@
   /* Mirrors the line's own dash pattern (see .txn-chart-line.net) rather
      than a solid swatch, so the legend key matches the mark exactly. */
   .txn-chart-legend-swatch.net{background:repeating-linear-gradient(to right, var(--text-primary) 0 4px, transparent 4px 7px);}
-  .txn-chart-svg{display:block;width:100%;height:220px;}
+  .txn-chart-svg{
+    display:block;
+    width:100%;
+    height:220px;
+    /* The selected month's band's actual rendered color (its teal wash
+       over the card background) as a flat value — shared with
+       .txn-chart-selected-band and .txn-chart-selected-dot below, so the
+       dot's ring can match the band exactly rather than guessing a color.
+       Lives here (a shared ancestor of both) rather than on the band
+       itself, since a custom property set on one element isn't visible to
+       its siblings, only its descendants. */
+    --txn-selected-bg: color-mix(in srgb, var(--accent-teal) 12%, var(--bg-card));
+  }
   .txn-chart-grid{stroke:var(--border);stroke-width:1;}
   /* The zero gridline reads as the chart's baseline — bars grow from it,
      Net crosses it — so it's a hair brighter than the rest of the
@@ -547,11 +574,26 @@
   .txn-chart-axis-label{fill:var(--text-muted);font-size:11px;font-variant-numeric:tabular-nums;}
   /* Hover column — a subtle backdrop wash spanning the hovered month's
      whole band, behind the bars/line (see draw(): appended first). */
-  .txn-chart-hover-band{fill:var(--text-primary);fill-opacity:0.06;opacity:0;transition:opacity .1s;}
+  .txn-chart-hover-band{fill:var(--text-primary);fill-opacity:0.06;opacity:0;rx:8px;transition:opacity .1s;}
+  /* The clicked/selected month's own backdrop (see txnMonthFilter) — teal
+     rather than hover's neutral white wash, matching the app's existing
+     selected-state color (active pills/tabs). Independent of
+     .txn-chart-hover-band: both can be visible at once. */
+  .txn-chart-selected-band{
+    fill:var(--accent-teal);
+    fill-opacity:0.12;
+    opacity:0;
+    rx:8px;
+    transition:opacity .1s;
+  }
   .txn-chart-bar{transition:filter .1s;}
   .txn-chart-bar.pos{fill:var(--positive);}
   .txn-chart-bar.neg{fill:var(--negative);}
   .txn-chart-bar.hover{filter:brightness(1.25);}
+  /* No .txn-chart-bar.selected rule — the selected month's bars sit
+     unstyled on the selected band's own wash (see
+     .txn-chart-selected-band); the band, value labels, and dot ring
+     already mark it, without also outlining the bars themselves. */
   /* .pos/.neg here are the single-series fallback (a search that only
      turns up one transaction type — see bothTypes in
      renderTransactionsChart) drawn as a plain solid line; .net is always
@@ -571,6 +613,13 @@
   .txn-chart-hover-dot{pointer-events:none;opacity:0;stroke:var(--bg-card);stroke-width:2;transition:opacity .1s;}
   .txn-chart-hover-dot.pos{fill:var(--positive);}
   .txn-chart-hover-dot.neg{fill:var(--negative);}
+  /* Ringed in the selected band's own color (see --txn-selected-bg on
+     .txn-chart-svg) rather than hover's plain bg-card ring, so the dot
+     reads as sitting on that highlighted backdrop, cut out of it, the
+     same way an ordinary dot's bg-card ring cuts it out of the card. */
+  .txn-chart-selected-dot{pointer-events:none;opacity:0;stroke:var(--txn-selected-bg);stroke-width:2;transition:opacity .1s;}
+  .txn-chart-selected-dot.pos{fill:var(--positive);}
+  .txn-chart-selected-dot.neg{fill:var(--negative);}
   .txn-chart-overlay{fill:transparent;cursor:pointer;}
   /* Values live directly on the chart rather than in a hover-only
      tooltip — muted at rest so a whole chart of numbers doesn't compete
@@ -584,6 +633,16 @@
     transition:fill .1s;
   }
   .txn-chart-value-label.hover{fill:var(--text-primary);font-weight:700;}
+  /* Selected (see txnMonthFilter) wins over hover when a month is both —
+     two classes beats .hover's one on specificity, so this stays legible
+     even while pointing right at it. Colored by the same pos/neg identity
+     as the label's own mark (fixed for Income/Spend, by sign for Net —
+     see valueLabel's cls argument) rather than a flat accent color, so
+     the selected month's numbers read the same income-green/spend-red
+     language as the rest of the chart and app. */
+  .txn-chart-value-label.selected{font-weight:700;}
+  .txn-chart-value-label.selected.pos{fill:var(--positive);}
+  .txn-chart-value-label.selected.neg{fill:var(--negative);}
 
   table.ledger-year th.month-link{cursor:pointer;}
   table.ledger-year th.month-link:hover{color:var(--text-primary);}

@@ -829,6 +829,11 @@ let searchQuery = '';
 // see SEARCH_FIELDS/filteredSearchTxns.
 let searchField = 'all';
 let txnSort = { key: 'date', dir: -1 }; // default: newest first
+// Set by clicking a month's column in the Transactions chart (see
+// renderTransactionsChart) — a transient, click-to-toggle filter (click the
+// same month again and it clears) layered on top of whatever the search box
+// already matches, rather than a persisted setting.
+let txnMonthFilter = null; // month index (0-11) | null
 
 // Budget editor — a distinct "mode" (like search) that takes over the mid
 // and right panels. See the BUDGET EDITOR section below.
@@ -1054,6 +1059,7 @@ function navItem(label, key, isActive){
     // filter so Transactions is back to showing everything next time.
     searchQuery = '';
     searchField = 'all';
+    txnMonthFilter = null;
     renderAll();
   });
   return div;
@@ -1705,7 +1711,7 @@ function monthlyTotalsFromRows(rows){
 // document, and it needs to redo that measurement on every resize (window
 // resize, or the right panel expanding/collapsing, both of which change
 // the mid panel's width without changing the SVG's own markup).
-function renderTransactionsChart(host, rows){
+function renderTransactionsChart(host, rows, onMonthClick){
   // A fresh ResizeObserver gets attached below on every call (one per
   // search/filter keystroke — see refresh() in renderTransactionsPage);
   // without disconnecting the previous call's observer first, each one
@@ -1787,12 +1793,26 @@ function renderTransactionsChart(host, rows){
 
     // Hover column highlight — sits behind everything (drawn first),
     // toggled visible for whichever month's band the pointer is over (see
-    // showAt/hide below), a backdrop for the bars' own hover lift.
+    // showAt/hide below), a backdrop for the bars' own hover lift. Spans
+    // the full height (not just the plot's inner area) since it's also
+    // the visual for a *clicked* month (see the overlay's click handler
+    // below), which needs to read clearly against the value labels and
+    // month name living in the top/bottom padding too.
     const hoverBand = document.createElementNS(svgNS,'rect');
-    hoverBand.setAttribute('y', padT);
-    hoverBand.setAttribute('height', innerH);
+    hoverBand.setAttribute('y', 0);
+    hoverBand.setAttribute('height', H);
     hoverBand.setAttribute('class','txn-chart-hover-band');
     svg.appendChild(hoverBand);
+
+    // The clicked/selected month's own persistent backdrop — separate
+    // from hoverBand so the two can show at once (hovering a different
+    // month while one stays selected), each in its own styling — see the
+    // "persistent selected state" block near the bottom of draw().
+    const selectedBand = document.createElementNS(svgNS,'rect');
+    selectedBand.setAttribute('y', 0);
+    selectedBand.setAttribute('height', H);
+    selectedBand.setAttribute('class','txn-chart-selected-band');
+    svg.appendChild(selectedBand);
 
     // Gridlines + y-axis labels, one per step from yMin to yMax (step
     // sized so 0 always lands exactly on one — see niceAxis).
@@ -1815,7 +1835,11 @@ function renderTransactionsChart(host, rows){
       label.setAttribute('x', padL-8);
       label.setAttribute('y', y+4);
       label.setAttribute('text-anchor','end');
-      label.setAttribute('class','txn-chart-axis-label');
+      // 'num' (the same class the tables' own amount cells use) gives this
+      // the app-wide tabular-numeral font, rather than the axis label's
+      // own default — reserved for actual numbers, so the month names
+      // below don't get it too.
+      label.setAttribute('class','txn-chart-axis-label num');
       label.textContent = isBaseline ? '0' : fmt(v);
       svg.appendChild(label);
     }
@@ -1908,12 +1932,19 @@ function renderTransactionsChart(host, rows){
     function fmtChartValue(v){
       return (v == null || v === 0) ? '0' : fmt(v);
     }
-    function valueLabel(text, x, y, above, gap){
+    // cls tags the label with the same pos/neg identity its own mark
+    // uses (fixed for Income/Spend, sign-dependent for Net — see
+    // drawLine's dotCls) — invisible normally, but it's what lets a
+    // *selected* month's labels turn green/red by sign instead of a flat
+    // color (see .txn-chart-value-label.selected in styles.css).
+    function valueLabel(text, x, y, above, gap, cls){
       if (gap == null) gap = above ? 8 : 14;
       const t = document.createElementNS(svgNS,'text');
       t.setAttribute('x', x);
       t.setAttribute('y', above ? y-gap : y+gap);
-      t.setAttribute('class','txn-chart-value-label');
+      // 'num' — see the y-axis gridline labels above — matches this to
+      // the same tabular-numeral font the tables' amount cells use.
+      t.setAttribute('class','txn-chart-value-label num '+cls);
       t.textContent = text;
       svg.appendChild(t);
       return t;
@@ -1924,19 +1955,22 @@ function renderTransactionsChart(host, rows){
       // drawBars above), so each always labels on the same side of its
       // bar — even a ~0 month (barPath returned null, no bar drawn)
       // still gets its "0" label sitting right on the baseline.
-      incomeLabels = incomeVals.map((v,i)=> valueLabel(fmtChartValue(v), xFor(i), yFor(v), true));
-      spendLabels = spendVals.map((v,i)=> valueLabel(fmtChartValue(v), xFor(i), yFor(-v), false));
+      incomeLabels = incomeVals.map((v,i)=> valueLabel(fmtChartValue(v), xFor(i), yFor(v), true, undefined, 'pos'));
+      spendLabels = spendVals.map((v,i)=> valueLabel(fmtChartValue(v), xFor(i), yFor(-v), false, undefined, 'neg'));
       // Net sits at a fixed spot just above the month label instead of
       // tracking its own dot — that dot wanders all over the chart (it's
       // wherever Income minus Spend lands) and would otherwise need to
       // dodge whichever bar label it ends up next to; anchoring it by the
       // month name instead reads as "the month's net result" and never
       // collides with anything.
-      netLabels = netVals.map((v,i)=> valueLabel(fmtChartValue(v), xFor(i), H-20, true, 0));
+      netLabels = netVals.map((v,i)=> valueLabel(fmtChartValue(v), xFor(i), H-20, true, 0, v>=0?'pos':'neg'));
     } else {
-      singleLabels = singleVals.map((v,i)=> singleCls === 'net'
-        ? valueLabel(fmtChartValue(v), xFor(i), H-20, true, 0)
-        : valueLabel(fmtChartValue(v), xFor(i), singlePoints[i][1], v>=0));
+      singleLabels = singleVals.map((v,i)=>{
+        const cls = singleCls === 'net' ? (v>=0?'pos':'neg') : singleCls;
+        return singleCls === 'net'
+          ? valueLabel(fmtChartValue(v), xFor(i), H-20, true, 0, cls)
+          : valueLabel(fmtChartValue(v), xFor(i), singlePoints[i][1], v>=0, undefined, cls);
+      });
     }
 
     // Per-month hover: snaps to the nearest month's band under the
@@ -1947,38 +1981,61 @@ function renderTransactionsChart(host, rows){
     const hoverDot = document.createElementNS(svgNS,'circle');
     hoverDot.setAttribute('r',5);
     svg.appendChild(hoverDot);
+    // The selected month's own persistent dot — see the "persistent
+    // selected state" block below; a bigger, teal-ringed sibling of
+    // hoverDot so it reads as pinned rather than transient.
+    const selectedDot = document.createElementNS(svgNS,'circle');
+    selectedDot.setAttribute('r',6);
+    svg.appendChild(selectedDot);
 
+    // Spans the full height (see hoverBand above) so a click/hover
+    // anywhere in a month's column — bars, dots, value labels, the month
+    // name itself — all hit the same target.
     const overlay = document.createElementNS(svgNS,'rect');
-    overlay.setAttribute('x',padL); overlay.setAttribute('y',padT);
-    overlay.setAttribute('width', innerW); overlay.setAttribute('height', innerH);
+    overlay.setAttribute('x',padL); overlay.setAttribute('y',0);
+    overlay.setAttribute('width', innerW); overlay.setAttribute('height', H);
     overlay.setAttribute('class','txn-chart-overlay');
     svg.appendChild(overlay);
 
+    function markAt(i, cls, band, dot){
+      const x = xFor(i);
+      band.setAttribute('x', x - bandW/2);
+      band.setAttribute('width', bandW);
+      band.style.opacity = 1;
+      let bars = [], labels = [];
+      if (bothTypes){
+        bars = [incomeBars[i], spendBars[i]].filter(Boolean);
+        labels = [incomeLabels[i], spendLabels[i], netLabels[i]].filter(Boolean);
+        const y = netPoints[i][1];
+        dot.setAttribute('cx',x); dot.setAttribute('cy', y);
+        dot.setAttribute('class','txn-chart-'+cls+'-dot '+(netVals[i]>=0?'pos':'neg'));
+      } else {
+        labels = [singleLabels[i]].filter(Boolean);
+        const y = singlePoints[i][1];
+        const dotCls = singleCls === 'net' ? (singleVals[i]>=0?'pos':'neg') : singleCls;
+        dot.setAttribute('cx',x); dot.setAttribute('cy', y);
+        dot.setAttribute('class','txn-chart-'+cls+'-dot '+dotCls);
+      }
+      bars.forEach(b=>b.classList.add(cls));
+      labels.forEach(l=>l.classList.add(cls));
+      dot.style.opacity = 1;
+      return { bars, labels };
+    }
+
+    // Persistent selected-month state (see txnMonthFilter/the overlay's
+    // click handler below) — teal, matching the app's existing
+    // selected-state convention (active pills/tabs), and independent of
+    // hover: it stays marked even while hovering a *different* month, and
+    // hovering the selected month itself just layers hover's white lift
+    // on top, rather than the two states fighting over the same classes.
+    const selectedIdx = txnMonthFilter === null ? -1 : months.indexOf(txnMonthFilter);
+    if (selectedIdx >= 0) markAt(selectedIdx, 'selected', selectedBand, selectedDot);
+
     let hoveredBars = [], hoveredLabels = [];
     function showAt(i){
-      const x = xFor(i);
-      hoverBand.setAttribute('x', x - bandW/2);
-      hoverBand.setAttribute('width', bandW);
-      hoverBand.style.opacity = 1;
+      hoveredBars.forEach(b=>b.classList.remove('hover'));
       hoveredLabels.forEach(l=>l.classList.remove('hover'));
-
-      if (bothTypes){
-        hoveredBars.forEach(b=>b.classList.remove('hover'));
-        hoveredBars = [incomeBars[i], spendBars[i]].filter(Boolean);
-        hoveredBars.forEach(b=>b.classList.add('hover'));
-        hoveredLabels = [incomeLabels[i], spendLabels[i], netLabels[i]].filter(Boolean);
-        const yNet = netPoints[i][1];
-        hoverDot.setAttribute('cx',x); hoverDot.setAttribute('cy', yNet);
-        hoverDot.setAttribute('class','txn-chart-hover-dot '+(netVals[i]>=0?'pos':'neg'));
-      } else {
-        hoveredLabels = [singleLabels[i]].filter(Boolean);
-        const y = singlePoints[i][1];
-        hoverDot.setAttribute('cx',x); hoverDot.setAttribute('cy', y);
-        const dotCls = singleCls === 'net' ? (singleVals[i]>=0?'pos':'neg') : singleCls;
-        hoverDot.setAttribute('class','txn-chart-hover-dot '+dotCls);
-      }
-      hoveredLabels.forEach(l=>l.classList.add('hover'));
-      hoverDot.style.opacity = 1;
+      ({ bars: hoveredBars, labels: hoveredLabels } = markAt(i, 'hover', hoverBand, hoverDot));
     }
     function hide(){
       hoverBand.style.opacity = 0;
@@ -1988,15 +2045,22 @@ function renderTransactionsChart(host, rows){
       hoveredLabels = [];
       hoverDot.style.opacity = 0;
     }
-    overlay.addEventListener('pointermove', (e)=>{
+    function bandIndexAt(e){
       const pt = svg.createSVGPoint();
       pt.x = e.clientX; pt.y = e.clientY;
       const loc = pt.matrixTransform(svg.getScreenCTM().inverse());
-      let i = Math.floor((loc.x - padL)/bandW);
-      i = Math.max(0, Math.min(months.length-1, i));
-      showAt(i);
-    });
+      return Math.max(0, Math.min(months.length-1, Math.floor((loc.x - padL)/bandW)));
+    }
+    overlay.addEventListener('pointermove', (e)=> showAt(bandIndexAt(e)));
     overlay.addEventListener('pointerleave', hide);
+    // Clicking a month toggles it as a filter on the table below (see
+    // txnMonthFilter/renderTransactionsBody) — the chart itself is
+    // unaffected, always showing every month's trend regardless.
+    overlay.addEventListener('click', (e)=>{
+      const mi = months[bandIndexAt(e)];
+      txnMonthFilter = (txnMonthFilter === mi) ? null : mi;
+      if (onMonthClick) onMonthClick();
+    });
   }
   draw();
 
@@ -2044,7 +2108,7 @@ function renderTransactionsPage(mid){
   mid.appendChild(body);
 
   function refresh(){
-    renderTransactionsChart(chartHost, filteredSearchTxns());
+    renderTransactionsChart(chartHost, filteredSearchTxns(), refresh);
     body.innerHTML = '';
     body.appendChild(renderTransactionsBody(refresh));
   }
@@ -2074,7 +2138,11 @@ function renderTransactionsBody(onSortChange){
   const wrap = document.createDocumentFragment();
   const heading = document.createElement('div');
   heading.className = 'search-heading';
-  const rows = filteredSearchTxns();
+  // txnMonthFilter (set by clicking a month in the chart above — see
+  // renderTransactionsChart) only ever narrows the table, never the chart
+  // itself — the chart keeps showing every month's trend regardless, so
+  // clicking one doesn't collapse it down to a single bar.
+  const rows = filteredSearchTxns().filter(t => txnMonthFilter === null || t.month === txnMonthFilter);
   // Sum of whatever's currently visible — recalculates with every
   // search/filter keystroke and field-select change, since it's derived
   // from the same filteredSearchTxns() rows the table itself renders, not
@@ -2085,6 +2153,20 @@ function renderTransactionsBody(onSortChange){
   countEl.textContent = rows.length;
   heading.appendChild(countEl);
   heading.appendChild(document.createTextNode(` transaction${rows.length===1?'':'s'}`));
+
+  if (txnMonthFilter !== null){
+    heading.appendChild(document.createTextNode(' in '));
+    const monthChip = document.createElement('button');
+    monthChip.type = 'button';
+    monthChip.className = 'search-heading-month-chip';
+    monthChip.textContent = monthFullName(txnMonthFilter);
+    monthChip.setAttribute('aria-label', `Clear ${monthFullName(txnMonthFilter)} filter`);
+    monthChip.addEventListener('click', ()=>{
+      txnMonthFilter = null;
+      onSortChange();
+    });
+    heading.appendChild(monthChip);
+  }
 
   if (searchQuery){
     heading.appendChild(document.createTextNode(' matching "'));
