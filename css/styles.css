@@ -509,6 +509,83 @@
     cursor:pointer;
   }
 
+  /* Transactions tab: monthly income/spend line chart, sitting between the
+     title bar and the scrolling table body — flex-shrink:0 like the title
+     bar so it never gets squeezed by the table's flex:1 sibling. */
+  .txn-chart{
+    flex-shrink:0;
+    position:relative;
+    margin:0 8px 16px;
+    padding:16px;
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:var(--radius-lg);
+  }
+  .txn-chart-empty-state{color:var(--text-muted);font-size:13px;text-align:center;padding:32px 16px;}
+  .txn-chart-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}
+  .txn-chart-title{font-size:13px;font-weight:700;color:var(--text-secondary);}
+  .txn-chart-legend{display:flex;align-items:center;gap:16px;}
+  .txn-chart-legend-item{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--text-secondary);}
+  /* Legend swatches mirror each series' actual mark — a small rect for
+     Income/Spend's bars, a short line stroke for Net's line — rather than
+     one shared shape for all three (see marks-and-anatomy.md). */
+  .txn-chart-legend-swatch{flex-shrink:0;border-radius:2px;}
+  .txn-chart-legend-swatch.bar{width:10px;height:10px;}
+  .txn-chart-legend-swatch.line{width:12px;height:2px;border-radius:1px;}
+  .txn-chart-legend-swatch.pos{background:var(--positive);}
+  .txn-chart-legend-swatch.neg{background:var(--negative);}
+  /* Mirrors the line's own dash pattern (see .txn-chart-line.net) rather
+     than a solid swatch, so the legend key matches the mark exactly. */
+  .txn-chart-legend-swatch.net{background:repeating-linear-gradient(to right, var(--text-primary) 0 4px, transparent 4px 7px);}
+  .txn-chart-svg{display:block;width:100%;height:220px;}
+  .txn-chart-grid{stroke:var(--border);stroke-width:1;}
+  /* The zero gridline reads as the chart's baseline — bars grow from it,
+     Net crosses it — so it's a hair brighter than the rest of the
+     (recessive) grid, anchoring the chart without competing with the
+     data itself. */
+  .txn-chart-grid.baseline{stroke:var(--text-muted);}
+  .txn-chart-axis-label{fill:var(--text-muted);font-size:11px;font-variant-numeric:tabular-nums;}
+  /* Hover column — a subtle backdrop wash spanning the hovered month's
+     whole band, behind the bars/line (see draw(): appended first). */
+  .txn-chart-hover-band{fill:var(--text-primary);fill-opacity:0.06;opacity:0;transition:opacity .1s;}
+  .txn-chart-bar{transition:filter .1s;}
+  .txn-chart-bar.pos{fill:var(--positive);}
+  .txn-chart-bar.neg{fill:var(--negative);}
+  .txn-chart-bar.hover{filter:brightness(1.25);}
+  .txn-chart-line{fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+  .txn-chart-line.net{stroke:var(--text-primary);stroke-dasharray:6 4;}
+  .txn-chart-dot{stroke:var(--bg-card);stroke-width:2;}
+  .txn-chart-dot.net{fill:var(--text-primary);}
+  .txn-chart-hover-dot{pointer-events:none;opacity:0;stroke:var(--bg-card);stroke-width:2;transition:opacity .1s;}
+  .txn-chart-hover-dot.net{fill:var(--text-primary);}
+  .txn-chart-overlay{fill:transparent;cursor:pointer;}
+  .txn-chart-tooltip{
+    position:absolute;
+    pointer-events:none;
+    background:var(--bg-mid);
+    border:1px solid var(--border);
+    border-radius:var(--radius-sm);
+    padding:8px 10px;
+    font-size:12px;
+    opacity:0;
+    white-space:nowrap;
+    z-index:5;
+    box-shadow:0 4px 12px rgba(0,0,0,0.3);
+    transition:opacity .1s;
+  }
+  .txn-chart-tooltip-month{font-weight:700;color:var(--text-primary);margin-bottom:4px;}
+  .txn-chart-tooltip-row{display:flex;align-items:center;gap:6px;}
+  .txn-chart-tooltip-row+.txn-chart-tooltip-row{margin-top:2px;}
+  .txn-chart-tooltip-key{width:10px;height:2px;border-radius:1px;flex-shrink:0;}
+  .txn-chart-tooltip-key.pos{background:var(--positive);}
+  .txn-chart-tooltip-key.neg{background:var(--negative);}
+  .txn-chart-tooltip-key.net{background:var(--text-primary);}
+  .txn-chart-tooltip-label{color:var(--text-secondary);margin-right:12px;}
+  .txn-chart-tooltip-value{font-weight:700;font-variant-numeric:tabular-nums;margin-left:auto;}
+  .txn-chart-tooltip-value.pos{color:var(--positive);}
+  .txn-chart-tooltip-value.neg{color:var(--negative);}
+  .txn-chart-tooltip-value.net{color:var(--text-primary);}
+
   table.ledger-year th.month-link{cursor:pointer;}
   table.ledger-year th.month-link:hover{color:var(--text-primary);}
 
@@ -978,6 +1055,14 @@
 
   /* Category/subcategory selectors inside the budget editor's add-item modal. */
   .modal-field{display:flex;flex-direction:column;gap:4px;}
+  /* Its own display:flex above otherwise beats the browser's default
+     [hidden]{display:none} (an author-stylesheet class rule always wins
+     over a UA-stylesheet attribute rule, regardless of specificity or
+     source order) — see the identical .search-clear-btn[hidden] override
+     elsewhere for the full explanation. Needed so the Months field (see
+     openAddBudgetItemModal's "Enter amounts per month" toggle) can
+     actually disappear via freqField.hidden. */
+  .modal-field[hidden]{display:none;}
   /* Type (Income/Spending) toggle at the top of the modal — plain .pill
      buttons (same look as the YTD/Forecast/Budget and frequency pills)
      in a row instead of a <select>, since there are only ever two options. */
@@ -989,6 +1074,31 @@
     color:var(--text-muted);
     font-weight:600;
   }
+  /* Pairs a .modal-field-label with a trailing mode-switch action (e.g. the
+     Amount field's "Enter amounts per month" toggle) on the same line. */
+  .modal-field-label-row{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+  .modal-field-toggle{
+    background:none;
+    border:none;
+    padding:0;
+    color:var(--text-primary);
+    font-size:11px;
+    font-weight:700;
+    cursor:pointer;
+  }
+  .modal-field-toggle:hover{opacity:0.8;}
+  /* One small amount input per month (see openAddBudgetItemModal's "Enter
+     amounts per month" toggle) — a bill like natural gas or electric that's
+     monthly but a different total every time. 6 columns keeps each input
+     wide enough for a real dollar amount while still fitting two full rows
+     of 12 in the modal's width. */
+  .month-amounts-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;}
+  /* Same [hidden] override as .modal-field above — its own display:grid
+     would otherwise beat the toggle's monthAmountsGrid.hidden. */
+  .month-amounts-grid[hidden]{display:none;}
+  .month-amount-cell{display:flex;flex-direction:column;gap:3px;}
+  .month-amount-label{font-size:10px;color:var(--text-muted);}
+  .modal-pill-input.month-amount-input{height:1.75rem;padding:0 10px;font-size:12px;}
   /* Label/amount fields inside the budget editor's add-item modal —
      pill-shaped (same capsule radius/height as .pill) rather than the
      small-radius rectangular inputs used elsewhere, to read as a matched
@@ -1007,6 +1117,12 @@
   }
   .modal-pill-input:focus{outline:none;border-color:var(--accent-teal-dim);}
   .modal-pill-input.num{text-align:left;}
+  /* The amount field is the only number input here, and its values (plain
+     dollar amounts) aren't the kind anyone increments one unit at a time —
+     the native up/down stepper is just clutter, so it's hidden. */
+  .modal-pill-input.num::-webkit-inner-spin-button,
+  .modal-pill-input.num::-webkit-outer-spin-button{-webkit-appearance:none;margin:0;}
+  .modal-pill-input.num{-moz-appearance:textfield;}
 
   /* Wraps a .modal-pill-input together with an inline control anchored
      inside its own right edge (a compact pill toggle for Amount, an
@@ -1188,22 +1304,20 @@
      tr.cat-row, so a line item reads as the same kind of row. */
   .budget-item-row{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;border-radius:var(--radius-sm);background:var(--bg-row);padding:8px;}
   .budget-item-row:hover{background:var(--bg-row-hover);}
-  /* The row's own remove/close button — wrapped in .row-delete-wrap (a
-     direct child — unlike the array-amount variant's nested "convert"
-     .icon-btn, see .budget-array-note below) so it slides into view on row
-     hover, same as a cat/sub row's delete button — always sits flush
-     against the row's right edge (the row's own padding above) and
-     vertically centered (the row's own align-items:center), regardless of
-     how much summary/label/freq content sits before it. */
+  /* The row's own remove/close button — wrapped in .row-delete-wrap so it
+     slides into view on row hover, same as a cat/sub row's delete button —
+     always sits flush against the row's right edge (the row's own padding
+     above) and vertically centered (the row's own align-items:center),
+     regardless of how much summary/label/freq content sits before it. */
   .budget-item-row > .row-delete-wrap{margin-left:auto;}
   /* The item's amount, pulled out of .budget-item-summary-meta below and
      placed as the row's own direct flex child (alongside .icon-btn, which
      it immediately precedes) so it stays vertically centered — same as the
      remove button — instead of scrolling up/down with a multi-line label. */
   .budget-item-amount{flex-shrink:0;font-size:12.5px;font-weight:600;color:var(--text-primary);}
-  /* A normal (non-array-amount) item's row is just its summary — clicking
-     it opens the Add/Edit line item modal (see renderBudgetItemRow /
-     openEditDraftItemModal) rather than editing fields inline. */
+  /* Every item's row is just its summary — clicking it opens the Add/Edit
+     line item modal (see renderBudgetItemRow / openEditDraftItemModal)
+     rather than editing fields inline. */
   .budget-item-row.clickable{cursor:pointer;}
   .budget-item-summary{flex:1 1 auto;min-width:0;padding:6px 4px;}
   .budget-item-summary-label-row{display:flex;align-items:center;gap:6px;}
@@ -1223,36 +1337,6 @@
     border-radius:999px;
   }
   .budget-item-summary-meta{font-size:11px;color:var(--text-muted);margin-top:4px;}
-  /* A legacy explicit 12-value array item keeps its own minimal inline
-     editor (see renderBudgetItemRow) since the modal has no single
-     amount/month it could represent — its own label/frequency/note fields
-     (unlike the plain summary+remove-button pair above) need to wrap
-     rather than overflow the right panel's fixed width, so this variant
-     opts back into flex-wrap (the base rule stays nowrap — see
-     .budget-item-row above — specifically so a long summary label/meta
-     text wraps *within* .budget-item-summary instead of pushing the
-     remove button onto its own line). */
-  .budget-item-row:not(.clickable){flex-wrap:wrap;}
-  .budget-item-label{
-    flex:1 1 100%;
-    min-width:0;
-    background:var(--bg-input);
-    border:1px solid var(--border);
-    color:var(--text-primary);
-    font-size:12.5px;
-    padding:8px 8px;
-    border-radius:var(--radius-sm);
-  }
-  .budget-item-freq{
-    background:var(--bg-input);
-    border:1px solid var(--border);
-    color:var(--text-secondary);
-    font-size:12px;
-    padding:8px 4px;
-    border-radius:var(--radius-sm);
-  }
-  .budget-item-label:focus,.budget-item-freq:focus{outline:none;border-color:var(--accent-teal-dim);}
-  .budget-array-note{flex:1 1 auto;font-size:11.5px;color:var(--text-muted);display:flex;align-items:center;}
 
   /* "Link Transactions" modal (see openLinkTransactionsModal) — a plain
      checkbox list of this item's category/subcategory's actual transaction

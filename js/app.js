@@ -839,9 +839,8 @@ let budgetDraftSnapshot = null;  // JSON.stringify(budgetDraft) as of enterBudge
                                   // actually changed since, and skip the confirm if not.
 let budgetSaveBtnEl = null;      // live reference to the editor's "Apply changes" button,
                                   // so keystroke-only edits that skip a full renderMid() (see
-                                  // refreshBudgetLiveTotals and the name-input handlers in
-                                  // renderBudgetTable) can still keep its disabled state in
-                                  // sync via syncBudgetSaveButton().
+                                  // the name-input handlers in renderBudgetTable) can still
+                                  // keep its disabled state in sync via syncBudgetSaveButton().
 let budgetOpenCats = new Set();  // open category ids, editor-local (separate from openCats)
 let budgetFocusPending = null;   // { catId } — after Enter commits a pending category or
                                   // subcategory row (see buildPendingCatRow/buildGroup),
@@ -1634,6 +1633,332 @@ const SEARCH_FIELDS = [
   ['type', 'type'],
 ];
 
+// Rounds up to a "clean" axis ceiling (1/2/5 * 10^n) so gridline labels are
+// nice round numbers rather than an arbitrary fraction of the data max.
+function niceCeil(v){
+  if (v <= 0) return 1;
+  const exp = Math.floor(Math.log10(v));
+  const base = Math.pow(10, exp);
+  const norm = v / base;
+  const niceNorm = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+  return niceNorm * base;
+}
+// A "nice" y-axis domain spanning every series' values, including negative
+// ones — a search's results can net out to a loss in a given month (Spend
+// outweighing Income among whatever matched), so Net can dip below zero
+// even though Income/Spend individually can't. 4 even steps sized off the
+// larger of the positive/negative extent, so 0 always lands exactly on a
+// gridline rather than at an arbitrary fraction of it.
+function niceAxis(values){
+  const max = Math.max(0, ...values);
+  const min = Math.min(0, ...values);
+  const step = niceCeil(Math.max(max, -min, 1)) / 4;
+  let yMin = min < 0 ? Math.floor(min/step)*step : 0;
+  let yMax = max > 0 ? Math.ceil(max/step)*step : 0;
+  if (yMax === yMin) yMax = step*4; // all-zero data still renders as a flat baseline
+  return { yMin, yMax, step };
+}
+// shape mirrors the actual mark: 'bar' for Income/Spend (grouped bars),
+// 'line' for Net (see dataviz skill — legends mirror the mark; only the
+// denser tooltip rows key every series with a plain line stroke).
+function txnChartLegendItem(label, cls, shape){
+  const item = document.createElement('span');
+  item.className = 'txn-chart-legend-item';
+  const swatch = document.createElement('span');
+  swatch.className = 'txn-chart-legend-swatch '+shape+' '+cls;
+  item.appendChild(swatch);
+  const text = document.createElement('span');
+  text.textContent = label;
+  item.appendChild(text);
+  return item;
+}
+// Sums income/spend per month from a given transaction list (see
+// aggregate()'s income/expenses arrays, which this mirrors) so the chart
+// can be rebuilt against whatever's currently filtered rather than always
+// the full dataset. Always plots every month the full (unfiltered) dataset
+// spans — DATA.monthsPresent — rather than just the months the filtered
+// rows happen to touch, so a search that empties out a month's data plots
+// it as a 0 rather than skipping it and collapsing the timeline.
+function monthlyTotalsFromRows(rows){
+  const income = new Map(), spend = new Map();
+  rows.forEach(t=>{
+    if (t.type === 'Income') income.set(t.month, (income.get(t.month)||0) + t.amount);
+    else if (t.type === 'Expenses') spend.set(t.month, (spend.get(t.month)||0) - t.amount);
+  });
+  const months = DATA.monthsPresent;
+  const incomeVals = months.map(mi => Math.round((income.get(mi)||0)*100)/100);
+  const spendVals = months.map(mi => Math.round((spend.get(mi)||0)*100)/100);
+  // Net — same income-minus-spend convention as DATA.net (see aggregate())
+  // — rather than a raw sum of every matched row's amount, so it agrees
+  // with the Income/Spend lines beside it even when a search also pulls in
+  // rows of some other transaction type.
+  const netVals = incomeVals.map((v,i)=>Math.round((v-spendVals[i])*100)/100);
+  return { months, incomeVals, spendVals, netVals };
+}
+// Monthly income vs. spend vs. net line chart, sitting above the
+// Transactions table — rebuilt on every search/filter keystroke (see
+// refresh() in renderTransactionsPage) against the same rows the table
+// below shows, so the two always agree. Builds directly into `host`
+// (clearing it first) rather than returning a detached node: the plot
+// area's viewBox is sized off its own *measured* rendered width — see
+// draw() below — which only has a real value once it's attached to the
+// document, and it needs to redo that measurement on every resize (window
+// resize, or the right panel expanding/collapsing, both of which change
+// the mid panel's width without changing the SVG's own markup).
+function renderTransactionsChart(host, rows){
+  // A fresh ResizeObserver gets attached below on every call (one per
+  // search/filter keystroke — see refresh() in renderTransactionsPage);
+  // without disconnecting the previous call's observer first, each one
+  // would keep firing on its now-detached, orphaned <div> forever.
+  if (host._chartResizeObserver){ host._chartResizeObserver.disconnect(); }
+  host.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'txn-chart';
+  host.appendChild(wrap);
+
+  const { months, incomeVals, spendVals, netVals } = monthlyTotalsFromRows(rows);
+  if (!months.length){
+    wrap.classList.add('txn-chart-empty-state');
+    wrap.textContent = 'No transaction data yet — import a CSV to see monthly trends.';
+    return;
+  }
+
+  const head = document.createElement('div');
+  head.className = 'txn-chart-head';
+  const title = document.createElement('div');
+  title.className = 'txn-chart-title';
+  title.textContent = 'Monthly income, spend & net';
+  head.appendChild(title);
+  const legend = document.createElement('div');
+  legend.className = 'txn-chart-legend';
+  legend.appendChild(txnChartLegendItem('Income', 'pos', 'bar'));
+  legend.appendChild(txnChartLegendItem('Spend', 'neg', 'bar'));
+  legend.appendChild(txnChartLegendItem('Net', 'net', 'line'));
+  head.appendChild(legend);
+  wrap.appendChild(head);
+
+  const plotHost = document.createElement('div');
+  wrap.appendChild(plotHost);
+
+  const H = 220, padL = 48, padR = 16, padT = 16, padB = 28;
+  const { yMin, yMax, step } = niceAxis([...incomeVals, ...spendVals, ...netVals]);
+  const svgNS = 'http://www.w3.org/2000/svg';
+
+  // Redrawn on every resize with the plot's own current pixel width as the
+  // viewBox width — a 1:1 CSS-px-to-viewBox-unit mapping in both axes, so
+  // circles (dots, hover markers) stay circular instead of the ellipses a
+  // fixed viewBox + preserveAspectRatio="none" would stretch them into
+  // whenever the rendered width didn't happen to match that fixed width.
+  function draw(){
+    plotHost.innerHTML = '';
+    const svg = document.createElementNS(svgNS,'svg');
+    svg.setAttribute('class','txn-chart-svg');
+    plotHost.appendChild(svg);
+    const W = Math.max(1, Math.round(svg.getBoundingClientRect().width));
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+    const innerW = W - padL - padR, innerH = H - padT - padB;
+    // A categorical band per month (Income/Spend's grouped bars need a
+    // slot to sit in, not just a point) — xFor is each band's center,
+    // which also doubles as the Net line's x position for that month.
+    const bandW = innerW / months.length;
+    const xFor = i => padL + bandW*(i+0.5);
+    const yFor = v => padT + innerH - innerH * (v-yMin)/(yMax-yMin);
+
+    // Hover column highlight — sits behind everything (drawn first),
+    // toggled visible for whichever month's band the pointer is over (see
+    // showAt/hide below), a backdrop for the bars' own hover lift.
+    const hoverBand = document.createElementNS(svgNS,'rect');
+    hoverBand.setAttribute('y', padT);
+    hoverBand.setAttribute('height', innerH);
+    hoverBand.setAttribute('class','txn-chart-hover-band');
+    svg.appendChild(hoverBand);
+
+    // Gridlines + y-axis labels, one per step from yMin to yMax (step
+    // sized so 0 always lands exactly on one — see niceAxis).
+    const stepCount = Math.round((yMax-yMin)/step);
+    for (let s=0; s<=stepCount; s++){
+      const v = yMin + step*s;
+      const y = yFor(v);
+      // The zero gridline reads as the chart's baseline (bars grow from
+      // it, Net crosses it) — a hair brighter than the rest so it visually
+      // anchors the chart, with its label spelled out as "0" rather than
+      // fmt()'s usual "–" for a zero amount (which reads fine in a table
+      // cell but looks like a missing/placeholder axis label here).
+      const isBaseline = Math.abs(v) < step*1e-6;
+      const line = document.createElementNS(svgNS,'line');
+      line.setAttribute('x1',padL); line.setAttribute('x2',W-padR);
+      line.setAttribute('y1',y); line.setAttribute('y2',y);
+      line.setAttribute('class','txn-chart-grid'+(isBaseline?' baseline':''));
+      svg.appendChild(line);
+      const label = document.createElementNS(svgNS,'text');
+      label.setAttribute('x', padL-8);
+      label.setAttribute('y', y+4);
+      label.setAttribute('text-anchor','end');
+      label.setAttribute('class','txn-chart-axis-label');
+      label.textContent = isBaseline ? '0' : fmt(v);
+      svg.appendChild(label);
+    }
+
+    // X-axis month labels.
+    months.forEach((mi,i)=>{
+      const t = document.createElementNS(svgNS,'text');
+      t.setAttribute('x', xFor(i));
+      t.setAttribute('y', H-6);
+      t.setAttribute('text-anchor','middle');
+      t.setAttribute('class','txn-chart-axis-label');
+      t.textContent = MONTHS[mi];
+      svg.appendChild(t);
+    });
+
+    // Income/Spend as a grouped bar per month (see mark specs: <=24px
+    // thick, capped rather than filling the band; 4px rounded data-end,
+    // square at the baseline; a 2px surface gap between the two bars in a
+    // group). Net stays a line — it's the derived, headline series and
+    // reads better as a continuous trend than as a third bar.
+    const barGap = 2;
+    const barW = Math.min(24, Math.max(2, (bandW-8)/2));
+    const groupW = barW*2 + barGap;
+    function barPath(v, cx, w){
+      const y0 = yFor(0), y1 = yFor(v);
+      const y = Math.min(y0,y1), h = Math.abs(y1-y0);
+      if (h < 0.5) return null; // nothing to show for a ~0 month
+      const r = Math.min(4, w/2, h);
+      const x = cx - w/2;
+      return v >= 0
+        ? `M${x},${y+h} L${x},${y+r} Q${x},${y} ${x+r},${y} L${x+w-r},${y} Q${x+w},${y} ${x+w},${y+r} L${x+w},${y+h} Z`
+        : `M${x},${y} L${x+w},${y} L${x+w},${y+h-r} Q${x+w},${y+h} ${x+w-r},${y+h} L${x+r},${y+h} Q${x},${y+h} ${x},${y+h-r} Z`;
+    }
+    function drawBars(vals, cls, side){
+      return vals.map((v,i)=>{
+        const cx = xFor(i) + (side==='left' ? -groupW/2+barW/2 : groupW/2-barW/2);
+        const d = barPath(v, cx, barW);
+        if (!d) return null;
+        const path = document.createElementNS(svgNS,'path');
+        path.setAttribute('d', d);
+        path.setAttribute('class','txn-chart-bar '+cls);
+        svg.appendChild(path);
+        return path;
+      });
+    }
+    const incomeBars = drawBars(incomeVals, 'pos', 'left');
+    const spendBars = drawBars(spendVals, 'neg', 'right');
+
+    const netPoints = netVals.map((v,i)=>[xFor(i), yFor(v)]);
+    const netPoly = document.createElementNS(svgNS,'polyline');
+    netPoly.setAttribute('points', netPoints.map(p=>p.join(',')).join(' '));
+    netPoly.setAttribute('class','txn-chart-line net');
+    svg.appendChild(netPoly);
+    netPoints.forEach(([x,y])=>{
+      const c = document.createElementNS(svgNS,'circle');
+      c.setAttribute('cx',x); c.setAttribute('cy',y); c.setAttribute('r',4);
+      c.setAttribute('class','txn-chart-dot net');
+      svg.appendChild(c);
+    });
+
+    // Shared tooltip + per-month hover: snaps to the nearest month's band
+    // under the pointer and shows every series' value for it (see dataviz
+    // skill — one tooltip, every series, rather than a per-mark hit
+    // target). Bars get their own lift (see showAt below); the hover band
+    // built above is their shared backdrop; Net — still a line — keeps a
+    // hover dot on its own point.
+    const hoverDotNet = document.createElementNS(svgNS,'circle');
+    hoverDotNet.setAttribute('r',5);
+    hoverDotNet.setAttribute('class','txn-chart-hover-dot net');
+    svg.appendChild(hoverDotNet);
+
+    const overlay = document.createElementNS(svgNS,'rect');
+    overlay.setAttribute('x',padL); overlay.setAttribute('y',padT);
+    overlay.setAttribute('width', innerW); overlay.setAttribute('height', innerH);
+    overlay.setAttribute('class','txn-chart-overlay');
+    svg.appendChild(overlay);
+
+    const tooltip = document.createElement('div');
+    tooltip.className = 'txn-chart-tooltip';
+    const ttMonth = document.createElement('div');
+    ttMonth.className = 'txn-chart-tooltip-month';
+    tooltip.appendChild(ttMonth);
+    function tooltipRow(cls, label){
+      const row = document.createElement('div');
+      row.className = 'txn-chart-tooltip-row';
+      const key = document.createElement('span');
+      key.className = 'txn-chart-tooltip-key '+cls;
+      row.appendChild(key);
+      const lbl = document.createElement('span');
+      lbl.className = 'txn-chart-tooltip-label';
+      lbl.textContent = label;
+      row.appendChild(lbl);
+      const val = document.createElement('span');
+      val.className = 'txn-chart-tooltip-value '+cls;
+      row.appendChild(val);
+      tooltip.appendChild(row);
+      return val;
+    }
+    const ttIncomeVal = tooltipRow('pos','Income');
+    const ttSpendVal = tooltipRow('neg','Spend');
+    const ttNetVal = tooltipRow('net','Net');
+    plotHost.appendChild(tooltip);
+
+    let hoveredBars = [];
+    function showAt(i){
+      const x = xFor(i);
+      const yNet = netPoints[i][1];
+      hoverBand.setAttribute('x', x - bandW/2);
+      hoverBand.setAttribute('width', bandW);
+      hoverBand.style.opacity = 1;
+      hoveredBars.forEach(b=>b.classList.remove('hover'));
+      hoveredBars = [incomeBars[i], spendBars[i]].filter(Boolean);
+      hoveredBars.forEach(b=>b.classList.add('hover'));
+      hoverDotNet.setAttribute('cx',x); hoverDotNet.setAttribute('cy', yNet);
+      hoverDotNet.style.opacity = 1;
+      ttMonth.textContent = monthFullName(months[i]);
+      ttIncomeVal.textContent = fmt(incomeVals[i]);
+      ttSpendVal.textContent = fmt(spendVals[i]);
+      ttNetVal.textContent = fmt(netVals[i]);
+      tooltip.style.opacity = 1;
+
+      // Positioned in wrap-relative pixels (not viewBox %) and clamped to
+      // the card's bounds, rather than a plain centered translate(-50%) —
+      // that would let the bubble spill past the chart's right edge for
+      // months near the end of the line (e.g. December).
+      const barTopY = v => Math.min(yFor(0), yFor(v));
+      const topY = Math.min(barTopY(incomeVals[i]), barTopY(spendVals[i]), yNet);
+      const wrapRect = wrap.getBoundingClientRect();
+      const svgRect = svg.getBoundingClientRect();
+      const pointX = svgRect.left - wrapRect.left + (x/W) * svgRect.width;
+      const pointY = svgRect.top - wrapRect.top + (topY/H) * svgRect.height;
+      const margin = 4;
+      const tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
+      const left = Math.max(margin, Math.min(pointX - tw/2, wrapRect.width - tw - margin));
+      const top = Math.max(margin, pointY - th - 10);
+      tooltip.style.left = left + 'px';
+      tooltip.style.top = top + 'px';
+    }
+    function hide(){
+      hoverBand.style.opacity = 0;
+      hoveredBars.forEach(b=>b.classList.remove('hover'));
+      hoveredBars = [];
+      hoverDotNet.style.opacity = 0;
+      tooltip.style.opacity = 0;
+    }
+    overlay.addEventListener('pointermove', (e)=>{
+      const pt = svg.createSVGPoint();
+      pt.x = e.clientX; pt.y = e.clientY;
+      const loc = pt.matrixTransform(svg.getScreenCTM().inverse());
+      let i = Math.floor((loc.x - padL)/bandW);
+      i = Math.max(0, Math.min(months.length-1, i));
+      showAt(i);
+    });
+    overlay.addEventListener('pointerleave', hide);
+  }
+  draw();
+
+  // ResizeObserver rather than a window 'resize' listener: the mid panel's
+  // width also changes when the right panel expands/collapses, which
+  // doesn't fire a window resize event.
+  host._chartResizeObserver = new ResizeObserver(draw);
+  host._chartResizeObserver.observe(wrap);
+}
 function renderTransactionsPage(mid){
   const titleBar = document.createElement('div');
   titleBar.className = 'mid-title transactions-toolbar';
@@ -1664,11 +1989,15 @@ function renderTransactionsPage(mid){
   titleBar.appendChild(searchWrap);
   mid.appendChild(titleBar);
 
+  const chartHost = document.createElement('div');
+  mid.appendChild(chartHost);
+
   const body = document.createElement('div');
   body.className = 'mid-body';
   mid.appendChild(body);
 
   function refresh(){
+    renderTransactionsChart(chartHost, filteredSearchTxns());
     body.innerHTML = '';
     body.appendChild(renderTransactionsBody(refresh));
   }
@@ -1832,11 +2161,13 @@ function selectSub(sub){
    subcategory row shows its line items — the only place amounts/frequency
    are actually edited — in the right panel instead of inline, since the
    month-by-month table has no room for that; see renderBudgetItemRow.
-   Renaming/adding/removing a category or subcategory always rebuilds the
-   whole table (renderMid()), since row DOM has to change shape anyway;
-   editing a line item's amount/frequency instead patches just the
-   affected cells (see refreshBudgetLiveTotals) so typing doesn't lose
-   focus on every keystroke.
+   Renaming a category or subcategory patches just its own name cell in
+   place (see the name-input handlers in renderBudgetTable) so typing
+   doesn't lose focus on every keystroke; adding/removing a category or
+   subcategory, or adding/editing/removing a line item (always via the
+   Add/Edit line item modal — see openEditDraftItemModal), rebuilds the
+   whole table (renderMid()) instead, since row DOM has to change shape
+   anyway.
    ============================================================ */
 function renderBudgetEditor(mid){
   const header = document.createElement('div');
@@ -2346,48 +2677,6 @@ function selectBudgetSub(sel){
   renderRight();
 }
 
-// Patches just the cells whose numbers can have changed after an item's
-// amount/frequency edit (the selected subcategory's own row, its parent
-// category row, that group's header row, and the Net row) — see the
-// renderBudgetEditor comment for why this avoids a full renderMid().
-function updateLedgerRowCells(tr, monthly, total){
-  if (!tr) return;
-  const cells = tr.querySelectorAll('td.num');
-  monthly.forEach((v,i)=>{ if (cells[i]) cells[i].textContent = fmt(v); });
-  const totalCell = tr.querySelector('td:last-child');
-  if (totalCell) totalCell.textContent = fmt(total);
-}
-function refreshBudgetLiveTotals(kind, cat, sub){
-  const table = document.querySelector('.budget-editor-ledger');
-  if (!table) return;
-
-  const subMonthly = budgetSubDisplayMonthly(sub, kind);
-  updateLedgerRowCells(table.querySelector(`tr.sub-row[data-sub-id="${sub.id}"]`), subMonthly, subMonthly.reduce((a,b)=>a+b,0));
-
-  const catMonthly = budgetCatDisplayMonthly(cat, kind);
-  updateLedgerRowCells(table.querySelector(`tr.cat-row[data-cat-id="${cat.id}"]`), catMonthly, catMonthly.reduce((a,b)=>a+b,0));
-
-  const incomeMonthly = budgetGroupDisplayMonthly(budgetDraft.income, 'income');
-  const expenseMonthly = budgetGroupDisplayMonthly(budgetDraft.expenses, 'expense');
-  const groupRows = table.querySelectorAll('tr.budget-group-row');
-  const groupMonthly = kind === 'income' ? incomeMonthly : expenseMonthly;
-  updateLedgerRowCells(groupRows[kind==='income'?0:1], groupMonthly, groupMonthly.reduce((a,b)=>a+b,0));
-
-  const netMonthly = incomeMonthly.map((v,i)=>v - expenseMonthly[i]);
-  const netTotal = netMonthly.reduce((a,b)=>a+b,0);
-  const netRow = table.querySelector('tr.net-row');
-  if (netRow){
-    const cells = netRow.querySelectorAll('td.num');
-    netMonthly.forEach((v,i)=>{
-      if (!cells[i]) return;
-      cells[i].textContent = fmt(v);
-      cells[i].className = 'num ' + signCls(v);
-    });
-    const totalCell = netRow.querySelector('td:last-child');
-    if (totalCell){ totalCell.textContent = fmt(netTotal); totalCell.className = 'num ' + signCls(netTotal); }
-  }
-}
-
 // Editable line-item row — label/frequency/amount inputs plus a remove
 // button. Lives only in the right panel now (see renderBudgetSelectionPanel
 // below), for whichever subcategory is currently selected in the table.
@@ -2409,6 +2698,10 @@ function budgetItemFreqText(item){
   return indices.map(idx=>idx!==-1 ? MONTHS[idx] : '?').join(', ');
 }
 function budgetItemAmountText(item){
+  if (Array.isArray(item.amount)){
+    const avg = item.amount.reduce((a,b)=>a+(Number(b)||0),0) / 12;
+    return `${fmt(Math.abs(avg))} avg`;
+  }
   const perDiem = isPerDiemItem(item);
   return perDiem ? `${fmt(Math.abs(Number(item.amount)||0))}/day` : fmt(Math.abs(Number(item.amount)||0));
 }
@@ -2417,85 +2710,10 @@ function renderBudgetItemRow(item, sub, cat, kind){
   const row = document.createElement('div');
   row.className = 'budget-item-row';
 
-  // A 12-value amount array only ever pairs with the plain "every month"
-  // freq (see resolveLineItem) — an item with a specific-month(s) freq
-  // (single or an array, see freqMonthCodes) never has an array amount, so
-  // this only needs to check the "every month" case, not spell out every
-  // other possible freq shape.
-  const isArrayAmount = Array.isArray(item.amount) && freqMonthCodes(item.freq) === null;
-
-  // A legacy explicit 12-value array has no single "amount"/"month" the
-  // Add/Edit modal's fields can represent, so it keeps its own minimal
-  // inline editor (label + frequency + a note with a one-way "convert to a
-  // single amount" action) instead of opening that modal.
-  if (isArrayAmount){
-    const labelInput = document.createElement('input');
-    labelInput.className = 'budget-item-label';
-    labelInput.placeholder = 'Label';
-    labelInput.value = item.label || '';
-    labelInput.addEventListener('input', ()=>{
-      item.label = labelInput.value;
-      refreshBudgetLiveTotals(kind, cat, sub);
-      syncBudgetSaveButton();
-    });
-    row.appendChild(labelInput);
-
-    const freqSelect = document.createElement('select');
-    freqSelect.className = 'budget-item-freq';
-    const freqOptions = [['monthly','Monthly'], ...MONTHS_FULL.map((m,i)=>[MONTH_ABBR[i], m+' (once)'])];
-    // isArrayAmount already guarantees this item's freq is plain "monthly"
-    // (see above), so that's always the initially-selected option.
-    freqOptions.forEach(([val,label])=>{
-      const opt = document.createElement('option');
-      opt.value = val; opt.textContent = label;
-      if (val === 'monthly') opt.selected = true;
-      freqSelect.appendChild(opt);
-    });
-    freqSelect.addEventListener('change', ()=>{
-      item.freq = freqSelect.value;
-      refreshBudgetLiveTotals(kind, cat, sub);
-      updateBudgetRightSummary();
-      syncBudgetSaveButton();
-    });
-    row.appendChild(freqSelect);
-
-    const note = document.createElement('span');
-    note.className = 'budget-array-note';
-    const avg = item.amount.reduce((a,b)=>a+(Number(b)||0),0)/12;
-    note.textContent = `Custom monthly values (avg ${fmt(Math.abs(avg))})`;
-    const convertBtn = document.createElement('button');
-    convertBtn.type = 'button';
-    convertBtn.className = 'icon-btn';
-    convertBtn.title = 'Replace with a single amount';
-    convertBtn.textContent = '✎';
-    convertBtn.addEventListener('click', ()=>{
-      item.amount = Math.round(Math.abs(avg));
-      renderMid();
-      renderRight();
-    });
-    note.appendChild(convertBtn);
-    row.appendChild(note);
-
-    const removeWrap = document.createElement('span');
-    removeWrap.className = 'row-delete-wrap';
-    const removeBtn = document.createElement('button');
-    removeBtn.type = 'button';
-    removeBtn.className = 'icon-btn delete-btn';
-    removeBtn.title = 'Remove line item';
-    removeBtn.innerHTML = DELETE_ICON_SVG;
-    removeBtn.addEventListener('click', ()=>{
-      sub.items = sub.items.filter(it=>it.id!==item.id);
-      renderMid();
-      renderRight();
-    });
-    removeWrap.appendChild(removeBtn);
-    row.appendChild(removeWrap);
-    return row;
-  }
-
-  // Everything else: a compact read-only summary — clicking it opens the
-  // Add/Edit line item modal (see openEditDraftItemModal) pre-filled with
-  // this item's full details, rather than editing fields inline.
+  // A compact read-only summary — clicking it opens the Add/Edit line item
+  // modal (see openEditDraftItemModal) pre-filled with this item's full
+  // details, including a per-month array amount (the modal's "Enter
+  // amounts per month" shape), rather than editing fields inline.
   row.classList.add('clickable');
   const summary = document.createElement('div');
   summary.className = 'budget-item-summary';
@@ -2872,6 +3090,23 @@ function getSelectedBudgetItems(){
   return sub ? sub.items : [];
 }
 
+// Normalizes the modal's raw amount field into what actually gets stored:
+// a single signed number for the ordinary case, or a signed 12-value array
+// when rawAmount is itself an array (the "Enter amounts per month" shape —
+// see openAddBudgetItemModal). Returns null when there's nothing usable to
+// save: the ordinary case needs a positive amount, the array case needs at
+// least one non-zero month (an all-zero item would be pointless either way).
+function resolveDraftItemAmount(rawAmount, kind){
+  const sign = v => kind === 'expense' ? -Math.abs(v) : Math.abs(v);
+  if (Array.isArray(rawAmount)){
+    const amounts = rawAmount.map(v=>Number(v) || 0);
+    if (!amounts.some(v=>v !== 0)) return null;
+    return amounts.map(sign);
+  }
+  const amt = Math.abs(Number(rawAmount) || 0);
+  return amt === 0 ? null : sign(amt);
+}
+
 // Adds a new raw budget line item for whatever's selected in the budget
 // editor — target is {kind,category,subcategory}, with the same
 // category/subcategory-name-based find-or-create behavior the modal's own
@@ -2881,8 +3116,9 @@ function getSelectedBudgetItems(){
 // newly-created) subcategory afterward, same as clicking it directly, so
 // the added item is right there in the right panel.
 function addDraftBudgetItem(target, freq, label, rawAmount, amountType, linkedDescriptions){
-  const amt = Math.abs(Number(rawAmount) || 0);
-  if (amt === 0) return false;
+  const amount = resolveDraftItemAmount(rawAmount, target.kind);
+  if (amount === null) return false;
+  const isVarying = Array.isArray(amount);
   const list = target.kind === 'income' ? budgetDraft.income : budgetDraft.expenses;
   let cat = list.find(c=>c.name === target.category);
   if (!cat){
@@ -2894,14 +3130,18 @@ function addDraftBudgetItem(target, freq, label, rawAmount, amountType, linkedDe
     sub = { id: nextBudgetId(), name: target.subcategory, items: [] };
     cat.subcategories.push(sub);
   }
-  const resolvedAmountType = amountType === 'perDiem' ? 'perDiem' : 'monthly';
+  // An explicit per-month array has no meaningful "every month" vs.
+  // "specific months" distinction (each month's own value already says
+  // whether it applies), and no per diem rate either — see
+  // resolveLineItem's array branch, which only fires for freq "monthly".
+  const resolvedAmountType = (!isVarying && amountType === 'perDiem') ? 'perDiem' : 'monthly';
   sub.items.push({
     id: nextBudgetId(),
-    freq,
+    freq: isVarying ? 'monthly' : freq,
     amountType: resolvedAmountType,
     linkedDescriptions: (resolvedAmountType!=='perDiem' && linkedDescriptions) ? [...linkedDescriptions] : [],
     label: (label && label.trim()) || target.subcategory,
-    amount: target.kind==='expense' ? -amt : amt,
+    amount,
   });
   budgetOpenCats.add(cat.id);
   budgetSelection = { kind: target.kind, catId: cat.id, subId: sub.id };
@@ -2918,8 +3158,9 @@ function addDraftBudgetItem(target, freq, label, rawAmount, amountType, linkedDe
 // the move, since this relocates the actual item object rather than
 // creating a new one.
 function updateDraftBudgetItem(item, target, freq, label, rawAmount, amountType, linkedDescriptions){
-  const amt = Math.abs(Number(rawAmount) || 0);
-  if (amt === 0) return false;
+  const amount = resolveDraftItemAmount(rawAmount, target.kind);
+  if (amount === null) return false;
+  const isVarying = Array.isArray(amount);
   [budgetDraft.income, budgetDraft.expenses].forEach(list=>{
     list.forEach(c=>c.subcategories.forEach(s=>{
       const idx = s.items.indexOf(item);
@@ -2937,11 +3178,11 @@ function updateDraftBudgetItem(item, target, freq, label, rawAmount, amountType,
     sub = { id: nextBudgetId(), name: target.subcategory, items: [] };
     cat.subcategories.push(sub);
   }
-  const resolvedAmountType = amountType === 'perDiem' ? 'perDiem' : 'monthly';
-  item.freq = freq;
+  const resolvedAmountType = (!isVarying && amountType === 'perDiem') ? 'perDiem' : 'monthly';
+  item.freq = isVarying ? 'monthly' : freq;
   item.amountType = resolvedAmountType;
   item.label = (label && label.trim()) || target.subcategory;
-  item.amount = target.kind==='expense' ? -amt : amt;
+  item.amount = amount;
   item.linkedDescriptions = (resolvedAmountType!=='perDiem' && linkedDescriptions) ? [...linkedDescriptions] : [];
   sub.items.push(item);
   budgetOpenCats.add(cat.id);
@@ -3252,11 +3493,29 @@ function openAddBudgetItemModal(opts){
     });
   });
 
+  // Whether the Amount field is in its ordinary single-value shape, or its
+  // "different amount every month" shape (a bill like natural gas or
+  // electric that's monthly but never the same total twice) — see
+  // resolveLineItem's explicit-12-value-array branch, which this produces.
+  // Starts on for an existing item that already has an array amount (see
+  // budgetsRawToDraft/the legacy inline editor this modal now supersedes
+  // for that case).
+  let varyByMonth = isEdit && Array.isArray(opts.editItem.amount);
+
   const amountField = document.createElement('div');
   amountField.className = 'modal-field';
+  const amountLabelRow = document.createElement('div');
+  amountLabelRow.className = 'modal-field-label-row';
   const amountFieldLabel = document.createElement('div');
   amountFieldLabel.className = 'modal-field-label';
   amountFieldLabel.textContent = 'Amount';
+  const varyToggleBtn = document.createElement('button');
+  varyToggleBtn.type = 'button';
+  varyToggleBtn.className = 'modal-field-toggle';
+  amountLabelRow.appendChild(amountFieldLabel);
+  amountLabelRow.appendChild(varyToggleBtn);
+  amountField.appendChild(amountLabelRow);
+
   const amountWrap = document.createElement('div');
   amountWrap.className = 'modal-input-wrap has-toggle';
   const amountInput = document.createElement('input');
@@ -3264,13 +3523,42 @@ function openAddBudgetItemModal(opts){
   amountInput.step = '1';
   amountInput.className = 'modal-pill-input num';
   amountInput.placeholder = '0';
-  amountInput.value = isEdit ? (Math.abs(Number(opts.editItem.amount)||0) || '') : '';
+  amountInput.value = (isEdit && !varyByMonth) ? (Math.abs(Number(opts.editItem.amount)||0) || '') : '';
   const amountTypeToggle = document.createElement('div');
   amountTypeToggle.className = 'modal-amount-type-toggle';
   amountWrap.appendChild(amountInput);
   amountWrap.appendChild(amountTypeToggle);
-  amountField.appendChild(amountFieldLabel);
   amountField.appendChild(amountWrap);
+
+  // One small amount input per month, shown instead of amountWrap while
+  // varyByMonth is on. A month left at 0 simply contributes nothing that
+  // month (see the hint below) rather than needing its own on/off control.
+  const monthAmountsGrid = document.createElement('div');
+  monthAmountsGrid.className = 'month-amounts-grid';
+  const monthAmountInputs = MONTHS.map((m, i)=>{
+    const cell = document.createElement('label');
+    cell.className = 'month-amount-cell';
+    const cellLabel = document.createElement('span');
+    cellLabel.className = 'month-amount-label';
+    cellLabel.textContent = m;
+    const cellInput = document.createElement('input');
+    cellInput.type = 'number';
+    cellInput.step = '1';
+    cellInput.className = 'modal-pill-input num month-amount-input';
+    cellInput.placeholder = '0';
+    const existing = varyByMonth ? Math.abs(Number(opts.editItem.amount[i]) || 0) : 0;
+    cellInput.value = existing || '';
+    cell.appendChild(cellLabel);
+    cell.appendChild(cellInput);
+    monthAmountsGrid.appendChild(cell);
+    return cellInput;
+  });
+  amountField.appendChild(monthAmountsGrid);
+  const monthAmountsHint = document.createElement('div');
+  monthAmountsHint.className = 'modal-hint';
+  monthAmountsHint.textContent = "Applies every month — leave a month at 0 if it doesn't apply.";
+  amountField.appendChild(monthAmountsHint);
+
   descAmountGroup.appendChild(amountField);
 
   const perMonthPill = document.createElement('button');
@@ -3392,17 +3680,53 @@ function openAddBudgetItemModal(opts){
   dialog.appendChild(actions);
 
   // Save stays disabled until every required field has something in it —
-  // matches the mockup's greyed-out Save in the empty state.
+  // matches the mockup's greyed-out Save in the empty state. In the
+  // per-month shape, that just means at least one month is non-zero (an
+  // all-zero item would be pointless — same "must be > 0" bar as the
+  // ordinary single-amount case, just satisfied by any one of the 12).
   function updateSaveEnabled(){
+    const amountOk = varyByMonth
+      ? monthAmountInputs.some(inp=>Number(inp.value) > 0)
+      : Number(amountInput.value) > 0;
     const ok = catInput.value.trim() && subInput.value.trim() && labelInput.value.trim()
-      && Number(amountInput.value) > 0 && selectedFreqs.size > 0;
+      && amountOk && selectedFreqs.size > 0;
     addBtn.disabled = !ok;
   }
   catInput.addEventListener('input', updateSaveEnabled);
   subInput.addEventListener('input', updateSaveEnabled);
   labelInput.addEventListener('input', updateSaveEnabled);
   amountInput.addEventListener('input', updateSaveEnabled);
-  updateSaveEnabled();
+  monthAmountInputs.forEach(inp=>inp.addEventListener('input', updateSaveEnabled));
+
+  // Toggling on forces the Months picker to "All" and hides it — a
+  // per-month amount already encodes "doesn't apply this month" as a plain
+  // 0 (see the hint above the grid), so a separate freq selection would
+  // just be redundant. Also drops back to the ordinary "monthly"
+  // amountType, since per-diem's per-day rate has no meaning alongside 12
+  // explicit month totals.
+  function syncVaryToggle(){
+    varyToggleBtn.textContent = varyByMonth ? 'Use one amount' : 'Enter amounts per month';
+    amountWrap.hidden = varyByMonth;
+    monthAmountsGrid.hidden = !varyByMonth;
+    monthAmountsHint.hidden = !varyByMonth;
+    freqField.hidden = varyByMonth;
+    if (varyByMonth){
+      selectedFreqs.clear();
+      selectedFreqs.add('monthly');
+      syncFreqPills();
+      if (amountType === 'perDiem'){
+        amountType = 'monthly';
+        syncAmountTypePills();
+      }
+      syncLinkBadgeVisibility();
+    }
+    updateSaveEnabled();
+  }
+  varyToggleBtn.addEventListener('click', ()=>{
+    varyByMonth = !varyByMonth;
+    syncVaryToggle();
+  });
+  syncVaryToggle();
 
   function close(){
     document.removeEventListener('keydown', onKeydown);
@@ -3417,11 +3741,12 @@ function openAddBudgetItemModal(opts){
     if (addBtn.disabled) return;
     const target = { kind: currentKind, category: catInput.value.trim(), subcategory: subInput.value.trim() };
     const freqArg = freqArgFromSelection();
+    const amountArg = varyByMonth ? monthAmountInputs.map(inp=>inp.value) : amountInput.value;
     const ok = isEdit
-      ? opts.onSave(opts.editItem, target, freqArg, labelInput.value, amountInput.value, amountType, pendingLinkedDescriptions)
-      : opts.onAdd(target, freqArg, labelInput.value, amountInput.value, amountType, pendingLinkedDescriptions);
+      ? opts.onSave(opts.editItem, target, freqArg, labelInput.value, amountArg, amountType, pendingLinkedDescriptions)
+      : opts.onAdd(target, freqArg, labelInput.value, amountArg, amountType, pendingLinkedDescriptions);
     if (!ok){
-      amountInput.focus();
+      (varyByMonth ? monthAmountInputs[0] : amountInput).focus();
       return;
     }
     close();
