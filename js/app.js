@@ -1701,6 +1701,22 @@ function monthlyTotalsFromRows(rows){
   const netVals = incomeVals.map((v,i)=>Math.round((v-spendVals[i])*100)/100);
   return { months, incomeVals, spendVals, netVals, hasIncome, hasSpend };
 }
+// A single-series chart's flat "typical month" reference — excludes the
+// most recent month from the average whenever that month's own data
+// stops short of its last calendar day (see DATA.currentDay, set from
+// the latest transaction actually seen in it), so a still-accumulating
+// month's inherently smaller total doesn't pull a straight average down
+// every time the chart redraws. Falls back to averaging every month,
+// partial one included, if excluding it would leave nothing left to
+// average (a one-month dataset).
+function monthlyAverageExcludingPartialMonth(vals, months){
+  if (!vals.length) return null;
+  const lastMonth = months[months.length-1];
+  const isPartialLastMonth = lastMonth === DATA.currentMonthIndex && DATA.currentDay != null
+    && DATA.currentDay < daysInMonth(DATA.year, lastMonth);
+  const sample = (isPartialLastMonth && vals.length > 1) ? vals.slice(0, -1) : vals;
+  return sample.reduce((a,b)=>a+b, 0) / sample.length;
+}
 // Monthly income vs. spend vs. net line chart, sitting above the
 // Transactions table — rebuilt on every search/filter keystroke (see
 // refresh() in renderTransactionsPage) against the same rows the table
@@ -1735,6 +1751,12 @@ function renderTransactionsChart(host, rows, onMonthClick){
   // neither) instead gets a single plain line, with no bars and no
   // separate Net (which would just retrace that one line exactly).
   const bothTypes = hasIncome && hasSpend;
+  // Computed once here (not per-resize inside draw()) since neither
+  // depends on the plot's measured pixel width — draw() and the legend
+  // below both just read these.
+  const singleCls = bothTypes ? null : hasIncome ? 'pos' : hasSpend ? 'neg' : 'net';
+  const singleVals = bothTypes ? null : hasIncome ? incomeVals : hasSpend ? spendVals : netVals;
+  const singleAvg = bothTypes ? null : monthlyAverageExcludingPartialMonth(singleVals, months);
 
   const head = document.createElement('div');
   head.className = 'txn-chart-head';
@@ -1744,16 +1766,24 @@ function renderTransactionsChart(host, rows, onMonthClick){
     : hasIncome ? 'Monthly income' : hasSpend ? 'Monthly spend' : 'Monthly net';
   head.appendChild(title);
   wrap.appendChild(head);
-  // A single series needs no legend box — its one color is already named
-  // by the title above (see dataviz skill's marks-and-anatomy.md).
+  // A single series needs no legend entry for the line itself — its one
+  // color is already named by the title above (see dataviz skill's
+  // marks-and-anatomy.md) — but the average reference line drawn beside it
+  // (see monthlyAverageExcludingPartialMonth) is a second, distinct mark,
+  // so it still gets a legend of its own rather than an on-chart label.
+  const legend = document.createElement('div');
+  legend.className = 'txn-chart-legend';
   if (bothTypes){
-    const legend = document.createElement('div');
-    legend.className = 'txn-chart-legend';
     legend.appendChild(txnChartLegendItem('Income', 'pos', 'bar'));
     legend.appendChild(txnChartLegendItem('Spend', 'neg', 'bar'));
     legend.appendChild(txnChartLegendItem('Net', 'net', 'line'));
-    head.appendChild(legend);
+  } else {
+    // Just the key here — the actual value rides the line itself (see
+    // draw()'s avg-line block below), same as every other direct label on
+    // this chart.
+    legend.appendChild(txnChartLegendItem('Avg', 'net', 'line'));
   }
+  head.appendChild(legend);
 
   const plotHost = document.createElement('div');
   wrap.appendChild(plotHost);
@@ -1908,8 +1938,7 @@ function renderTransactionsChart(host, rows, onMonthClick){
       return points;
     }
 
-    let incomeBars = null, spendBars = null, netPoints = null;
-    let singlePoints = null, singleCls = null, singleVals = null;
+    let incomeBars = null, spendBars = null, netPoints = null, singlePoints = null;
     if (bothTypes){
       incomeBars = drawBars(incomeVals, 'pos');
       // Negated so the bar geometry actually grows downward — spendVals
@@ -1918,9 +1947,28 @@ function renderTransactionsChart(host, rows, onMonthClick){
       spendBars = drawBars(spendVals.map(v=>-v), 'neg');
       netPoints = drawLine(netVals, 'net');
     } else {
-      singleCls = hasIncome ? 'pos' : hasSpend ? 'neg' : 'net';
-      singleVals = hasIncome ? incomeVals : hasSpend ? spendVals : netVals;
       singlePoints = drawLine(singleVals, singleCls);
+      // A lone line has nothing beside it to compare against (no
+      // Income/Spend split to read it off of), so give it a flat average
+      // reference — see monthlyAverageExcludingPartialMonth for why the
+      // most recent month sometimes doesn't count toward it. The legend
+      // (see head above) names it "Avg"; the actual number rides the line
+      // itself, same as every other direct label on this chart.
+      const avgY = yFor(singleAvg);
+      const avgLine = document.createElementNS(svgNS,'line');
+      avgLine.setAttribute('x1', padL); avgLine.setAttribute('x2', W-padR);
+      avgLine.setAttribute('y1', avgY); avgLine.setAttribute('y2', avgY);
+      avgLine.setAttribute('class','txn-chart-avg-line');
+      svg.appendChild(avgLine);
+      const avgLabel = document.createElementNS(svgNS,'text');
+      avgLabel.setAttribute('x', W-padR);
+      // Flips below the line whenever it sits too close to the plot's top
+      // edge for the label to fit above it without clipping.
+      avgLabel.setAttribute('y', avgY - padT < 16 ? avgY + 14 : avgY - 6);
+      avgLabel.setAttribute('text-anchor','end');
+      avgLabel.setAttribute('class','txn-chart-avg-label num');
+      avgLabel.textContent = fmt(singleAvg);
+      svg.appendChild(avgLabel);
     }
 
     // Direct value labels, one per mark, drawn last (on top of

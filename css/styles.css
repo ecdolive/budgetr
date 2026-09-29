@@ -551,7 +551,7 @@
   .txn-chart-legend-swatch.neg{background:var(--negative);}
   /* Mirrors the line's own dash pattern (see .txn-chart-line.net) rather
      than a solid swatch, so the legend key matches the mark exactly. */
-  .txn-chart-legend-swatch.net{background:repeating-linear-gradient(to right, var(--text-primary) 0 4px, transparent 4px 7px);}
+  .txn-chart-legend-swatch.net{background:repeating-linear-gradient(to right, var(--text-muted) 0 2px, transparent 2px 5px);}
   .txn-chart-svg{
     display:block;
     width:100%;
@@ -572,6 +572,13 @@
      data itself. */
   .txn-chart-grid.baseline{stroke:var(--text-muted);}
   .txn-chart-axis-label{fill:var(--text-muted);font-size:11px;font-variant-numeric:tabular-nums;}
+  /* The single-series "typical month" reference (see
+     monthlyAverageExcludingPartialMonth) — a hairline like the grid, but
+     dashed to read as a computed reference rather than another axis tick. */
+  .txn-chart-avg-line{stroke:var(--text-muted);stroke-width:1;stroke-dasharray:2 3;opacity:0.7;}
+  /* The line's own value — "Avg" itself is named in the legend, so this is
+     just the number, styled like the other axis/value labels. */
+  .txn-chart-avg-label{fill:var(--text-muted);font-size:11px;font-variant-numeric:tabular-nums;}
   /* Hover column — a subtle backdrop wash spanning the hovered month's
      whole band, behind the bars/line (see draw(): appended first). */
   .txn-chart-hover-band{fill:var(--text-primary);fill-opacity:0.06;opacity:0;rx:8px;transition:opacity .1s;}
@@ -602,7 +609,11 @@
   .txn-chart-line{fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
   .txn-chart-line.pos{stroke:var(--positive);}
   .txn-chart-line.neg{stroke:var(--negative);}
-  .txn-chart-line.net{stroke:var(--text-primary);stroke-opacity:0.5;stroke-dasharray:6 4;}
+  /* Same styling as .txn-chart-avg-line — a computed line (Income minus
+     Spend, rather than a directly measured series like Income/Spend
+     themselves) reads the same way whether it's an average reference or
+     a derived Net line. */
+  .txn-chart-line.net{stroke:var(--text-muted);stroke-width:1;stroke-dasharray:2 3;opacity:0.7;}
   /* Dots never actually carry the .net variant — a Net-line dot always
      recolors to .pos/.neg by that point's own sign instead (see
      drawLine/showAt in renderTransactionsChart); only the line stroke
