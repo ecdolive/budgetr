@@ -2291,7 +2291,7 @@ function renderTransactionsBody(onSortChange){
   table.className = 'ledger txn-flat';
   const cols = [['date','Date'],['description','Description'],['amount','Amount'],['category','Category'],['subcategory','Subcategory'],['account','Account'],['type','Type']];
   const thead = document.createElement('thead');
-  thead.innerHTML = `<tr>${cols.map(([k,l])=>`<th data-key="${k}">${l}${txnSort.key===k?(txnSort.dir===1?' ▲':' ▼'):''}</th>`).join('')}</tr>`;
+  thead.innerHTML = `<tr>${cols.map(([k,l])=>`<th data-key="${k}">${l}${txnSort.key===k?`<img class="txn-sort-icon" src="icons/chevron-${txnSort.dir===1?'up':'down'}.svg" alt="">`:''}</th>`).join('')}</tr>`;
   thead.querySelectorAll('th').forEach(th=>{
     th.addEventListener('click', ()=>{
       const key = th.dataset.key;

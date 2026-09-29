@@ -869,6 +869,13 @@
 
   /* Search results table (flat transactions) */
   table.txn-flat th{cursor:pointer;}
+  .txn-sort-icon{
+    width:16px;height:16px;
+    margin-left:2px;
+    vertical-align:middle;
+    opacity:0.6; /* icon is a fixed black stroke, inverted to white */
+    filter:invert(1);
+  }
   table.txn-flat th,
   table.txn-flat td{text-align:left;}
   table.txn-flat td:nth-child(2){white-space:normal;}
