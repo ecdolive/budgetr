@@ -1759,8 +1759,11 @@ function renderTransactionsChart(host, rows, onMonthClick){
   wrap.appendChild(plotHost);
 
   // padT/padB carry extra room (vs. a bare axis) for the direct value
-  // labels sitting just above/below each bar/dot — see draw() below.
-  const H = 220, padL = 48, padR = 16, padT = 28, padB = 40;
+  // labels sitting just above/below each bar/dot — see draw() below. padB
+  // in particular has to leave enough room for a Spend bar that reaches
+  // all the way to the bottom of the plot to still fit its own value label
+  // above the fixed Net row (H-20) without the two colliding.
+  const H = 220, padL = 48, padR = 16, padT = 28, padB = 56;
   // The axis domain has to match what's actually plotted: in diverging
   // mode Spend is drawn *below* zero (see drawBars below), so its
   // magnitude has to extend the domain downward (-spendVals), not upward;
@@ -1938,15 +1941,25 @@ function renderTransactionsChart(host, rows, onMonthClick){
     // *selected* month's labels turn green/red by sign instead of a flat
     // color (see .txn-chart-value-label.selected in styles.css).
     function valueLabel(text, x, y, above, gap, cls){
-      if (gap == null) gap = above ? 8 : 14;
+      if (gap == null) gap = 8;
       const t = document.createElementNS(svgNS,'text');
       t.setAttribute('x', x);
-      t.setAttribute('y', above ? y-gap : y+gap);
+      t.setAttribute('y', y);
       // 'num' — see the y-axis gridline labels above — matches this to
       // the same tabular-numeral font the tables' amount cells use.
       t.setAttribute('class','txn-chart-value-label num '+cls);
       t.textContent = text;
       svg.appendChild(t);
+      // A baseline offset of `gap` isn't a `gap`px whitespace — most of it
+      // gets eaten by the font's own ascent/descent above or below the
+      // glyphs. Measure the rendered box and nudge the baseline so its
+      // actual edge (not just its baseline) sits `gap` away from the mark.
+      if (gap){
+        const box = t.getBBox();
+        const edge = above ? box.y + box.height : box.y;
+        const wantEdge = above ? y - gap : y + gap;
+        t.setAttribute('y', y + (wantEdge - edge));
+      }
       return t;
     }
     let incomeLabels = null, spendLabels = null, netLabels = null, singleLabels = null;
@@ -1967,9 +1980,12 @@ function renderTransactionsChart(host, rows, onMonthClick){
     } else {
       singleLabels = singleVals.map((v,i)=>{
         const cls = singleCls === 'net' ? (v>=0?'pos':'neg') : singleCls;
+        // The dot itself has a 4px radius (see drawLine) — labeling from
+        // its rim, not its center, so the measured gap below is real space
+        // from the visible mark, not from a point 4px inside it.
         return singleCls === 'net'
           ? valueLabel(fmtChartValue(v), xFor(i), H-20, true, 0, cls)
-          : valueLabel(fmtChartValue(v), xFor(i), singlePoints[i][1], v>=0, undefined, cls);
+          : valueLabel(fmtChartValue(v), xFor(i), singlePoints[i][1] + (v>=0 ? -4 : 4), v>=0, undefined, cls);
       });
     }
 
@@ -1978,14 +1994,20 @@ function renderTransactionsChart(host, rows, onMonthClick){
     // full-contrast (see showAt below); the hover band built earlier is
     // their shared backdrop; the line (Net, or the single series) keeps a
     // hover dot on its own point.
+    // The base class carries the CSS opacity:0 (see styles.css) — set it
+    // up front, not just inside markAt/showAt, so an untouched dot doesn't
+    // sit at its default cx/cy of 0,0 rendering as a stray black circle at
+    // the SVG's origin before anything is ever hovered or selected.
     const hoverDot = document.createElementNS(svgNS,'circle');
     hoverDot.setAttribute('r',5);
+    hoverDot.setAttribute('class','txn-chart-hover-dot');
     svg.appendChild(hoverDot);
     // The selected month's own persistent dot — see the "persistent
     // selected state" block below; a bigger, teal-ringed sibling of
     // hoverDot so it reads as pinned rather than transient.
     const selectedDot = document.createElementNS(svgNS,'circle');
     selectedDot.setAttribute('r',6);
+    selectedDot.setAttribute('class','txn-chart-selected-dot');
     svg.appendChild(selectedDot);
 
     // Spans the full height (see hoverBand above) so a click/hover
