@@ -310,7 +310,8 @@
 
   .tf-list{display:flex;flex-direction:column;gap:0.25rem;}
   .tf-item{
-    display:flex;justify-content:space-between;align-items:center;
+    display:flex;justify-content:flex-start;align-items:center;
+    gap:10px;
     padding:12px 12px 12px 16px;
     border-radius:0.25rem;
     cursor:pointer;
@@ -322,6 +323,13 @@
   }
   .tf-item:hover{background:var(--bg-row-hover);}
   .tf-item.active{background:var(--surface-interactive-selected);color:var(--text-primary);}
+  .tf-icon{
+    width:16px;height:16px;
+    opacity:0.7; /* icon is a fixed black stroke/fill, inverted to white */
+    filter:invert(1);
+    flex:none;
+  }
+  .tf-item.active .tf-icon{opacity:1;}
   .tf-item .net{font-size:13px;font-weight:600;}
   .tf-item .net.pos{color:var(--positive);}
   .tf-item .net.neg{color:var(--negative);}

@@ -1039,8 +1039,8 @@ function renderLeftNav(){
   // The budget editor is its own view, entered from the status bar rather
   // than a nav tab, so neither tab is shown active while it's open — even
   // though it's launched without touching `timeframe`.
-  wrap.appendChild(navItem('Budget', 'year', !budgetEditMode && (timeframe === 'year' || typeof timeframe === 'number')));
-  wrap.appendChild(navItem('Transactions', 'transactions', !budgetEditMode && timeframe === 'transactions'));
+  wrap.appendChild(navItem('Budget', 'year', !budgetEditMode && (timeframe === 'year' || typeof timeframe === 'number'), 'icons/budget-nav.svg'));
+  wrap.appendChild(navItem('Transactions', 'transactions', !budgetEditMode && timeframe === 'transactions', 'icons/search.svg'));
 
   // Individual month tabs used to live here, each showing that month's net
   // value (via monthPlanNet/DATA.net) — a month view is now reached by
@@ -1049,10 +1049,11 @@ function renderLeftNav(){
   // monthPlanNet is kept for that per-month net figure, since it'll be
   // needed again once the month view (or its header) surfaces it elsewhere.
 }
-function navItem(label, key, isActive){
+function navItem(label, key, isActive, iconSrc){
   const div = document.createElement('div');
   div.className = 'tf-item' + ((isActive ?? timeframe===key) ? ' active' : '');
-  div.innerHTML = `<span class="tf-label">${label}</span>`;
+  const icon = iconSrc ? `<img class="tf-icon" src="${iconSrc}" alt="">` : '';
+  div.innerHTML = `${icon}<span class="tf-label">${label}</span>`;
   div.addEventListener('click', ()=>{
     timeframe = key;
     // The transactions filter is local to that tab — leaving it resets the
