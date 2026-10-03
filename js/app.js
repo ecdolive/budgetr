@@ -2883,7 +2883,20 @@ function selectBudgetSub(sel){
 // Plain-English "amount · frequency [· links]" summary shown on a draft
 // item's row (see renderBudgetItemRow) — everything else about the item is
 // only visible/editable via the Add/Edit line item modal now.
+// A per-month array amount's non-zero entries — a month left at 0 (see the
+// Amount field's "Enter amounts per month" hint in openAddBudgetItemModal)
+// doesn't apply, so it shouldn't count toward either how many months this
+// item spans or what its average month looks like (see budgetItemFreqText/
+// budgetItemAmountText below).
+function budgetItemActiveMonthAmounts(amounts){
+  return amounts.filter(v=>Number(v)||0);
+}
 function budgetItemFreqText(item){
+  if (Array.isArray(item.amount)){
+    const activeIndices = item.amount.map((v,i)=>Number(v)?i:-1).filter(i=>i!==-1);
+    if (activeIndices.length === 12) return 'Every month';
+    return activeIndices.map(i=>MONTHS[i]).join(', ');
+  }
   const codes = freqMonthCodes(item.freq);
   if (codes === null) return 'Every month';
   const indices = codes.map(c=>MONTH_ABBR.indexOf(c)).sort((a,b)=>a-b);
@@ -2899,7 +2912,8 @@ function budgetItemFreqText(item){
 }
 function budgetItemAmountText(item){
   if (Array.isArray(item.amount)){
-    const avg = item.amount.reduce((a,b)=>a+(Number(b)||0),0) / 12;
+    const active = budgetItemActiveMonthAmounts(item.amount);
+    const avg = active.length ? active.reduce((a,b)=>a+Number(b),0) / active.length : 0;
     return `${fmt(Math.abs(avg))} avg`;
   }
   const perDiem = isPerDiemItem(item);
