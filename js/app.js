@@ -4281,9 +4281,18 @@ function renderRightTxnTable(container, rows){
   container.appendChild(table);
 }
 
+// "date" column text for a real transaction row (see renderRightActualList,
+// currentMonthProjectedRows, renderRightProjectedList below) — "Jan 4"
+// rather than a bare "1/4", matching the "Mon D" shape budgetedDateLabel
+// below already uses for a planned/forecasted row in the same column.
+function txnDateLabel(t){
+  const mi = parseInt(t.date.slice(5,7),10) - 1;
+  const day = parseInt(t.date.slice(8,10),10);
+  return `${MONTHS[mi]} ${day}`;
+}
 function renderRightActualList(container, monthFilter){
   const txns = getSelectedTxns(monthFilter).map(t=>({
-    dateLabel: (parseInt(t.date.slice(5,7),10))+'/'+(parseInt(t.date.slice(8,10),10)),
+    dateLabel: txnDateLabel(t),
     description: t.description,
     amount: t.amount,
     planned: false,
@@ -4883,7 +4892,7 @@ function currentMonthProjectedRows(m){
   const items = getSelectedBudgetItems();
   const flatItems = items.filter(it=>!isPerDiemItem(it));
   const perDiemItems = items.filter(it=>isPerDiemItem(it));
-  const txnRow = (t) => ({ dateLabel: (parseInt(t.date.slice(5,7),10))+'/'+(parseInt(t.date.slice(8,10),10)), description: t.description, amount: t.amount, planned: false });
+  const txnRow = (t) => ({ dateLabel: txnDateLabel(t), description: t.description, amount: t.amount, planned: false });
   const monthTxns = getSelectedTxns(m);
   const linkedItems = flatItems.filter(it=>it.linkedDescriptions && it.linkedDescriptions.length);
   const unlinkedItems = flatItems.filter(it=>!(it.linkedDescriptions && it.linkedDescriptions.length));
@@ -4945,7 +4954,7 @@ function currentMonthProjectedRows(m){
 function renderRightProjectedList(container){
   const cmi = DATA.currentMonthIndex;
   const items = getSelectedBudgetItems();
-  const txnRow = (t) => ({ dateLabel: (parseInt(t.date.slice(5,7),10))+'/'+(parseInt(t.date.slice(8,10),10)), description: t.description, amount: t.amount, planned: false });
+  const txnRow = (t) => ({ dateLabel: txnDateLabel(t), description: t.description, amount: t.amount, planned: false });
   const rows = [];
   for (let m=0;m<12;m++){
     if (cmi !== null && m === cmi){

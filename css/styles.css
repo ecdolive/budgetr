@@ -1150,7 +1150,7 @@
     text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:0.04em;
     color:var(--text-muted);font-weight:600;padding:0 8px 8px 0;border-bottom:1px solid var(--border);
   }
-  table.txn-list th:first-child{width:38px;}
+  table.txn-list th:first-child{width:56px;}
   table.txn-list th:last-child{text-align:right;width:64px;padding-right:0;}
   table.txn-list td{
     padding:12px 8px 12px 0;font-size:12.5px;border-bottom:1px solid var(--border-soft);
