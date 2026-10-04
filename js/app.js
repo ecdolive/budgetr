@@ -4291,6 +4291,14 @@ function renderRightActualList(container, monthFilter){
   renderRightTxnTable(container, txns);
 }
 
+// Compact "date" column text for a budgeted/forecasted row (see
+// renderRightPlannedList, currentMonthProjectedRows, renderRightProjectedList
+// below) — the plain month abbreviation, or that item's own Day of the
+// month appended when it has one set ("Mar 5"), echoing the M/D shorthand
+// a real transaction row already uses in the same column.
+function budgetedDateLabel(m, item){
+  return item.dayOfMonth ? `${MONTHS[m]} ${item.dayOfMonth}` : MONTHS[m];
+}
 function renderRightPlannedList(container, monthFilter){
   const items = getSelectedBudgetItems();
   const rows = [];
@@ -4299,7 +4307,7 @@ function renderRightPlannedList(container, monthFilter){
     items.forEach(it=>{
       const v = it.monthly[m];
       if (v){
-        rows.push({ dateLabel: MONTHS[m], description: it.label, amount: v, _m:m, planned: true });
+        rows.push({ dateLabel: budgetedDateLabel(m, it), description: it.label, amount: v, _m:m, planned: true });
       }
     });
   }
@@ -4907,7 +4915,7 @@ function currentMonthProjectedRows(m){
     const planned = it.monthly[m] || 0;
     if (Math.abs(planned) > Math.abs(matched)){
       const remaining = Math.round((planned-matched)*100)/100;
-      if (remaining) remainingRows.push({ dateLabel: MONTHS[m], description: `${it.label} (remaining)`, amount: remaining, planned: true });
+      if (remaining) remainingRows.push({ dateLabel: budgetedDateLabel(m, it), description: `${it.label} (remaining)`, amount: remaining, planned: true });
     }
   });
 
@@ -4919,7 +4927,7 @@ function currentMonthProjectedRows(m){
   } else {
     unlinkedItems.forEach(it=>{
       const v = it.monthly[m];
-      if (v) remainingRows.push({ dateLabel: MONTHS[m], description: it.label, amount: v, planned: true });
+      if (v) remainingRows.push({ dateLabel: budgetedDateLabel(m, it), description: it.label, amount: v, planned: true });
     });
   }
 
@@ -4928,7 +4936,7 @@ function currentMonthProjectedRows(m){
     if (remainingDays <= 0) return;
     const rate = Number(it.amount) || 0;
     const v = Math.round(rate * remainingDays * 100)/100;
-    if (v) remainingRows.push({ dateLabel: MONTHS[m], description: `${it.label} (remaining)`, amount: v, planned: true });
+    if (v) remainingRows.push({ dateLabel: budgetedDateLabel(m, it), description: `${it.label} (remaining)`, amount: v, planned: true });
   });
 
   return [...actualRows, ...remainingRows];
@@ -4949,7 +4957,7 @@ function renderRightProjectedList(container){
     } else {
       items.forEach(it=>{
         const v = it.monthly[m];
-        if (v) rows.push({ dateLabel: MONTHS[m], description: it.label, amount: v, planned: true });
+        if (v) rows.push({ dateLabel: budgetedDateLabel(m, it), description: it.label, amount: v, planned: true });
       });
     }
   }
