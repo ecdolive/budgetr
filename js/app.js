@@ -3581,24 +3581,41 @@ function selectBudgetSub(sel){
 function budgetItemActiveMonthAmounts(amounts){
   return amounts.filter(v=>Number(v)||0);
 }
+// "1st"/"2nd"/"3rd"/"4th"... for the Day of the month note below — the
+// 11th-13th exception is why this can't just switch on the last digit.
+function ordinalDay(n){
+  const suffixes = ['th','st','nd','rd'];
+  const v = n % 100;
+  return n + (suffixes[(v-20)%10] || suffixes[v] || suffixes[0]);
+}
 function budgetItemFreqText(item){
+  const day = item.dayOfMonth;
   if (Array.isArray(item.amount)){
     const activeIndices = item.amount.map((v,i)=>Number(v)?i:-1).filter(i=>i!==-1);
-    if (activeIndices.length === 12) return 'Every month';
-    return activeIndices.map(i=>MONTHS[i]).join(', ');
+    if (activeIndices.length === 12) return day ? `Every month on the ${ordinalDay(day)}` : 'Every month';
+    // A single active month reads as a specific date ("March 5") once a day
+    // is set, same as the freq-coded one-time-item case below.
+    if (activeIndices.length === 1 && day) return `${MONTHS_FULL[activeIndices[0]]} ${day}`;
+    const list = activeIndices.map(i=>MONTHS[i]).join(', ');
+    return day ? `${ordinalDay(day)} of ${list}` : list;
   }
   const codes = freqMonthCodes(item.freq);
-  if (codes === null) return 'Every month';
+  if (codes === null) return day ? `Every month on the ${ordinalDay(day)}` : 'Every month';
   const indices = codes.map(c=>MONTH_ABBR.indexOf(c)).sort((a,b)=>a-b);
-  // A single month reads as "January only" (a one-time item); a set of
-  // several reads as a plain abbreviated comma list — one item spanning
-  // just those months (see openAddBudgetItemModal's Months picker) —
-  // rather than repeating "only" for each.
+  // A single month reads as "January only" (a one-time item) — or, once a
+  // Day of the month is set, as a specific date ("March 5") instead, the
+  // "only" no longer needed since the date itself already reads as one-off.
+  // A set of several reads as a plain abbreviated comma list — one item
+  // spanning just those months (see openAddBudgetItemModal's Months
+  // picker) — prefixed with the day ("23rd of Jan, Feb, Mar") when set,
+  // rather than repeating it (or "only") for each.
   if (indices.length === 1){
     const idx = indices[0];
+    if (day) return `${idx !== -1 ? MONTHS_FULL[idx] : codes[0]} ${day}`;
     return (idx !== -1 ? MONTHS_FULL[idx] : codes[0]) + ' only';
   }
-  return indices.map(idx=>idx!==-1 ? MONTHS[idx] : '?').join(', ');
+  const list = indices.map(idx=>idx!==-1 ? MONTHS[idx] : '?').join(', ');
+  return day ? `${ordinalDay(day)} of ${list}` : list;
 }
 function budgetItemAmountText(item){
   if (Array.isArray(item.amount)){
