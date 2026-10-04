@@ -539,6 +539,40 @@ function buildBudgetRollups(resolved, categories, incomeSubcats){
   };
 }
 
+// One line item's contribution to a single month's per-day net delta array
+// (`netDaily`, 1-indexed by day-of-year count) — landing as a single jump
+// on its Day of the month (clamped to the month's actual last day when
+// that day doesn't exist there, e.g. Feb or a 30-day month's 31st) when
+// one's set and the item isn't per-diem, or spread evenly across every day
+// of the month otherwise (a per-diem item's own daily rate, or just an
+// even share of a flat monthly item with no particular due date — which
+// reproduces the same cumulative shape the old month-to-month linear
+// interpolation used to produce). Shared by dailyBudgetPoints below (every
+// month, pure plan) and forecastRemainingDailyPoints (future months of the
+// Forecast line, where the plan and the forecast are the same thing).
+function addMonthlyItemDaily(netDaily, it, year, mi, monthEnds){
+  const amt = it.monthly[mi];
+  if (!amt) return;
+  const dim = daysInMonth(year, mi);
+  const monthStartDc = mi===0 ? 0 : monthEnds[mi-1];
+  if (!isPerDiemItem(it) && it.dayOfMonth){
+    const day = Math.min(Number(it.dayOfMonth), dim);
+    netDaily[monthStartDc+day] += amt;
+  } else {
+    const perDay = amt/dim;
+    for (let d=1; d<=dim; d++) netDaily[monthStartDc+d] += perDay;
+  }
+}
+// Runs `fn(it)` for every line item across both Income and Expenses in a
+// resolved budget (see resolveBudgets) — the common "every item everywhere"
+// walk dailyBudgetPoints and forecastRemainingDailyPoints both need.
+function walkBudgetItems(resolved, fn){
+  const walkGroup = group => Object.values(group).forEach(subs=>
+    Object.values(subs).forEach(sub=>sub.items.forEach(fn)));
+  walkGroup(resolved.income);
+  walkGroup(resolved.expenses);
+}
+
 // Day-of-year net budget series for the Year Net Cash Flow chart's
 // Budgeted line (see renderYearNetChart) — one point per calendar day
 // instead of just the 12 month-end totals, so an item with a Day of the
@@ -546,41 +580,87 @@ function buildBudgetRollups(resolved, categories, incomeSubcats){
 // as a single jump on that specific day rather than smearing it evenly
 // across the month. `resolved` is BUDGETS (resolveBudgets' output); its
 // items already carry a signed `monthly` total per month (negative for
-// expenses, positive for income — see buildBudgetRollups) and an optional
-// `dayOfMonth`, so summing every item's contribution straight from those
-// is enough, with no separate income/expense sign-handling needed here.
-// Per-diem items (and any item left without a day) are spread evenly across
-// every day of each month they apply to — for a per-diem item that's just
-// its own daily rate, and for everything else it reproduces the same
-// cumulative shape the old month-to-month linear interpolation used to
-// produce. A day of 29-31 that doesn't exist in a given month (Feb; the
-// 31st of a 30-day month) clamps down to that month's actual last day.
+// expenses, positive for income — see buildBudgetRollups), so summing
+// every item's contribution straight from those is enough, with no
+// separate income/expense sign-handling needed here.
 function dailyBudgetPoints(resolved, year, monthEnds){
   const totalDays = monthEnds[11];
   const netDaily = new Array(totalDays+1).fill(0); // 1-indexed by day-of-year count
-  function addItem(it){
-    const perDiem = isPerDiemItem(it);
-    for (let mi=0; mi<12; mi++){
-      const amt = it.monthly[mi];
-      if (!amt) continue;
-      const dim = daysInMonth(year, mi);
-      const monthStartDc = mi===0 ? 0 : monthEnds[mi-1];
-      if (!perDiem && it.dayOfMonth){
-        const day = Math.min(Number(it.dayOfMonth), dim);
-        netDaily[monthStartDc+day] += amt;
-      } else {
-        const perDay = amt/dim;
-        for (let d=1; d<=dim; d++) netDaily[monthStartDc+d] += perDay;
-      }
-    }
-  }
-  const walkGroup = group => Object.values(group).forEach(subs=>
-    Object.values(subs).forEach(sub=>sub.items.forEach(addItem)));
-  walkGroup(resolved.income);
-  walkGroup(resolved.expenses);
+  walkBudgetItems(resolved, it=>{
+    for (let mi=0; mi<12; mi++) addMonthlyItemDaily(netDaily, it, year, mi, monthEnds);
+  });
   const points = [[0,0]];
   let cum = 0;
   for (let dc=1; dc<=totalDays; dc++){
+    cum += netDaily[dc];
+    points.push([dc, Math.round(cum*100)/100]);
+  }
+  return points;
+}
+
+// Day-exact continuation of the Year Net Cash Flow chart's Forecast line
+// from "today" (day `currentDay` of month `cmi`) through year end. Every
+// month after the current one is just the plain plan (see
+// projectedMonthly's `else` branch), so it's placed exactly like
+// dailyBudgetPoints — day-exact or spread evenly via addMonthlyItemDaily,
+// no blending needed. The current month is the one exception: the days up
+// through today are already real actuals (handled by the caller), and
+// `netProjectedCmi` (the Forecast pill's own current-month figure — a
+// linked item's matched-actual-vs-planned spending cap, or the unlinked
+// pool's whichever's-bigger) can differ from a plain sum of this month's
+// item plans, so there's no one true amount to place on each item's own
+// day the way a pure-plan month can. Instead, only items whose Day of the
+// month still lies strictly ahead of today get placed exactly, each on its
+// own (unadjusted plan) amount; everything else for this month — no day
+// set, a per-diem rate, or a day that's already passed — pools into one
+// "remaining value", sized as whatever's left of netProjectedCmi once
+// those exact placements are subtracted out, and spread evenly across the
+// days still left in the month. That residual sizing is what keeps the
+// month's total exactly matching netProjectedCmi regardless of how its
+// pieces land day to day. Returns cumulative deltas relative to today (the
+// caller adds its own running actual-to-date total on top).
+function forecastRemainingDailyPoints(resolved, year, monthEnds, cmi, currentDay, netProjectedCmi, monthToDateActual){
+  const totalDays = monthEnds[11];
+  const todayCount = dayOfYearEnd(year, cmi, currentDay);
+  const netDaily = new Array(totalDays+1).fill(0);
+
+  const dim = daysInMonth(year, cmi);
+  const monthStartDc = cmi===0 ? 0 : monthEnds[cmi-1];
+  const remainingDays = dim - currentDay;
+  const remainingMonthNet = Math.round((netProjectedCmi - monthToDateActual)*100)/100;
+  if (remainingDays <= 0){
+    // Already the last day of the month — nothing left to spread across,
+    // so whatever's still unaccounted for lands all at once, today.
+    netDaily[todayCount] += remainingMonthNet;
+  } else {
+    let reservedSum = 0;
+    walkBudgetItems(resolved, it=>{
+      const amt = it.monthly[cmi];
+      if (!amt || isPerDiemItem(it) || !it.dayOfMonth || Number(it.dayOfMonth) <= currentDay) return;
+      const day = Math.min(Number(it.dayOfMonth), dim);
+      netDaily[monthStartDc+day] += amt;
+      reservedSum += amt;
+    });
+    const perDay = (remainingMonthNet - reservedSum) / remainingDays;
+    for (let d=currentDay+1; d<=dim; d++) netDaily[monthStartDc+d] += perDay;
+  }
+
+  // Every month after the current one — unlike the current month above,
+  // this is exactly dailyBudgetPoints' own per-item placement, just
+  // starting from cmi+1 instead of 0.
+  walkBudgetItems(resolved, it=>{
+    for (let mi=cmi+1; mi<12; mi++) addMonthlyItemDaily(netDaily, it, year, mi, monthEnds);
+  });
+
+  // Starts at todayCount itself, not todayCount+1 — normally a no-op (the
+  // caller's own [todayCount, running] point already covers today, and
+  // netDaily[todayCount] is always 0 here since every placement above
+  // starts strictly after it), but the remainingDays<=0 case above deposits
+  // its leftover amount directly on todayCount, and it needs to actually be
+  // read back out rather than silently sitting before this loop's start.
+  const points = [];
+  let cum = 0;
+  for (let dc=todayCount; dc<=totalDays; dc++){
     cum += netDaily[dc];
     points.push([dc, Math.round(cum*100)/100]);
   }
@@ -2766,14 +2846,9 @@ function renderYearNetChart(host){
     const netProjected = incomeProjected.map((v,i)=> Math.round((v-expenseProjected[i])*100)/100);
 
     forecastPoints.push([todayCount, Math.round(running*100)/100]);
-    let fRunning = running;
     const monthToDateActual = running - cumAtPrevMonthEnd;
-    fRunning += (netProjected[cmi] - monthToDateActual);
-    forecastPoints.push([monthEnds[cmi], Math.round(fRunning*100)/100]);
-    for (let i=cmi+1; i<12; i++){
-      fRunning += netProjected[i];
-      forecastPoints.push([monthEnds[i], Math.round(fRunning*100)/100]);
-    }
+    forecastRemainingDailyPoints(BUDGETS, year, monthEnds, cmi, DATA.currentDay, netProjected[cmi], monthToDateActual)
+      .forEach(([dc,delta])=>forecastPoints.push([dc, Math.round((running+delta)*100)/100]));
   }
 
   // An optional user-entered balance (see the balanceRow/openCashBalance-
