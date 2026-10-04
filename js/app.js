@@ -4413,10 +4413,6 @@ function openAddBudgetItemModal(opts){
     return cellInput;
   });
   amountField.appendChild(monthAmountsGrid);
-  const monthAmountsHint = document.createElement('div');
-  monthAmountsHint.className = 'modal-hint';
-  monthAmountsHint.textContent = "Applies every month — leave a month at 0 if it doesn't apply.";
-  amountField.appendChild(monthAmountsHint);
 
   descAmountGroup.appendChild(amountField);
 
@@ -4559,15 +4555,14 @@ function openAddBudgetItemModal(opts){
 
   // Toggling on forces the Months picker to "All" and hides it — a
   // per-month amount already encodes "doesn't apply this month" as a plain
-  // 0 (see the hint above the grid), so a separate freq selection would
-  // just be redundant. Also drops back to the ordinary "monthly"
-  // amountType, since per-diem's per-day rate has no meaning alongside 12
-  // explicit month totals.
+  // 0, so a separate freq selection would just be redundant. Also drops
+  // back to the ordinary "monthly" amountType, since per-diem's per-day
+  // rate has no meaning alongside 12 explicit month totals.
   function syncVaryToggle(){
     varyToggleBtn.textContent = varyByMonth ? 'Use one amount' : 'Enter amounts per month';
+    amountFieldLabel.textContent = varyByMonth ? 'Amounts per month' : 'Amount';
     amountWrap.hidden = varyByMonth;
     monthAmountsGrid.hidden = !varyByMonth;
-    monthAmountsHint.hidden = !varyByMonth;
     freqField.hidden = varyByMonth;
     if (varyByMonth){
       selectedFreqs.clear();
