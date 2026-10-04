@@ -1823,6 +1823,15 @@ function renderTransactionsChart(host, rows, onMonthClick){
   // fixed viewBox + preserveAspectRatio="none" would stretch them into
   // whenever the rendered width didn't happen to match that fixed width.
   function draw(){
+    // renderMid() clears the whole mid panel (including this chart's own
+    // wrap) on every navigation away from Transactions, without
+    // disconnecting this ResizeObserver first — it can still fire once
+    // more right after, reporting the now-detached wrap's collapsed
+    // (0-width) layout. Bail out rather than measure that:
+    // plotHost.getBoundingClientRect().width would read 0, clamp to 1, and
+    // produce a negative innerW fed straight into an SVG <rect>'s width
+    // attribute (see the matching fix/comment on renderYearNetChart).
+    if (!plotHost.isConnected) return;
     plotHost.innerHTML = '';
     const svg = document.createElementNS(svgNS,'svg');
     svg.setAttribute('class','txn-chart-svg');
