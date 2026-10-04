@@ -663,6 +663,74 @@
   .txn-chart-value-label.selected.pos{fill:var(--positive);}
   .txn-chart-value-label.selected.neg{fill:var(--negative);}
 
+  /* Charts tab: year-long Budgeted vs. Actual/Forecast net line chart —
+     see .txn-chart above for the same card/head/legend/grid/axis-label
+     pattern; kept under its own prefix since the two charts' marks and
+     interactions differ (continuous day-of-year x-axis; hover shows a
+     single day's values via a tooltip rather than txn-chart's per-month
+     direct labels — see .year-chart-tooltip below). */
+  .year-chart{
+    flex-shrink:0;
+    position:relative;
+    margin:0 8px 16px;
+    padding:16px;
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:var(--radius-lg);
+  }
+  .year-chart-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}
+  .year-chart-title{font-size:13px;font-weight:700;color:var(--text-secondary);}
+  .year-chart-legend{display:flex;align-items:center;gap:16px;}
+  .year-chart-legend-item{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--text-secondary);}
+  .year-chart-legend-swatch{flex-shrink:0;width:12px;height:2px;border-radius:1px;}
+  /* Mirrors the Transactions chart's average-reference line (see
+     .txn-chart-avg-line/.txn-chart-legend-swatch.net) — a thin, muted,
+     dashed mark, since Budgeted plays the same "flat reference to compare
+     the real line against" role here that Avg plays there. */
+  .year-chart-legend-swatch.budget{background:repeating-linear-gradient(to right, var(--text-muted) 0 2px, transparent 2px 5px);}
+  .year-chart-legend-swatch.actual{background:var(--accent-teal);}
+  /* Mirrors the Forecast line's own dash pattern (see .year-chart-line.dashed)
+     rather than a solid swatch, so the legend key matches the mark exactly. */
+  .year-chart-legend-swatch.forecast{background:repeating-linear-gradient(to right, var(--accent-teal) 0 3px, transparent 3px 6px);}
+  .year-chart-plot{position:relative;}
+  .year-chart-svg{display:block;width:100%;height:280px;}
+  .year-chart-grid{stroke:var(--border);stroke-width:1;}
+  .year-chart-grid.baseline{stroke:var(--text-muted);}
+  .year-chart-axis-label{fill:var(--text-muted);font-size:11px;font-variant-numeric:tabular-nums;}
+  .year-chart-line{fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+  .year-chart-line.budget{stroke:var(--text-muted);stroke-width:1;stroke-dasharray:2 3;opacity:0.7;}
+  .year-chart-line.actual{stroke:var(--accent-teal);}
+  .year-chart-line.actual.dashed{stroke-dasharray:1 6;}
+  .year-chart-today-dot{fill:var(--accent-teal);stroke:var(--bg-card);stroke-width:2;}
+  .year-chart-overlay{fill:transparent;cursor:crosshair;}
+  .year-chart-hover-line{stroke:var(--text-muted);stroke-width:1;stroke-dasharray:2 3;opacity:0;pointer-events:none;transition:opacity .1s;}
+  .year-chart-hover-dot{stroke:var(--bg-card);stroke-width:2;opacity:0;pointer-events:none;transition:opacity .1s;}
+  .year-chart-hover-dot.budget{fill:var(--text-primary);}
+  .year-chart-hover-dot.actual{fill:var(--accent-teal);}
+  /* Plain HTML, not SVG (see renderYearNetChart) — positioned in JS via
+     left/top, flipping to the guide line's other side rather than running
+     off the card's edge. */
+  .year-chart-tooltip{
+    position:absolute;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .1s;
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:var(--radius-sm);
+    padding:8px 10px;
+    box-shadow:0 8px 24px rgba(0,0,0,0.45);
+    white-space:nowrap;
+    z-index:3;
+  }
+  .year-chart-tooltip-date{font-size:12px;font-weight:700;color:var(--text-primary);margin-bottom:4px;}
+  .year-chart-tooltip-row{display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:12px;}
+  .year-chart-tooltip-row+.year-chart-tooltip-row{margin-top:2px;}
+  .year-chart-tooltip-label{color:var(--text-muted);}
+  .year-chart-tooltip-row .num{font-size:12px;}
+  .year-chart-tooltip-row .num.pos{color:var(--positive);}
+  .year-chart-tooltip-row .num.neg{color:var(--negative);}
+
   table.ledger-year th.month-link{cursor:pointer;}
   table.ledger-year th.month-link:hover{color:var(--text-primary);}
 

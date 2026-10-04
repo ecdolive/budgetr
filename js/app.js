@@ -1041,6 +1041,7 @@ function renderLeftNav(){
   // though it's launched without touching `timeframe`.
   wrap.appendChild(navItem('Budget', 'year', !budgetEditMode && (timeframe === 'year' || typeof timeframe === 'number'), 'icons/budget-nav.svg'));
   wrap.appendChild(navItem('Transactions', 'transactions', !budgetEditMode && timeframe === 'transactions', 'icons/search.svg'));
+  wrap.appendChild(navItem('Charts', 'charts', !budgetEditMode && timeframe === 'charts', 'icons/chart-nav.svg'));
 
   // Individual month tabs used to live here, each showing that month's net
   // value (via monthPlanNet/DATA.net) — a month view is now reached by
@@ -1127,6 +1128,12 @@ function renderMid(opts){
 
   if (timeframe === 'transactions'){
     renderTransactionsPage(mid);
+    restoreScroll();
+    return;
+  }
+
+  if (timeframe === 'charts'){
+    renderChartsPage(mid);
     restoreScroll();
     return;
   }
@@ -2339,6 +2346,342 @@ function escapeHTML(s){
   return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+/* ============================================================
+   CHARTS PAGE
+   A year-long line chart plotting cumulative net (income minus
+   spending) against time: Budgeted (the plan, independent of any
+   actuals — one point per month boundary) against Actual (one
+   point per day, Jan 1 through the latest day with transaction
+   data) which then continues as a dotted Forecast — past months'
+   actuals plus the current month's blended forecast plus future
+   months' plan, the same figures the Year table's Forecast pill
+   uses (see projectedMonthly) — through Dec 31.
+   ============================================================ */
+function yearChartLegendItem(label, cls){
+  const item = document.createElement('span');
+  item.className = 'year-chart-legend-item';
+  const swatch = document.createElement('span');
+  swatch.className = 'year-chart-legend-swatch '+cls;
+  item.appendChild(swatch);
+  const text = document.createElement('span');
+  text.textContent = label;
+  item.appendChild(text);
+  return item;
+}
+function renderChartsPage(mid){
+  const titleBar = document.createElement('div');
+  titleBar.className = 'mid-title';
+  titleBar.textContent = 'Charts';
+  mid.appendChild(titleBar);
+
+  const body = document.createElement('div');
+  body.className = 'mid-body';
+  mid.appendChild(body);
+
+  const chartHost = document.createElement('div');
+  body.appendChild(chartHost);
+  renderYearNetChart(chartHost);
+}
+// Cumulative day-of-year count through the END of the given calendar date
+// (year's Jan 1 -> 1, Dec 31 -> 365 or 366) — the shared x-axis unit for
+// both series below, including the Budgeted series' month-boundary points
+// (see monthEndDayCounts).
+function dayOfYearEnd(year, monthIndex, dayOfMonth){
+  let days = dayOfMonth;
+  for (let m=0; m<monthIndex; m++) days += daysInMonth(year, m);
+  return days;
+}
+function monthEndDayCounts(year){
+  const out = [];
+  let acc = 0;
+  for (let m=0; m<12; m++){ acc += daysInMonth(year, m); out.push(acc); }
+  return out;
+}
+// Inverse of dayOfYearEnd/monthEndDayCounts — the calendar month/day a given
+// day-of-year count falls on (dc=1 -> Jan 1).
+function dateFromDayCount(monthEnds, dc){
+  let m = 0;
+  while (m < 11 && dc > monthEnds[m]) m++;
+  const prevEnd = m === 0 ? 0 : monthEnds[m-1];
+  return { month: m, day: Math.max(1, dc - prevEnd) };
+}
+// Reads a value off a sorted (dayCount, cumulative value) series at an
+// arbitrary day, linearly interpolating between its two surrounding points.
+// Works whether the series is sparse (today: Budgeted's 12 month-boundary
+// points, Forecast's handful of month-boundary points) or dense (Actual's
+// one point per real day) — a day that falls exactly on a point just
+// interpolates to itself. This is also what lets Budgeted move to per-day
+// granularity later (see the comment on renderYearNetChart) without this
+// lookup — or the hover UI built on it — needing to change at all: a denser
+// `points` array interpolates (in the limit, looks up) the same way a
+// sparser one does.
+function valueAtDay(points, dc){
+  if (!points.length) return null;
+  if (dc <= points[0][0]) return points[0][1];
+  const last = points[points.length-1];
+  if (dc >= last[0]) return last[1];
+  for (let i=1; i<points.length; i++){
+    const [x1,y1] = points[i];
+    if (dc > x1) continue;
+    const [x0,y0] = points[i-1];
+    if (x1 === x0) return y1;
+    return y0 + (y1-y0) * (dc-x0)/(x1-x0);
+  }
+  return last[1];
+}
+function renderYearNetChart(host){
+  if (host._chartResizeObserver){ host._chartResizeObserver.disconnect(); }
+  host.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'year-chart';
+  host.appendChild(wrap);
+
+  const year = DATA.year;
+  const monthEnds = monthEndDayCounts(year);
+  const totalDays = monthEnds[11];
+  const cmi = DATA.currentMonthIndex;
+
+  const head = document.createElement('div');
+  head.className = 'year-chart-head';
+  const title = document.createElement('div');
+  title.className = 'year-chart-title';
+  title.textContent = `${year} Net Cash Flow`;
+  head.appendChild(title);
+  const legend = document.createElement('div');
+  legend.className = 'year-chart-legend';
+  legend.appendChild(yearChartLegendItem('Budgeted', 'budget'));
+  legend.appendChild(yearChartLegendItem('Actual', 'actual'));
+  if (cmi != null) legend.appendChild(yearChartLegendItem('Forecast', 'forecast'));
+  head.appendChild(legend);
+  wrap.appendChild(head);
+
+  // Budgeted — pure plan (ROLL's monthly totals), independent of any actual
+  // spending, same as the Year table's Budget pill. Cumulative from a
+  // (day 0, $0) start so it shares the actual/forecast line's own origin
+  // even though it only has 12 real data points.
+  const budgetMonthlyNet = ROLL.incomeTotalMonthly.map((v,i)=> Math.round((v - ROLL.expenseTotalMonthly[i])*100)/100);
+  const budgetPoints = [[0,0]];
+  let budgetCum = 0;
+  budgetMonthlyNet.forEach((v,i)=>{ budgetCum += v; budgetPoints.push([monthEnds[i], Math.round(budgetCum*100)/100]); });
+
+  const actualPoints = [[0,0]];
+  const forecastPoints = [];
+  let todayCount = null;
+  if (cmi != null){
+    // Daily net, keyed by day-of-year count. Expenses rows carry their raw
+    // (negative) CSV amount and Income rows their raw positive amount — see
+    // aggregate() — so summing both types directly equals income-minus-
+    // expenses for that day without re-deriving the subtraction.
+    const dailyNet = new Map();
+    DATA.transactions.forEach(t=>{
+      if (t.type !== 'Income' && t.type !== 'Expenses') return;
+      const d = new Date(t.date+'T00:00:00');
+      const dc = dayOfYearEnd(year, d.getMonth(), d.getDate());
+      dailyNet.set(dc, (dailyNet.get(dc)||0) + t.amount);
+    });
+    todayCount = dayOfYearEnd(year, cmi, DATA.currentDay);
+    const prevMonthEndCount = cmi === 0 ? 0 : monthEnds[cmi-1];
+    let running = 0;
+    let cumAtPrevMonthEnd = 0;
+    for (let dc=1; dc<=todayCount; dc++){
+      running += dailyNet.get(dc) || 0;
+      if (dc === prevMonthEndCount) cumAtPrevMonthEnd = running;
+      actualPoints.push([dc, Math.round(running*100)/100]);
+    }
+
+    // Forecast — the same blend the Forecast pill uses elsewhere: actual
+    // for months already past, this month's blended flat+per-diem
+    // forecast, and plan for every month still ahead.
+    const incomeProjected = projectedMonthly(DATA.income, ROLL.incomeTotalMonthly, ROLL.incomeTotalFlatCmi, ROLL.incomeTotalPerDiemRemainingCmi);
+    const expenseProjected = projectedMonthly(DATA.expenses, ROLL.expenseTotalMonthly, ROLL.expenseTotalFlatCmi, ROLL.expenseTotalPerDiemRemainingCmi);
+    const netProjected = incomeProjected.map((v,i)=> Math.round((v-expenseProjected[i])*100)/100);
+
+    forecastPoints.push([todayCount, Math.round(running*100)/100]);
+    let fRunning = running;
+    const monthToDateActual = running - cumAtPrevMonthEnd;
+    fRunning += (netProjected[cmi] - monthToDateActual);
+    forecastPoints.push([monthEnds[cmi], Math.round(fRunning*100)/100]);
+    for (let i=cmi+1; i<12; i++){
+      fRunning += netProjected[i];
+      forecastPoints.push([monthEnds[i], Math.round(fRunning*100)/100]);
+    }
+  }
+
+  const plotHost = document.createElement('div');
+  plotHost.className = 'year-chart-plot';
+  wrap.appendChild(plotHost);
+
+  // Hover tooltip — a plain HTML overlay (not SVG) so its text can reflow
+  // and its own box can be measured/repositioned without fighting the
+  // viewBox's coordinate system. Parented to plotHost (position:relative,
+  // no padding of its own — see .year-chart-plot), not wrap, so its
+  // left/top land in exactly the same coordinate frame draw()'s own
+  // xFor/yFor use; wrap's padding and head above plotHost would otherwise
+  // throw the two off by however much space those take up. draw() clears
+  // plotHost on every redraw (a resize), so it re-appends the tooltip right
+  // after creating the new <svg>, and always hides it first — the hovered
+  // element it was bound to is gone the instant the old <svg> is replaced.
+  const tooltip = document.createElement('div');
+  tooltip.className = 'year-chart-tooltip';
+
+  const H = 280, padL = 56, padR = 16, padT = 20, padB = 28;
+  const allVals = [...budgetPoints, ...actualPoints, ...forecastPoints].map(p=>p[1]);
+  const { yMin, yMax, step } = niceAxis(allVals);
+  const svgNS = 'http://www.w3.org/2000/svg';
+
+  function draw(){
+    plotHost.innerHTML = '';
+    tooltip.style.opacity = 0;
+    const svg = document.createElementNS(svgNS,'svg');
+    svg.setAttribute('class','year-chart-svg');
+    plotHost.appendChild(svg);
+    plotHost.appendChild(tooltip);
+    const W = Math.max(1, Math.round(svg.getBoundingClientRect().width));
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    const innerW = W - padL - padR, innerH = H - padT - padB;
+    const xFor = dc => padL + innerW * (dc/totalDays);
+    const yFor = v => padT + innerH - innerH * (v-yMin)/(yMax-yMin);
+
+    const stepCount = Math.round((yMax-yMin)/step);
+    for (let s=0; s<=stepCount; s++){
+      const v = yMin + step*s;
+      const y = yFor(v);
+      const isBaseline = Math.abs(v) < step*1e-6;
+      const line = document.createElementNS(svgNS,'line');
+      line.setAttribute('x1',padL); line.setAttribute('x2',W-padR);
+      line.setAttribute('y1',y); line.setAttribute('y2',y);
+      line.setAttribute('class','year-chart-grid'+(isBaseline?' baseline':''));
+      svg.appendChild(line);
+      const label = document.createElementNS(svgNS,'text');
+      label.setAttribute('x', padL-8);
+      label.setAttribute('y', y+4);
+      label.setAttribute('text-anchor','end');
+      label.setAttribute('class','year-chart-axis-label num');
+      label.textContent = isBaseline ? '0' : fmt(v);
+      svg.appendChild(label);
+    }
+
+    for (let i=0;i<12;i++){
+      const x = xFor(monthEnds[i] - daysInMonth(year,i)/2);
+      const t = document.createElementNS(svgNS,'text');
+      t.setAttribute('x', x);
+      t.setAttribute('y', H-8);
+      t.setAttribute('text-anchor','middle');
+      t.setAttribute('class','year-chart-axis-label');
+      t.textContent = MONTHS[i];
+      svg.appendChild(t);
+    }
+
+    function drawLine(points, cls, dashed){
+      const poly = document.createElementNS(svgNS,'polyline');
+      poly.setAttribute('points', points.map(([dc,v])=>`${xFor(dc)},${yFor(v)}`).join(' '));
+      poly.setAttribute('class','year-chart-line '+cls+(dashed?' dashed':''));
+      svg.appendChild(poly);
+      return poly;
+    }
+    drawLine(budgetPoints, 'budget');
+    if (actualPoints.length > 1) drawLine(actualPoints, 'actual');
+    if (forecastPoints.length) drawLine(forecastPoints, 'actual', true);
+
+    // Today marker — where the solid Actual line hands off to the dotted
+    // Forecast.
+    if (forecastPoints.length){
+      const [dc, v] = forecastPoints[0];
+      const dot = document.createElementNS(svgNS,'circle');
+      dot.setAttribute('cx', xFor(dc)); dot.setAttribute('cy', yFor(v));
+      dot.setAttribute('r', 4);
+      dot.setAttribute('class','year-chart-today-dot');
+      svg.appendChild(dot);
+    }
+
+    // Hover: a vertical guide at the nearest day under the pointer, a dot
+    // on each line at that day (Budgeted always; Actual/Forecast too,
+    // whichever one covers that day — see valueAtDay), and a small tooltip
+    // naming the date and both values. overlay only spans the plot's inner
+    // area (not the axis-label padding), so hovering a label doesn't also
+    // trigger it.
+    const overlay = document.createElementNS(svgNS,'rect');
+    overlay.setAttribute('x',padL); overlay.setAttribute('y',padT);
+    overlay.setAttribute('width', innerW); overlay.setAttribute('height', innerH);
+    overlay.setAttribute('class','year-chart-overlay');
+    svg.appendChild(overlay);
+
+    const hoverLine = document.createElementNS(svgNS,'line');
+    hoverLine.setAttribute('y1', padT); hoverLine.setAttribute('y2', padT+innerH);
+    hoverLine.setAttribute('class','year-chart-hover-line');
+    svg.appendChild(hoverLine);
+    const budgetDot = document.createElementNS(svgNS,'circle');
+    budgetDot.setAttribute('r', 4);
+    budgetDot.setAttribute('class','year-chart-hover-dot budget');
+    svg.appendChild(budgetDot);
+    const actualDot = document.createElementNS(svgNS,'circle');
+    actualDot.setAttribute('r', 4);
+    actualDot.setAttribute('class','year-chart-hover-dot actual');
+    svg.appendChild(actualDot);
+
+    function dayCountAt(e){
+      const pt = svg.createSVGPoint();
+      pt.x = e.clientX; pt.y = e.clientY;
+      const loc = pt.matrixTransform(svg.getScreenCTM().inverse());
+      const raw = Math.round(((loc.x - padL) / innerW) * totalDays);
+      return Math.max(1, Math.min(totalDays, raw));
+    }
+    function showAt(dc){
+      const x = xFor(dc);
+      hoverLine.setAttribute('x1', x); hoverLine.setAttribute('x2', x);
+      hoverLine.style.opacity = 1;
+
+      const budgetVal = valueAtDay(budgetPoints, dc);
+      budgetDot.setAttribute('cx', x); budgetDot.setAttribute('cy', yFor(budgetVal));
+      budgetDot.style.opacity = 1;
+
+      // Actual covers every day through today; Forecast picks up from
+      // there through year-end (see renderYearNetChart above) — whichever
+      // applies to the hovered day also names the tooltip's second row.
+      let actualLabel = null, actualVal = null;
+      if (cmi != null){
+        actualLabel = dc <= todayCount ? 'Actual' : 'Forecast';
+        actualVal = valueAtDay(dc <= todayCount ? actualPoints : forecastPoints, dc);
+      }
+      if (actualVal != null){
+        actualDot.setAttribute('cx', x); actualDot.setAttribute('cy', yFor(actualVal));
+        actualDot.style.opacity = 1;
+      } else {
+        actualDot.style.opacity = 0;
+      }
+
+      const { month, day } = dateFromDayCount(monthEnds, dc);
+      tooltip.innerHTML =
+        `<div class="year-chart-tooltip-date">${MONTHS[month]} ${day}, ${year}</div>` +
+        `<div class="year-chart-tooltip-row"><span class="year-chart-tooltip-label">Budgeted</span><span class="num ${signCls(budgetVal)}">${fmt(budgetVal)}</span></div>` +
+        (actualVal != null ? `<div class="year-chart-tooltip-row"><span class="year-chart-tooltip-label">${actualLabel}</span><span class="num ${signCls(actualVal)}">${fmt(actualVal)}</span></div>` : '');
+      tooltip.style.opacity = 1;
+      // Flips to the guide's left whenever it'd otherwise overflow the
+      // card's right edge — tooltip.offsetWidth only has a real value once
+      // it's in the document with real content, both true by this point.
+      const tipW = tooltip.offsetWidth;
+      tooltip.style.left = (x + tipW + 16 > W ? x - tipW - 12 : x + 12) + 'px';
+      tooltip.style.top = padT + 'px';
+    }
+    function hide(){
+      hoverLine.style.opacity = 0;
+      budgetDot.style.opacity = 0;
+      actualDot.style.opacity = 0;
+      tooltip.style.opacity = 0;
+    }
+    overlay.addEventListener('pointermove', (e)=> showAt(dayCountAt(e)));
+    overlay.addEventListener('pointerleave', hide);
+  }
+  draw();
+
+  // ResizeObserver rather than a window 'resize' listener — see the
+  // matching comment on renderTransactionsChart, same reasoning applies
+  // here (the mid panel's width also changes when the right panel
+  // expands/collapses).
+  host._chartResizeObserver = new ResizeObserver(draw);
+  host._chartResizeObserver.observe(wrap);
+}
+
 function selectSub(sub){
   if (selectedSub && sub.kind===selectedSub.kind && sub.subcategory===selectedSub.subcategory &&
       sub.category===selectedSub.category){
@@ -3247,6 +3590,10 @@ function renderRight(){
 
   if (timeframe === 'transactions'){
     right.innerHTML = `<div class="right-body"><div class="right-empty">Browse and filter every transaction in the main panel.</div></div>`;
+    return;
+  }
+  if (timeframe === 'charts'){
+    right.innerHTML = `<div class="right-body"><div class="right-empty">Charts track your budgeted and actual net over the year in the main panel.</div></div>`;
     return;
   }
   if (!selectedSub){
