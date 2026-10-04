@@ -907,6 +907,24 @@ const fmtSigned = (n) => {
   return (v < 0 ? '-' : '+') + s;
 };
 const signCls = (n) => n < 0 ? 'neg' : (n > 0 ? 'pos' : '');
+// Abbreviated tick format for a chart's y-axis gridlines specifically
+// (7,000 -> "7K", 1,250,000 -> "1.25M") — everything else in the app
+// (table cells, direct bar/line value labels, tooltips) keeps fmt()'s full
+// comma-grouped form; an axis can show several of these stacked close
+// together, where the short form matters more than exact precision.
+const fmtAxis = (n) => {
+  const v = Math.round(n);
+  if (v === 0) return '–';
+  const abs = Math.abs(v);
+  const sign = v < 0 ? '-' : '';
+  const currency = SETTINGS.showDollarSign ? '$' : '';
+  // "7.00" -> "7", "9.50" -> "9.5", "105.50" -> "105.5" — only as many
+  // decimal places as the abbreviated value actually needs.
+  const trim = (num) => num.toFixed(2).replace(/\.?0+$/, '');
+  if (abs < 1000) return sign + currency + abs;
+  if (abs < 1000000) return sign + currency + trim(abs/1000) + 'K';
+  return sign + currency + trim(abs/1000000) + 'M';
+};
 
 function monthName(i){ return MONTHS[i]; }
 function monthFullName(i){ return MONTHS_FULL[i]; }
@@ -1908,7 +1926,7 @@ function renderTransactionsChart(host, rows, onMonthClick){
       // own default — reserved for actual numbers, so the month names
       // below don't get it too.
       label.setAttribute('class','txn-chart-axis-label num');
-      label.textContent = isBaseline ? '0' : fmt(v);
+      label.textContent = isBaseline ? '0' : fmtAxis(v);
       svg.appendChild(label);
     }
 
@@ -2802,7 +2820,7 @@ function renderYearNetChart(host){
       label.setAttribute('y', y+4);
       label.setAttribute('text-anchor','end');
       label.setAttribute('class','year-chart-axis-label num');
-      label.textContent = isBaseline ? '0' : fmt(v);
+      label.textContent = isBaseline ? '0' : fmtAxis(v);
       svg.appendChild(label);
     }
 
