@@ -3592,7 +3592,7 @@ function budgetItemFreqText(item){
   const day = item.dayOfMonth;
   if (Array.isArray(item.amount)){
     const activeIndices = item.amount.map((v,i)=>Number(v)?i:-1).filter(i=>i!==-1);
-    if (activeIndices.length === 12) return day ? `Every month on the ${ordinalDay(day)}` : 'Every month';
+    if (activeIndices.length === 12) return day ? `${ordinalDay(day)} of every month` : 'Every month';
     // A single active month reads as a specific date ("March 5") once a day
     // is set, same as the freq-coded one-time-item case below.
     if (activeIndices.length === 1 && day) return `${MONTHS_FULL[activeIndices[0]]} ${day}`;
@@ -3600,7 +3600,7 @@ function budgetItemFreqText(item){
     return day ? `${ordinalDay(day)} of ${list}` : list;
   }
   const codes = freqMonthCodes(item.freq);
-  if (codes === null) return day ? `Every month on the ${ordinalDay(day)}` : 'Every month';
+  if (codes === null) return day ? `${ordinalDay(day)} of every month` : 'Every month';
   const indices = codes.map(c=>MONTH_ABBR.indexOf(c)).sort((a,b)=>a-b);
   // A single month reads as "January only" (a one-time item) — or, once a
   // Day of the month is set, as a specific date ("March 5") instead, the
