@@ -679,6 +679,7 @@
     border-radius:var(--radius-lg);
   }
   .year-chart-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}
+  .year-chart-head-left{display:flex;align-items:center;gap:16px;}
   .year-chart-title{font-size:13px;font-weight:700;color:var(--text-secondary);}
   .year-chart-legend{display:flex;align-items:center;gap:16px;}
   .year-chart-legend-item{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--text-secondary);}
@@ -702,6 +703,10 @@
   .year-chart-line.actual{stroke:var(--accent-teal);}
   .year-chart-line.actual.dashed{stroke-dasharray:1 6;}
   .year-chart-today-dot{fill:var(--accent-teal);stroke:var(--bg-card);stroke-width:2;}
+  /* 4-Week view only (see renderYearNetChart) — a persistent "today" split,
+     unlike the hover guide it's styled close to (same dash), it doesn't
+     fade in/out with the pointer. */
+  .year-chart-today-line{stroke:var(--text-muted);stroke-width:1;stroke-dasharray:2 3;opacity:0.5;}
   .year-chart-overlay{fill:transparent;cursor:crosshair;}
   .year-chart-hover-line{stroke:var(--text-muted);stroke-width:1;stroke-dasharray:2 3;opacity:0;pointer-events:none;transition:opacity .1s;}
   .year-chart-hover-dot{stroke:var(--bg-card);stroke-width:2;opacity:0;pointer-events:none;transition:opacity .1s;}

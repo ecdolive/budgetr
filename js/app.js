@@ -835,6 +835,12 @@ let txnSort = { key: 'date', dir: -1 }; // default: newest first
 // already matches, rather than a persisted setting.
 let txnMonthFilter = null; // month index (0-11) | null
 
+// Charts tab: which window renderYearNetChart plots — the whole year, or a
+// 4-week window centered on today (see renderYearNetChart's chartRange
+// handling). Persists across visits to the tab, same as the Year view's
+// `pill` above.
+let chartRange = 'year'; // 'year' | '4w'
+
 // Budget editor — a distinct "mode" (like search) that takes over the mid
 // and right panels. See the BUDGET EDITOR section below.
 let budgetEditMode = false;
@@ -2429,6 +2435,22 @@ function valueAtDay(points, dc){
   }
   return last[1];
 }
+// Crops a sorted (dayCount, value) series to [viewStart, viewEnd], clipped
+// first to the series' own natural domain (its first/last point) so a view
+// window wider than, say, Forecast's own span doesn't flat-line it out to
+// the window's edge — see the two callers in renderYearNetChart (Budgeted
+// spans the whole year; Actual stops at today; Forecast picks up there).
+// The crop boundaries themselves are interpolated (via valueAtDay) rather
+// than snapped to the nearest real point, so a zoomed-in view's line still
+// starts/ends exactly at the view's edge instead of just inside it.
+function clipToWindow(points, viewStart, viewEnd){
+  if (!points.length) return points;
+  const lo = Math.max(viewStart, points[0][0]);
+  const hi = Math.min(viewEnd, points[points.length-1][0]);
+  if (lo > hi) return [];
+  const within = points.filter(([dc])=> dc > lo && dc < hi);
+  return [[lo, valueAtDay(points, lo)], ...within, [hi, valueAtDay(points, hi)]];
+}
 function renderYearNetChart(host){
   if (host._chartResizeObserver){ host._chartResizeObserver.disconnect(); }
   host.innerHTML = '';
@@ -2440,13 +2462,32 @@ function renderYearNetChart(host){
   const monthEnds = monthEndDayCounts(year);
   const totalDays = monthEnds[11];
   const cmi = DATA.currentMonthIndex;
+  // The 4-Week toggle needs "today" to center its window on — fall back to
+  // the full year whenever there's no transaction data to anchor it,
+  // regardless of whatever chartRange a previous session left behind.
+  const range = cmi != null ? chartRange : 'year';
 
   const head = document.createElement('div');
   head.className = 'year-chart-head';
+  const headLeft = document.createElement('div');
+  headLeft.className = 'year-chart-head-left';
   const title = document.createElement('div');
   title.className = 'year-chart-title';
-  title.textContent = `${year} Net Cash Flow`;
-  head.appendChild(title);
+  title.textContent = range === '4w' ? '4-Week Net Cash Flow' : `${year} Net Cash Flow`;
+  headLeft.appendChild(title);
+  if (cmi != null){
+    const pills = document.createElement('div');
+    pills.className = 'pills';
+    [['year','Full Year'],['4w','4-Week']].forEach(([key,label])=>{
+      const b = document.createElement('button');
+      b.className = 'pill pill-compact' + (range===key ? ' active' : '');
+      b.textContent = label;
+      b.addEventListener('click', ()=>{ chartRange = key; renderYearNetChart(host); });
+      pills.appendChild(b);
+    });
+    headLeft.appendChild(pills);
+  }
+  head.appendChild(headLeft);
   const legend = document.createElement('div');
   legend.className = 'year-chart-legend';
   legend.appendChild(yearChartLegendItem('Budgeted', 'budget'));
@@ -2507,6 +2548,26 @@ function renderYearNetChart(host){
     }
   }
 
+  // The 4-Week view is a zoom, not a different metric — same cumulative
+  // Budgeted/Actual/Forecast series as the full year, just a narrower
+  // [viewStart,viewEnd] window on the same day-of-year x-axis. Centered on
+  // today (14 days back, 14 forward) so both the recent trend and the
+  // near-term forecast stay visible together, the window's defining
+  // feature over just the trailing 4 weeks on their own; shifted (not
+  // truncated) to stay 28 days wide even when today sits near either end
+  // of the year.
+  let viewStart = 0, viewEnd = totalDays;
+  if (range === '4w'){
+    viewStart = todayCount - 13;
+    viewEnd = todayCount + 14;
+    if (viewStart < 0){ viewEnd += -viewStart; viewStart = 0; }
+    if (viewEnd > totalDays){ viewStart -= (viewEnd - totalDays); viewEnd = totalDays; }
+    viewStart = Math.max(0, viewStart);
+  }
+  const viewBudget = clipToWindow(budgetPoints, viewStart, viewEnd);
+  const viewActual = clipToWindow(actualPoints, viewStart, viewEnd);
+  const viewForecast = clipToWindow(forecastPoints, viewStart, viewEnd);
+
   const plotHost = document.createElement('div');
   plotHost.className = 'year-chart-plot';
   wrap.appendChild(plotHost);
@@ -2525,11 +2586,19 @@ function renderYearNetChart(host){
   tooltip.className = 'year-chart-tooltip';
 
   const H = 280, padL = 56, padR = 16, padT = 20, padB = 28;
-  const allVals = [...budgetPoints, ...actualPoints, ...forecastPoints].map(p=>p[1]);
+  const allVals = [...viewBudget, ...viewActual, ...viewForecast].map(p=>p[1]);
   const { yMin, yMax, step } = niceAxis(allVals);
   const svgNS = 'http://www.w3.org/2000/svg';
 
   function draw(){
+    // renderMid() clears the whole mid panel (including this chart's own
+    // wrap) on every navigation away from Charts, without disconnecting
+    // this ResizeObserver first — it can still fire once more right after,
+    // reporting the now-detached wrap's collapsed (0-width) layout. Bail
+    // out rather than measure that: plotHost.getBoundingClientRect().width
+    // would read 0, clamp to 1, and produce a negative innerW fed straight
+    // into an SVG <rect>'s width attribute.
+    if (!plotHost.isConnected) return;
     plotHost.innerHTML = '';
     tooltip.style.opacity = 0;
     const svg = document.createElementNS(svgNS,'svg');
@@ -2539,7 +2608,7 @@ function renderYearNetChart(host){
     const W = Math.max(1, Math.round(svg.getBoundingClientRect().width));
     svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
     const innerW = W - padL - padR, innerH = H - padT - padB;
-    const xFor = dc => padL + innerW * (dc/totalDays);
+    const xFor = dc => padL + innerW * (dc-viewStart)/(viewEnd-viewStart);
     const yFor = v => padT + innerH - innerH * (v-yMin)/(yMax-yMin);
 
     const stepCount = Math.round((yMax-yMin)/step);
@@ -2561,15 +2630,33 @@ function renderYearNetChart(host){
       svg.appendChild(label);
     }
 
-    for (let i=0;i<12;i++){
-      const x = xFor(monthEnds[i] - daysInMonth(year,i)/2);
-      const t = document.createElementNS(svgNS,'text');
-      t.setAttribute('x', x);
-      t.setAttribute('y', H-8);
-      t.setAttribute('text-anchor','middle');
-      t.setAttribute('class','year-chart-axis-label');
-      t.textContent = MONTHS[i];
-      svg.appendChild(t);
+    // X-axis labels: month names spanning the full year, or — zoomed into
+    // the 4-week window, where a month name would be meaningless — a tick
+    // every 7 days (viewStart, viewEnd, and the 3 week boundaries between
+    // them, always landing evenly since the window is always exactly 28
+    // days wide — see its construction above).
+    if (range === '4w'){
+      for (let dc=viewStart; dc<=viewEnd; dc+=7){
+        const { month, day } = dateFromDayCount(monthEnds, dc);
+        const t = document.createElementNS(svgNS,'text');
+        t.setAttribute('x', xFor(dc));
+        t.setAttribute('y', H-8);
+        t.setAttribute('text-anchor','middle');
+        t.setAttribute('class','year-chart-axis-label');
+        t.textContent = `${MONTHS[month]} ${day}`;
+        svg.appendChild(t);
+      }
+    } else {
+      for (let i=0;i<12;i++){
+        const x = xFor(monthEnds[i] - daysInMonth(year,i)/2);
+        const t = document.createElementNS(svgNS,'text');
+        t.setAttribute('x', x);
+        t.setAttribute('y', H-8);
+        t.setAttribute('text-anchor','middle');
+        t.setAttribute('class','year-chart-axis-label');
+        t.textContent = MONTHS[i];
+        svg.appendChild(t);
+      }
     }
 
     function drawLine(points, cls, dashed){
@@ -2579,19 +2666,36 @@ function renderYearNetChart(host){
       svg.appendChild(poly);
       return poly;
     }
-    drawLine(budgetPoints, 'budget');
-    if (actualPoints.length > 1) drawLine(actualPoints, 'actual');
-    if (forecastPoints.length) drawLine(forecastPoints, 'actual', true);
+    drawLine(viewBudget, 'budget');
+    if (viewActual.length > 1) drawLine(viewActual, 'actual');
+    if (viewForecast.length > 1) drawLine(viewForecast, 'actual', true);
 
     // Today marker — where the solid Actual line hands off to the dotted
-    // Forecast.
-    if (forecastPoints.length){
+    // Forecast. Uses the real (unclipped) forecastPoints value rather than
+    // viewForecast's own first point — identical whenever today falls
+    // inside the view (always, by construction) but keeps this tied to
+    // "today" specifically rather than "wherever the view happens to crop
+    // Forecast's own start".
+    if (cmi != null && todayCount >= viewStart && todayCount <= viewEnd){
       const [dc, v] = forecastPoints[0];
       const dot = document.createElementNS(svgNS,'circle');
       dot.setAttribute('cx', xFor(dc)); dot.setAttribute('cy', yFor(v));
       dot.setAttribute('r', 4);
       dot.setAttribute('class','year-chart-today-dot');
       svg.appendChild(dot);
+      // The 4-week view straddles today meaningfully (recent actuals on
+      // one side, near-term forecast on the other) — a full-height guide
+      // makes that split obvious at a glance, the way it already is in the
+      // full-year view just from Forecast's dashing kicking in. Skipped
+      // there since 365 days of guide would just be clutter next to a dot
+      // that's already easy to spot.
+      if (range === '4w'){
+        const todayLine = document.createElementNS(svgNS,'line');
+        todayLine.setAttribute('x1', xFor(dc)); todayLine.setAttribute('x2', xFor(dc));
+        todayLine.setAttribute('y1', padT); todayLine.setAttribute('y2', padT+innerH);
+        todayLine.setAttribute('class','year-chart-today-line');
+        svg.appendChild(todayLine);
+      }
     }
 
     // Hover: a vertical guide at the nearest day under the pointer, a dot
@@ -2623,8 +2727,8 @@ function renderYearNetChart(host){
       const pt = svg.createSVGPoint();
       pt.x = e.clientX; pt.y = e.clientY;
       const loc = pt.matrixTransform(svg.getScreenCTM().inverse());
-      const raw = Math.round(((loc.x - padL) / innerW) * totalDays);
-      return Math.max(1, Math.min(totalDays, raw));
+      const raw = Math.round(viewStart + ((loc.x - padL) / innerW) * (viewEnd-viewStart));
+      return Math.max(Math.max(1,viewStart), Math.min(viewEnd, raw));
     }
     function showAt(dc){
       const x = xFor(dc);
