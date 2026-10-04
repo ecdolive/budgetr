@@ -681,20 +681,30 @@
   .year-chart-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}
   .year-chart-head-left{display:flex;align-items:center;gap:16px;}
   .year-chart-title{font-size:13px;font-weight:700;color:var(--text-secondary);}
-  .year-chart-balance-row{margin-bottom:8px;}
+  .year-chart-balance-row{display:flex;align-items:center;gap:12px;margin-bottom:8px;}
   .year-chart-balance-btn{
     background:none;border:none;padding:0;
     color:var(--accent-teal);font-size:12px;font-weight:700;cursor:pointer;
   }
   .year-chart-balance-btn:hover{opacity:0.8;}
-  .year-chart-balance-chip{
-    background:none;border:none;padding:0;
+  .year-chart-balance-toggle{
+    display:inline-flex;align-items:center;gap:6px;
     color:var(--text-secondary);font-size:12px;font-weight:600;cursor:pointer;
   }
-  .year-chart-balance-chip:hover{color:var(--text-primary);}
-  .year-chart-balance-chip .num{font-size:12px;}
-  .year-chart-balance-chip .num.pos{color:var(--positive);}
-  .year-chart-balance-chip .num.neg{color:var(--negative);}
+  /* Switched off (balance entered but not currently applied — see
+     cashBalanceEnabled) — dims the label the same way a disabled/inactive
+     control reads elsewhere, while the checkbox itself stays at full
+     opacity so the control's own on/off state is still clear at a glance. */
+  .year-chart-balance-toggle.dim span{opacity:0.5;}
+  .year-chart-balance-toggle input[type="checkbox"]{cursor:pointer;}
+  .year-chart-balance-toggle .num{font-size:12px;}
+  .year-chart-balance-toggle .num.pos{color:var(--positive);}
+  .year-chart-balance-toggle .num.neg{color:var(--negative);}
+  .year-chart-balance-edit{
+    background:none;border:none;padding:0;
+    color:var(--accent-teal);font-size:12px;font-weight:700;cursor:pointer;
+  }
+  .year-chart-balance-edit:hover{opacity:0.8;}
   /* Pushed away from Cancel/Save (see .add-plan-actions' flex-end) — a
      destructive action reads safer with distance from the confirm button
      it sits beside. */

@@ -847,6 +847,11 @@ let chartRange = 'year'; // 'year' | '4w'
 // balanceOffset handling). null keeps the chart's original behavior, a
 // cash-flow line starting from $0 on Jan 1.
 let cashBalance = null; // { dayCount, amount } | null
+// Whether the balance above (if any) is actually applied — a lightweight
+// on/off switch separate from entering/removing it, so switching back to
+// plain net cash flow for a look doesn't lose the entered value. Only
+// meaningful while cashBalance is set.
+let cashBalanceEnabled = true;
 
 // Budget editor — a distinct "mode" (like search) that takes over the mid
 // and right panels. See the BUDGET EDITOR section below.
@@ -2489,7 +2494,7 @@ function renderYearNetChart(host){
   headLeft.className = 'year-chart-head-left';
   const title = document.createElement('div');
   title.className = 'year-chart-title';
-  title.textContent = cashBalance
+  title.textContent = cashBalance && cashBalanceEnabled
     ? (range === '4w' ? '4-Week Cash Balance' : `${year} Cash Balance`)
     : (range === '4w' ? '4-Week Net Cash Flow' : `${year} Net Cash Flow`);
   headLeft.appendChild(title);
@@ -2526,13 +2531,33 @@ function renderYearNetChart(host){
   function renderBalanceRow(){
     balanceRow.innerHTML = '';
     if (cashBalance){
+      // Checkbox + label toggles applying the entered balance on/off
+      // without discarding it — e.g. to compare the Cash Balance view
+      // against plain Net Cash Flow without having to re-enter the number
+      // afterward. Editing or removing the value itself lives in the modal
+      // (see the separate Edit button below), not on this toggle.
+      const toggle = document.createElement('label');
+      toggle.className = 'year-chart-balance-toggle' + (cashBalanceEnabled ? '' : ' dim');
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = cashBalanceEnabled;
+      checkbox.addEventListener('change', ()=>{
+        cashBalanceEnabled = checkbox.checked;
+        renderYearNetChart(host);
+      });
+      toggle.appendChild(checkbox);
       const { month, day } = dateFromDayCount(monthEnds, cashBalance.dayCount);
-      const chip = document.createElement('button');
-      chip.type = 'button';
-      chip.className = 'year-chart-balance-chip';
-      chip.innerHTML = `Cash balance: <span class="num ${signCls(cashBalance.amount)}">${fmt(cashBalance.amount)}</span> as of ${MONTHS[month]} ${day}, ${year}`;
-      chip.addEventListener('click', openCashBalanceModal);
-      balanceRow.appendChild(chip);
+      const text = document.createElement('span');
+      text.innerHTML = `Cash balance: <span class="num ${signCls(cashBalance.amount)}">${fmt(cashBalance.amount)}</span> as of ${MONTHS[month]} ${day}, ${year}`;
+      toggle.appendChild(text);
+      balanceRow.appendChild(toggle);
+
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'year-chart-balance-edit';
+      editBtn.textContent = 'Edit';
+      editBtn.addEventListener('click', openCashBalanceModal);
+      balanceRow.appendChild(editBtn);
     } else {
       const btn = document.createElement('button');
       btn.type = 'button';
@@ -2585,6 +2610,7 @@ function renderYearNetChart(host){
       removeBtn.textContent = 'Remove';
       removeBtn.addEventListener('click', ()=>{
         cashBalance = null;
+        cashBalanceEnabled = true;
         close();
         renderYearNetChart(host);
       });
@@ -2613,6 +2639,10 @@ function renderYearNetChart(host){
       const v = parseFloat(input.value);
       if (!Number.isFinite(v)){ input.focus(); return; }
       cashBalance = { dayCount: todayCount, amount: Math.round(v*100)/100 };
+      // Saving is an explicit "apply this" action — re-enables the toggle
+      // even if it had been switched off, same as entering a brand new
+      // balance always starts enabled.
+      cashBalanceEnabled = true;
       close();
       renderYearNetChart(host);
     });
@@ -2686,7 +2716,7 @@ function renderYearNetChart(host){
   // day) applied uniformly to Budgeted, Actual, and Forecast alike, so all
   // three stay comparable on one absolute-dollar scale rather than Actual
   // jumping to real-world numbers while Budgeted stays anchored near $0.
-  if (cashBalance && cmi != null){
+  if (cashBalance && cashBalanceEnabled && cmi != null){
     const balanceOffset = Math.round((cashBalance.amount - valueAtDay(actualPoints, cashBalance.dayCount)) * 100) / 100;
     if (balanceOffset){
       const shift = arr => arr.forEach(p => { p[1] = Math.round((p[1]+balanceOffset)*100)/100; });
