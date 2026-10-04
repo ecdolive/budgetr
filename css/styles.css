@@ -681,6 +681,24 @@
   .year-chart-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}
   .year-chart-head-left{display:flex;align-items:center;gap:16px;}
   .year-chart-title{font-size:13px;font-weight:700;color:var(--text-secondary);}
+  .year-chart-balance-row{margin-bottom:8px;}
+  .year-chart-balance-btn{
+    background:none;border:none;padding:0;
+    color:var(--accent-teal);font-size:12px;font-weight:700;cursor:pointer;
+  }
+  .year-chart-balance-btn:hover{opacity:0.8;}
+  .year-chart-balance-chip{
+    background:none;border:none;padding:0;
+    color:var(--text-secondary);font-size:12px;font-weight:600;cursor:pointer;
+  }
+  .year-chart-balance-chip:hover{color:var(--text-primary);}
+  .year-chart-balance-chip .num{font-size:12px;}
+  .year-chart-balance-chip .num.pos{color:var(--positive);}
+  .year-chart-balance-chip .num.neg{color:var(--negative);}
+  /* Pushed away from Cancel/Save (see .add-plan-actions' flex-end) — a
+     destructive action reads safer with distance from the confirm button
+     it sits beside. */
+  .year-chart-balance-remove{margin-right:auto;}
   .year-chart-legend{display:flex;align-items:center;gap:16px;}
   .year-chart-legend-item{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--text-secondary);}
   .year-chart-legend-swatch{flex-shrink:0;width:12px;height:2px;border-radius:1px;}

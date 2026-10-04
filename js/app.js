@@ -840,6 +840,13 @@ let txnMonthFilter = null; // month index (0-11) | null
 // handling). Persists across visits to the tab, same as the Year view's
 // `pill` above.
 let chartRange = 'year'; // 'year' | '4w'
+// Charts tab: an optional user-entered cash balance, pinned to whatever
+// day-of-year was "today" (the latest transaction's date) at the moment it
+// was entered — lets renderYearNetChart re-baseline every series from
+// "cumulative net since Jan 1" into an actual running cash balance (see its
+// balanceOffset handling). null keeps the chart's original behavior, a
+// cash-flow line starting from $0 on Jan 1.
+let cashBalance = null; // { dayCount, amount } | null
 
 // Budget editor — a distinct "mode" (like search) that takes over the mid
 // and right panels. See the BUDGET EDITOR section below.
@@ -2482,7 +2489,9 @@ function renderYearNetChart(host){
   headLeft.className = 'year-chart-head-left';
   const title = document.createElement('div');
   title.className = 'year-chart-title';
-  title.textContent = range === '4w' ? '4-Week Net Cash Flow' : `${year} Net Cash Flow`;
+  title.textContent = cashBalance
+    ? (range === '4w' ? '4-Week Cash Balance' : `${year} Cash Balance`)
+    : (range === '4w' ? '4-Week Net Cash Flow' : `${year} Net Cash Flow`);
   headLeft.appendChild(title);
   if (cmi != null){
     const pills = document.createElement('div');
@@ -2504,6 +2513,119 @@ function renderYearNetChart(host){
   if (cmi != null) legend.appendChild(yearChartLegendItem('Forecast', 'forecast'));
   head.appendChild(legend);
   wrap.appendChild(head);
+
+  // Optional cash-balance anchor — lets the whole chart re-baseline from
+  // "net cash flow since Jan 1" into an actual running balance (see
+  // balanceOffset below). References `todayCount` and `monthEnds`, both
+  // already declared below this point in the function but not read until a
+  // user actually opens the modal, well after this whole function (and the
+  // variables it declares) has finished running — see dayCountAt/showAt in
+  // the hover handling further down for the same forward-reference pattern.
+  const balanceRow = document.createElement('div');
+  balanceRow.className = 'year-chart-balance-row';
+  function renderBalanceRow(){
+    balanceRow.innerHTML = '';
+    if (cashBalance){
+      const { month, day } = dateFromDayCount(monthEnds, cashBalance.dayCount);
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'year-chart-balance-chip';
+      chip.innerHTML = `Cash balance: <span class="num ${signCls(cashBalance.amount)}">${fmt(cashBalance.amount)}</span> as of ${MONTHS[month]} ${day}, ${year}`;
+      chip.addEventListener('click', openCashBalanceModal);
+      balanceRow.appendChild(chip);
+    } else {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'year-chart-balance-btn';
+      btn.textContent = '+ Set current cash balance';
+      btn.addEventListener('click', openCashBalanceModal);
+      balanceRow.appendChild(btn);
+    }
+  }
+  function openCashBalanceModal(){
+    const scrim = document.createElement('div');
+    scrim.className = 'modal-scrim';
+    const dialog = document.createElement('div');
+    dialog.className = 'modal-dialog';
+    dialog.addEventListener('click', e=>e.stopPropagation());
+    scrim.appendChild(dialog);
+
+    const dTitle = document.createElement('div');
+    dTitle.className = 'modal-title';
+    dTitle.textContent = 'Current Cash Balance';
+    dialog.appendChild(dTitle);
+
+    const field = document.createElement('div');
+    field.className = 'modal-field';
+    const fieldLabel = document.createElement('div');
+    fieldLabel.className = 'modal-field-label';
+    fieldLabel.textContent = 'Balance';
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.step = '1';
+    input.className = 'modal-pill-input num';
+    input.placeholder = '0';
+    input.value = cashBalance ? cashBalance.amount : '';
+    field.appendChild(fieldLabel);
+    field.appendChild(input);
+    dialog.appendChild(field);
+
+    const hint = document.createElement('div');
+    hint.className = 'modal-hint';
+    const { month: tm, day: td } = dateFromDayCount(monthEnds, todayCount);
+    hint.textContent = `As of ${MONTHS_FULL[tm]} ${td}, ${year} — your latest transaction date. Budgeted and Actual/Forecast will show as your cash balance instead of net cash flow since Jan 1.`;
+    dialog.appendChild(hint);
+
+    const actions = document.createElement('div');
+    actions.className = 'add-plan-actions';
+    if (cashBalance){
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'file-btn ghost year-chart-balance-remove';
+      removeBtn.textContent = 'Remove';
+      removeBtn.addEventListener('click', ()=>{
+        cashBalance = null;
+        close();
+        renderYearNetChart(host);
+      });
+      actions.appendChild(removeBtn);
+    }
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'file-btn ghost';
+    cancelBtn.textContent = 'Cancel';
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'file-btn primary';
+    saveBtn.textContent = 'Save';
+    actions.appendChild(cancelBtn);
+    actions.appendChild(saveBtn);
+    dialog.appendChild(actions);
+
+    function close(){
+      document.removeEventListener('keydown', onKeydown);
+      scrim.remove();
+    }
+    function onKeydown(e){ if (e.key === 'Escape') close(); }
+    scrim.addEventListener('click', close);
+    cancelBtn.addEventListener('click', close);
+    saveBtn.addEventListener('click', ()=>{
+      const v = parseFloat(input.value);
+      if (!Number.isFinite(v)){ input.focus(); return; }
+      cashBalance = { dayCount: todayCount, amount: Math.round(v*100)/100 };
+      close();
+      renderYearNetChart(host);
+    });
+    document.addEventListener('keydown', onKeydown);
+    document.body.appendChild(scrim);
+    input.focus();
+  }
+  // No "today" to anchor a balance to without any transaction data — same
+  // gate as the pills/Forecast legend item above.
+  if (cmi != null){
+    renderBalanceRow();
+    wrap.appendChild(balanceRow);
+  }
 
   // Budgeted — pure plan (ROLL's monthly totals), independent of any actual
   // spending, same as the Year table's Budget pill. Cumulative from a
@@ -2554,6 +2676,21 @@ function renderYearNetChart(host){
     for (let i=cmi+1; i<12; i++){
       fRunning += netProjected[i];
       forecastPoints.push([monthEnds[i], Math.round(fRunning*100)/100]);
+    }
+  }
+
+  // An optional user-entered balance (see the balanceRow/openCashBalance-
+  // Modal block above) re-baselines every series from "cumulative net
+  // since Jan 1" into an actual cash balance: a single constant offset
+  // (the entered balance minus what Actual alone computes for that same
+  // day) applied uniformly to Budgeted, Actual, and Forecast alike, so all
+  // three stay comparable on one absolute-dollar scale rather than Actual
+  // jumping to real-world numbers while Budgeted stays anchored near $0.
+  if (cashBalance && cmi != null){
+    const balanceOffset = Math.round((cashBalance.amount - valueAtDay(actualPoints, cashBalance.dayCount)) * 100) / 100;
+    if (balanceOffset){
+      const shift = arr => arr.forEach(p => { p[1] = Math.round((p[1]+balanceOffset)*100)/100; });
+      shift(budgetPoints); shift(actualPoints); shift(forecastPoints);
     }
   }
 
