@@ -1345,6 +1345,15 @@
   }
   .pill.pill-compact{height:1.5rem;padding:0 10px;font-size:11px;}
 
+  /* Day of the month field (openAddBudgetItemModal) — a narrow fixed-width
+     input (it only ever holds 1-2 digits) with its "or last day of the
+     month" note sitting beside it, rather than overlapping inside the pill
+     like .modal-link-badge/.modal-amount-type-toggle above, since the note
+     is plain explanatory text rather than a compact always-present control. */
+  .modal-day-row{display:flex;align-items:center;gap:10px;}
+  .day-of-month-field{width:6rem;flex:none;}
+  .modal-field-note{font-size:12.5px;color:var(--text-muted);}
+
   /* Frequency picker inside the budget editor's add-item modal — a pill
      toggle group (same visual language as the Expenses/Income and
      YTD/Projection/Plan pills) standing in for a native multi-select. */

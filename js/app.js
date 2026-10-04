@@ -398,7 +398,7 @@ function resolveBudgets(raw, year, cmi, currentDay, transactions){
         const resolvedItems = list.map(it=>({
           freq: it.freq, amountType: it.amountType,
           linkedDescriptions: Array.isArray(it.linkedDescriptions) ? it.linkedDescriptions.slice() : [],
-          label: it.label||subName, amount: it.amount,
+          label: it.label||subName, amount: it.amount, dayOfMonth: it.dayOfMonth,
           monthly: resolveLineItem(it, year),
         }));
         const monthly = new Array(12).fill(0);
@@ -539,6 +539,54 @@ function buildBudgetRollups(resolved, categories, incomeSubcats){
   };
 }
 
+// Day-of-year net budget series for the Year Net Cash Flow chart's
+// Budgeted line (see renderYearNetChart) — one point per calendar day
+// instead of just the 12 month-end totals, so an item with a Day of the
+// month set (see openAddBudgetItemModal) can land its whole month's amount
+// as a single jump on that specific day rather than smearing it evenly
+// across the month. `resolved` is BUDGETS (resolveBudgets' output); its
+// items already carry a signed `monthly` total per month (negative for
+// expenses, positive for income — see buildBudgetRollups) and an optional
+// `dayOfMonth`, so summing every item's contribution straight from those
+// is enough, with no separate income/expense sign-handling needed here.
+// Per-diem items (and any item left without a day) are spread evenly across
+// every day of each month they apply to — for a per-diem item that's just
+// its own daily rate, and for everything else it reproduces the same
+// cumulative shape the old month-to-month linear interpolation used to
+// produce. A day of 29-31 that doesn't exist in a given month (Feb; the
+// 31st of a 30-day month) clamps down to that month's actual last day.
+function dailyBudgetPoints(resolved, year, monthEnds){
+  const totalDays = monthEnds[11];
+  const netDaily = new Array(totalDays+1).fill(0); // 1-indexed by day-of-year count
+  function addItem(it){
+    const perDiem = isPerDiemItem(it);
+    for (let mi=0; mi<12; mi++){
+      const amt = it.monthly[mi];
+      if (!amt) continue;
+      const dim = daysInMonth(year, mi);
+      const monthStartDc = mi===0 ? 0 : monthEnds[mi-1];
+      if (!perDiem && it.dayOfMonth){
+        const day = Math.min(Number(it.dayOfMonth), dim);
+        netDaily[monthStartDc+day] += amt;
+      } else {
+        const perDay = amt/dim;
+        for (let d=1; d<=dim; d++) netDaily[monthStartDc+d] += perDay;
+      }
+    }
+  }
+  const walkGroup = group => Object.values(group).forEach(subs=>
+    Object.values(subs).forEach(sub=>sub.items.forEach(addItem)));
+  walkGroup(resolved.income);
+  walkGroup(resolved.expenses);
+  const points = [[0,0]];
+  let cum = 0;
+  for (let dc=1; dc<=totalDays; dc++){
+    cum += netDaily[dc];
+    points.push([dc, Math.round(cum*100)/100]);
+  }
+  return points;
+}
+
 function emptyBudgets(){ return { Expenses: {}, Income: {} }; }
 
 /* ============================================================
@@ -565,6 +613,7 @@ function budgetsRawToDraft(raw){
       linkedDescriptions: Array.isArray(it.linkedDescriptions) ? it.linkedDescriptions.slice() : [],
       label: it.label != null ? it.label : fallbackLabel,
       amount: it.amount,
+      dayOfMonth: it.dayOfMonth,
     };
   });
   // Expenses and Income share the same Category -> Subcategory -> items
@@ -591,6 +640,7 @@ function draftToBudgetsRaw(draft){
       freq: it.freq, amountType: it.amountType || 'monthly',
       linkedDescriptions: Array.isArray(it.linkedDescriptions) ? it.linkedDescriptions.slice() : [],
       label: it.label, amount: it.amount,
+      dayOfMonth: it.dayOfMonth,
     }));
   const serializeCategories = (list) => {
     const out = {};
@@ -2675,14 +2725,13 @@ function renderYearNetChart(host){
     wrap.appendChild(balanceRow);
   }
 
-  // Budgeted — pure plan (ROLL's monthly totals), independent of any actual
-  // spending, same as the Year table's Budget pill. Cumulative from a
-  // (day 0, $0) start so it shares the actual/forecast line's own origin
-  // even though it only has 12 real data points.
-  const budgetMonthlyNet = ROLL.incomeTotalMonthly.map((v,i)=> Math.round((v - ROLL.expenseTotalMonthly[i])*100)/100);
-  const budgetPoints = [[0,0]];
-  let budgetCum = 0;
-  budgetMonthlyNet.forEach((v,i)=>{ budgetCum += v; budgetPoints.push([monthEnds[i], Math.round(budgetCum*100)/100]); });
+  // Budgeted — pure plan, independent of any actual spending, same as the
+  // Year table's Budget pill. One point per calendar day (see
+  // dailyBudgetPoints) rather than just the 12 month-end totals, so an
+  // item with a Day of the month set lands on that exact day instead of
+  // smearing evenly across its whole month. Cumulative from a (day 0, $0)
+  // start so it shares the actual/forecast line's own origin.
+  const budgetPoints = dailyBudgetPoints(BUDGETS, year, monthEnds);
 
   const actualPoints = [[0,0]];
   const forecastPoints = [];
@@ -3974,7 +4023,7 @@ function resolveDraftItemAmount(rawAmount, kind){
 // nothing in the editor is real until Save. Selects the (possibly
 // newly-created) subcategory afterward, same as clicking it directly, so
 // the added item is right there in the right panel.
-function addDraftBudgetItem(target, freq, label, rawAmount, amountType, linkedDescriptions){
+function addDraftBudgetItem(target, freq, label, rawAmount, amountType, linkedDescriptions, dayOfMonth){
   const amount = resolveDraftItemAmount(rawAmount, target.kind);
   if (amount === null) return false;
   const isVarying = Array.isArray(amount);
@@ -4001,6 +4050,7 @@ function addDraftBudgetItem(target, freq, label, rawAmount, amountType, linkedDe
     linkedDescriptions: (resolvedAmountType!=='perDiem' && linkedDescriptions) ? [...linkedDescriptions] : [],
     label: (label && label.trim()) || target.subcategory,
     amount,
+    dayOfMonth: resolvedAmountType!=='perDiem' ? dayOfMonth : undefined,
   });
   budgetOpenCats.add(cat.id);
   budgetSelection = { kind: target.kind, catId: cat.id, subId: sub.id };
@@ -4016,7 +4066,7 @@ function addDraftBudgetItem(target, freq, label, rawAmount, amountType, linkedDe
 // (and thus its identity for descriptionLinksElsewhere) stays stable across
 // the move, since this relocates the actual item object rather than
 // creating a new one.
-function updateDraftBudgetItem(item, target, freq, label, rawAmount, amountType, linkedDescriptions){
+function updateDraftBudgetItem(item, target, freq, label, rawAmount, amountType, linkedDescriptions, dayOfMonth){
   const amount = resolveDraftItemAmount(rawAmount, target.kind);
   if (amount === null) return false;
   const isVarying = Array.isArray(amount);
@@ -4043,6 +4093,7 @@ function updateDraftBudgetItem(item, target, freq, label, rawAmount, amountType,
   item.label = (label && label.trim()) || target.subcategory;
   item.amount = amount;
   item.linkedDescriptions = (resolvedAmountType!=='perDiem' && linkedDescriptions) ? [...linkedDescriptions] : [];
+  item.dayOfMonth = resolvedAmountType!=='perDiem' ? dayOfMonth : undefined;
   sub.items.push(item);
   budgetOpenCats.add(cat.id);
   budgetSelection = { kind: target.kind, catId: cat.id, subId: sub.id };
@@ -4178,9 +4229,10 @@ function renderRightPlannedList(container, monthFilter){
 // value — "monthly", a single month code, or an array of 2-11 month codes
 // (see freqMonthCodes) — so exactly one item is written either way: in add
 // mode via `onAdd(target, freq, label, amount, amountType,
-// linkedDescriptions)`, or in edit mode (`opts.editItem` set to the raw
-// item being edited) via `onSave(item, target, freq, label, amount,
-// amountType, linkedDescriptions)` instead, which relocates/updates it.
+// linkedDescriptions, dayOfMonth)`, or in edit mode (`opts.editItem` set to
+// the raw item being edited) via `onSave(item, target, freq, label, amount,
+// amountType, linkedDescriptions, dayOfMonth)` instead, which
+// relocates/updates it.
 function openAddBudgetItemModal(opts){
   const isEdit = !!opts.editItem;
   let currentKind = opts.kind;
@@ -4435,6 +4487,7 @@ function openAddBudgetItemModal(opts){
     amountType = 'monthly';
     syncAmountTypePills();
     syncLinkBadgeVisibility();
+    syncDayFieldVisibility();
   });
   perDiemPill.addEventListener('click', ()=>{
     amountType = 'perDiem';
@@ -4446,6 +4499,7 @@ function openAddBudgetItemModal(opts){
     syncLinkBadge();
     syncAmountTypePills();
     syncLinkBadgeVisibility();
+    syncDayFieldVisibility();
   });
 
   // Months picker — a pill toggle group (same look as the Expenses/Income
@@ -4520,6 +4574,63 @@ function openAddBudgetItemModal(opts){
     return freqs.sort((a,b)=>MONTH_ABBR.indexOf(a)-MONTH_ABBR.indexOf(b));
   }
 
+  // Day of the month — optional, estimates which calendar day this item's
+  // flat amount is expected to actually post on (a mortgage due the 1st, a
+  // subscription that renews the 15th), feeding the Year Net Cash Flow
+  // chart's day-exact Budgeted line (see dailyBudgetPoints) instead of that
+  // line just spreading the month's total evenly across every day of the
+  // month, which is what still happens here whenever this is left blank.
+  // Only meaningful for a flat (non-per-diem) amount — a per-diem rate
+  // already applies to every day of the month on its own — but shown in
+  // both the single-amount and "Enter amounts per month" shapes, since
+  // either one can still have a real due date. Not every month has a 29th,
+  // 30th, or 31st, so those three values fall back to that month's actual
+  // last day wherever it's short (see dailyBudgetPoints) — the note beside
+  // the input spells that out whenever one of them is entered.
+  const dayField = document.createElement('div');
+  dayField.className = 'modal-field';
+  const dayLabel = document.createElement('div');
+  dayLabel.className = 'modal-field-label';
+  dayLabel.textContent = 'Day of the month';
+  dayField.appendChild(dayLabel);
+  const dayRow = document.createElement('div');
+  dayRow.className = 'modal-day-row';
+  const dayInputWrap = document.createElement('div');
+  dayInputWrap.className = 'day-of-month-field';
+  const dayInput = document.createElement('input');
+  dayInput.type = 'text';
+  dayInput.inputMode = 'numeric';
+  dayInput.className = 'modal-pill-input num';
+  dayInput.placeholder = 'Optional';
+  dayInput.value = (isEdit && opts.editItem.dayOfMonth) ? String(opts.editItem.dayOfMonth) : '';
+  dayInputWrap.appendChild(dayInput);
+  const dayNote = document.createElement('div');
+  dayNote.className = 'modal-field-note';
+  dayNote.textContent = 'or last day of the month';
+  dayRow.appendChild(dayInputWrap);
+  dayRow.appendChild(dayNote);
+  dayField.appendChild(dayRow);
+  dialog.appendChild(dayField);
+
+  function syncDayNote(){
+    const n = Number(dayInput.value);
+    dayNote.hidden = !(n >= 29 && n <= 31);
+  }
+  dayInput.addEventListener('input', ()=>{
+    let digits = dayInput.value.replace(/\D/g,'').slice(0,2);
+    if (digits) digits = String(Math.min(31, parseInt(digits,10)));
+    dayInput.value = digits;
+    syncDayNote();
+  });
+  syncDayNote();
+
+  // Hidden alongside the per-diem amount type, same as the link badge (see
+  // syncLinkBadgeVisibility) — a per-diem rate has no single day to post on.
+  function syncDayFieldVisibility(){
+    dayField.hidden = amountType === 'perDiem';
+  }
+  syncDayFieldVisibility();
+
   const actions = document.createElement('div');
   actions.className = 'add-plan-actions';
   const cancelBtn = document.createElement('button');
@@ -4573,6 +4684,7 @@ function openAddBudgetItemModal(opts){
         syncAmountTypePills();
       }
       syncLinkBadgeVisibility();
+      syncDayFieldVisibility();
     }
     updateSaveEnabled();
   }
@@ -4596,9 +4708,10 @@ function openAddBudgetItemModal(opts){
     const target = { kind: currentKind, category: catInput.value.trim(), subcategory: subInput.value.trim() };
     const freqArg = freqArgFromSelection();
     const amountArg = varyByMonth ? monthAmountInputs.map(inp=>inp.value) : amountInput.value;
+    const dayOfMonth = dayInput.value ? Number(dayInput.value) : undefined;
     const ok = isEdit
-      ? opts.onSave(opts.editItem, target, freqArg, labelInput.value, amountArg, amountType, pendingLinkedDescriptions)
-      : opts.onAdd(target, freqArg, labelInput.value, amountArg, amountType, pendingLinkedDescriptions);
+      ? opts.onSave(opts.editItem, target, freqArg, labelInput.value, amountArg, amountType, pendingLinkedDescriptions, dayOfMonth)
+      : opts.onAdd(target, freqArg, labelInput.value, amountArg, amountType, pendingLinkedDescriptions, dayOfMonth);
     if (!ok){
       (varyByMonth ? monthAmountInputs[0] : amountInput).focus();
       return;
