@@ -2032,10 +2032,12 @@ function renderTransactionsChart(host, rows, onMonthClick){
     legend.appendChild(txnChartLegendItem('Income', 'pos', 'bar'));
     legend.appendChild(txnChartLegendItem('Spend', 'neg', 'bar'));
   } else {
-    // Just the key here — the actual value rides the line itself (see
-    // draw()'s avg-line block below), same as every other direct label on
-    // this chart.
-    legend.appendChild(txnChartLegendItem('Avg', 'net', 'line'));
+    // The value rides the line itself too (see draw()'s avg-line block
+    // below) — this is a second, parenthetical mention naming the period
+    // it's averaged over (a month in Monthly, a day in Daily — see
+    // monthlyAverageExcludingPartialMonth/dailyAverage), not a
+    // replacement for the on-chart figure.
+    legend.appendChild(txnChartLegendItem(`Avg (${fmt(singleAvg)}/${isDaily ? 'day' : 'month'})`, 'net', 'line'));
   }
   head.appendChild(legend);
 
