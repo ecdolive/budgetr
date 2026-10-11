@@ -2026,10 +2026,13 @@ function renderTransactionsChart(host, rows, onMonthClick){
   if (bothTypes){
     // Shape mirrors the actual mark (see txnChartLegendItem) — 'bar' in
     // Monthly, 'line' in Daily, since Income/Spend switch marks between
-    // the two views while Net stays a line in both.
+    // the two views. Net only gets a legend entry in Daily, where it's an
+    // actual line — Monthly drops the line entirely (see the bothTypes
+    // branch in draw() below) since its value already sits as a direct
+    // label above the month name, with nothing left to key a swatch to.
     legend.appendChild(txnChartLegendItem('Income', 'pos', isDaily ? 'line' : 'bar'));
     legend.appendChild(txnChartLegendItem('Spend', 'neg', isDaily ? 'line' : 'bar'));
-    legend.appendChild(txnChartLegendItem('Net', 'net', 'line'));
+    if (isDaily) legend.appendChild(txnChartLegendItem('Net', 'net', 'line'));
   } else {
     // Just the key here — the actual value rides the line itself (see
     // draw()'s avg-line block below), same as every other direct label on
@@ -2043,19 +2046,25 @@ function renderTransactionsChart(host, rows, onMonthClick){
   wrap.appendChild(plotHost);
 
   // padT carries extra room (vs. a bare axis) for Monthly's direct value
-  // labels sitting just above each bar/dot — see draw() below. Both
-  // Income and Spend bars only ever grow up now, so padB only has to fit
-  // the x-axis month label (H-6) and Net's own fixed label (H-20,
-  // unaffected by bar height) — the same plain clearance Daily needs for
-  // its axis labels alone (no persistent per-point labels there — a
-  // tooltip instead, far too many points to label directly), so one pad
-  // now serves both views.
-  const H = 220, padL = 48, padR = 16, padT = 28, padB = 28;
+  // labels sitting just above each bar/dot — see draw() below. padB stays
+  // plain axis-label clearance everywhere except Monthly's bothTypes view,
+  // which needs extra room below the 0 baseline for Net's own fixed
+  // label — 16px under the baseline, then its own ~14.5px glyph height,
+  // then a few px of breathing room before the x-axis month label (H-6,
+  // itself ~10.5px tall above its own baseline) — measured empirically
+  // against the real rendered glyphs rather than guessed, same as every
+  // other gap on this chart.
+  const H = 220, padL = 48, padR = 16, padT = 28, padB = (!isDaily && bothTypes) ? 52 : 28;
   // Income and Spend both plot as plain positive magnitudes now (side-by-
-  // side bars in Monthly, two lines in Daily — see below), so the domain
-  // only has to stretch for Net's own sign; in single-line mode only that
-  // one series' own values are in play.
-  const domainVals = bothTypes ? [...incomeVals, ...spendVals, ...netVals]
+  // side bars in Monthly, two lines in Daily — see below). Daily still
+  // draws Net as an actual line, so its domain has to stretch for Net's
+  // own sign; Monthly dropped that line entirely (its value is a plain
+  // label now, fixed under the month name rather than plotted against
+  // this scale — see the bothTypes branch in draw() below), so including
+  // netVals here would only pull the axis below zero for no reason a
+  // reader could see on the chart itself. Single-line mode only has that
+  // one series' own values in play either way.
+  const domainVals = bothTypes ? [...incomeVals, ...spendVals, ...(isDaily ? netVals : [])]
     : hasIncome ? incomeVals : hasSpend ? spendVals : netVals;
   const { yMin, yMax, step } = niceAxis(domainVals);
   const svgNS = 'http://www.w3.org/2000/svg';
@@ -2388,11 +2397,14 @@ function renderTransactionsChart(host, rows, onMonthClick){
         return points;
       }
 
-      let incomeBars = null, spendBars = null, netPoints = null, singlePoints = null;
+      let incomeBars = null, spendBars = null, singlePoints = null;
       if (bothTypes){
         incomeBars = drawBars(incomeVals, 'pos', incomeCx);
         spendBars = drawBars(spendVals, 'neg', spendCx);
-        netPoints = drawLine(netVals, 'net');
+        // No Net line here (see the legend comment above) — its value
+        // already rides a direct label fixed under the month name (see
+        // netLabels below), so a second, redundant mark would just repeat
+        // it without adding anything a reader can't already see.
       } else {
         singlePoints = drawLine(singleVals, singleCls);
         // A lone line has nothing beside it to compare against (no
@@ -2443,13 +2455,16 @@ function renderTransactionsChart(host, rows, onMonthClick){
         // "0" label sitting right on the baseline.
         incomeLabels = incomeVals.map((v,i)=> valueLabel(fmtChartValue(v), incomeCx(i), yFor(v), true, undefined, 'pos'));
         spendLabels = spendVals.map((v,i)=> valueLabel(fmtChartValue(v), spendCx(i), yFor(v), true, undefined, 'neg'));
-        // Net sits at a fixed spot just above the month label instead of
-        // tracking its own dot — that dot wanders all over the chart (it's
-        // wherever Income minus Spend lands) and would otherwise need to
-        // dodge whichever bar label it ends up next to; anchoring it by the
-        // month name instead reads as "the month's net result" and never
-        // collides with anything.
-        netLabels = netVals.map((v,i)=> valueLabel(fmtChartValue(v), xFor(i), H-20, true, 0, v>=0?'pos':'neg'));
+        // Net sits at a fixed spot just below the 0 gridline (16px, like
+        // every other mark-to-label gap on this chart) instead of tracking
+        // its own dot — that dot wanders all over the chart (it's wherever
+        // Income minus Spend lands) and would otherwise need to dodge
+        // whichever bar label it ends up next to; anchoring it to the
+        // baseline instead reads as "the month's net result" and never
+        // collides with anything. yFor(0) is the same y for every month
+        // (the axis no longer dips below zero here — see domainVals
+        // above), so this stays a fixed row same as before.
+        netLabels = netVals.map((v,i)=> valueLabel(fmtChartValue(v), xFor(i), yFor(0), false, 16, v>=0?'pos':'neg'));
       } else {
         singleLabels = singleVals.map((v,i)=>{
           const cls = singleCls === 'net' ? (v>=0?'pos':'neg') : singleCls;
@@ -2501,19 +2516,19 @@ function renderTransactionsChart(host, rows, onMonthClick){
         if (bothTypes){
           bars = [incomeBars[i], spendBars[i]].filter(Boolean);
           labels = [incomeLabels[i], spendLabels[i], netLabels[i]].filter(Boolean);
-          const y = netPoints[i][1];
-          dot.setAttribute('cx',x); dot.setAttribute('cy', y);
-          dot.setAttribute('class','txn-chart-'+cls+'-dot '+(netVals[i]>=0?'pos':'neg'));
+          // No dot here — there's no Net line to track anymore (see the
+          // legend/draw() comments above); the band wash plus the bars/
+          // labels going full-contrast below are enough on their own.
         } else {
           labels = [singleLabels[i]].filter(Boolean);
           const y = singlePoints[i][1];
           const dotCls = singleCls === 'net' ? (singleVals[i]>=0?'pos':'neg') : singleCls;
           dot.setAttribute('cx',x); dot.setAttribute('cy', y);
           dot.setAttribute('class','txn-chart-'+cls+'-dot '+dotCls);
+          dot.style.opacity = 1;
         }
         bars.forEach(b=>b.classList.add(cls));
         labels.forEach(l=>l.classList.add(cls));
-        dot.style.opacity = 1;
         return { bars, labels };
       }
 
