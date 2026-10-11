@@ -2910,144 +2910,6 @@ function renderYearNetChart(host){
   head.appendChild(legend);
   wrap.appendChild(head);
 
-  // Optional cash-balance anchor — lets the whole chart re-baseline from
-  // "net cash flow since Jan 1" into an actual running balance (see
-  // balanceOffset below). References `todayCount` and `monthEnds`, both
-  // already declared below this point in the function but not read until a
-  // user actually opens the modal, well after this whole function (and the
-  // variables it declares) has finished running — see dayCountAt/showAt in
-  // the hover handling further down for the same forward-reference pattern.
-  const balanceRow = document.createElement('div');
-  balanceRow.className = 'year-chart-balance-row';
-  function renderBalanceRow(){
-    balanceRow.innerHTML = '';
-    if (cashBalance){
-      // Checkbox + label toggles applying the entered balance on/off
-      // without discarding it — e.g. to compare the Cash Balance view
-      // against plain Net Cash Flow without having to re-enter the number
-      // afterward. Editing or removing the value itself lives in the modal
-      // (see the separate Edit button below), not on this toggle.
-      const toggle = document.createElement('label');
-      toggle.className = 'year-chart-balance-toggle' + (cashBalanceEnabled ? '' : ' dim');
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.checked = cashBalanceEnabled;
-      checkbox.addEventListener('change', ()=>{
-        cashBalanceEnabled = checkbox.checked;
-        renderYearNetChart(host);
-      });
-      toggle.appendChild(checkbox);
-      const { month, day } = dateFromDayCount(monthEnds, cashBalance.dayCount);
-      const text = document.createElement('span');
-      text.innerHTML = `Cash balance: <span class="num ${signCls(cashBalance.amount)}">${fmt(cashBalance.amount)}</span> as of ${MONTHS[month]} ${day}, ${year}`;
-      toggle.appendChild(text);
-      balanceRow.appendChild(toggle);
-
-      const editBtn = document.createElement('button');
-      editBtn.type = 'button';
-      editBtn.className = 'year-chart-balance-edit';
-      editBtn.textContent = 'Edit';
-      editBtn.addEventListener('click', openCashBalanceModal);
-      balanceRow.appendChild(editBtn);
-    } else {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'year-chart-balance-btn';
-      btn.textContent = '+ Set current cash balance';
-      btn.addEventListener('click', openCashBalanceModal);
-      balanceRow.appendChild(btn);
-    }
-  }
-  function openCashBalanceModal(){
-    const scrim = document.createElement('div');
-    scrim.className = 'modal-scrim';
-    const dialog = document.createElement('div');
-    dialog.className = 'modal-dialog';
-    dialog.addEventListener('click', e=>e.stopPropagation());
-    scrim.appendChild(dialog);
-
-    const dTitle = document.createElement('div');
-    dTitle.className = 'modal-title';
-    dTitle.textContent = 'Current Cash Balance';
-    dialog.appendChild(dTitle);
-
-    const field = document.createElement('div');
-    field.className = 'modal-field';
-    const fieldLabel = document.createElement('div');
-    fieldLabel.className = 'modal-field-label';
-    fieldLabel.textContent = 'Balance';
-    const input = document.createElement('input');
-    input.type = 'number';
-    input.step = '1';
-    input.className = 'modal-pill-input num';
-    input.placeholder = '0';
-    input.value = cashBalance ? cashBalance.amount : '';
-    field.appendChild(fieldLabel);
-    field.appendChild(input);
-    dialog.appendChild(field);
-
-    const hint = document.createElement('div');
-    hint.className = 'modal-hint';
-    const { month: tm, day: td } = dateFromDayCount(monthEnds, todayCount);
-    hint.textContent = `As of ${MONTHS_FULL[tm]} ${td}, ${year} — your latest transaction date. Budgeted and Actual/Forecast will show as your cash balance instead of net cash flow since Jan 1.`;
-    dialog.appendChild(hint);
-
-    const actions = document.createElement('div');
-    actions.className = 'add-plan-actions';
-    if (cashBalance){
-      const removeBtn = document.createElement('button');
-      removeBtn.type = 'button';
-      removeBtn.className = 'file-btn ghost year-chart-balance-remove';
-      removeBtn.textContent = 'Remove';
-      removeBtn.addEventListener('click', ()=>{
-        cashBalance = null;
-        cashBalanceEnabled = true;
-        close();
-        renderYearNetChart(host);
-      });
-      actions.appendChild(removeBtn);
-    }
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'file-btn ghost';
-    cancelBtn.textContent = 'Cancel';
-    const saveBtn = document.createElement('button');
-    saveBtn.type = 'button';
-    saveBtn.className = 'file-btn primary';
-    saveBtn.textContent = 'Save';
-    actions.appendChild(cancelBtn);
-    actions.appendChild(saveBtn);
-    dialog.appendChild(actions);
-
-    function close(){
-      document.removeEventListener('keydown', onKeydown);
-      scrim.remove();
-    }
-    function onKeydown(e){ if (e.key === 'Escape') close(); }
-    scrim.addEventListener('click', close);
-    cancelBtn.addEventListener('click', close);
-    saveBtn.addEventListener('click', ()=>{
-      const v = parseFloat(input.value);
-      if (!Number.isFinite(v)){ input.focus(); return; }
-      cashBalance = { dayCount: todayCount, amount: Math.round(v*100)/100 };
-      // Saving is an explicit "apply this" action — re-enables the toggle
-      // even if it had been switched off, same as entering a brand new
-      // balance always starts enabled.
-      cashBalanceEnabled = true;
-      close();
-      renderYearNetChart(host);
-    });
-    document.addEventListener('keydown', onKeydown);
-    document.body.appendChild(scrim);
-    input.focus();
-  }
-  // No "today" to anchor a balance to without any transaction data — same
-  // gate as the pills/Forecast legend item above.
-  if (cmi != null){
-    renderBalanceRow();
-    wrap.appendChild(balanceRow);
-  }
-
   // Budgeted — pure plan, independent of any actual spending, same as the
   // Year table's Budget pill. One point per calendar day (see
   // dailyBudgetPoints) rather than just the 12 month-end totals, so an
@@ -3094,9 +2956,10 @@ function renderYearNetChart(host){
       .forEach(([dc,delta])=>forecastPoints.push([dc, Math.round((running+delta)*100)/100]));
   }
 
-  // An optional user-entered balance (see the balanceRow/openCashBalance-
-  // Modal block above) re-baselines every series from "cumulative net
-  // since Jan 1" into an actual cash balance: a single constant offset
+  // An optional user-entered balance (set from the status bar's Cash
+  // Balance chip — see openCashBalanceModal/renderCashBalanceChip) re-
+  // baselines every series from "cumulative net since Jan 1" into an
+  // actual cash balance: a single constant offset
   // (the entered balance minus what Actual alone computes for that same
   // day) applied uniformly to Budgeted, Actual, and Forecast alike, so all
   // three stay comparable on one absolute-dollar scale rather than Actual
@@ -5437,7 +5300,7 @@ function renderBudgetChip(){
   const hasSaved = budgetHasSavedContent();
   const editBtn = document.createElement('button');
   editBtn.type = 'button';
-  editBtn.className = 'file-chip-action' + (hasSaved ? ' budget-edit-btn' : '');
+  editBtn.className = 'file-chip-action' + (hasSaved ? ' chip-edit-btn' : '');
   editBtn.textContent = hasSaved ? 'Edit' : 'Create';
   editBtn.disabled = budgetEditMode;
   editBtn.addEventListener('click', enterBudgetEditor);
@@ -5479,11 +5342,172 @@ function renderBudgetChip(){
   return el;
 }
 
+// Status-bar entry point for the Charts page's cash-balance anchor (see
+// cashBalance/cashBalanceEnabled and the balanceOffset block in
+// renderYearNetChart) — lives in the status bar, reachable from any page,
+// rather than embedded in that one chart; its actual effect still only
+// shows up there (the only page with a cumulative running total to
+// re-baseline — see "just relocate the control" in the decision behind
+// this chip).
+function renderCashBalanceChip(){
+  const el = document.createElement('div');
+  const loaded = !!cashBalance;
+  el.className = 'file-chip' + (loaded ? ' loaded' : '');
+  const actions = document.createElement('div');
+  actions.className = 'file-chip-actions';
+  if (!loaded){
+    const label = document.createElement('span');
+    label.className = 'file-chip-label';
+    label.textContent = 'Cash Balance';
+    el.appendChild(label);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'file-chip-action';
+    btn.textContent = '+ Set';
+    btn.addEventListener('click', openCashBalanceModal);
+    actions.appendChild(btn);
+  } else {
+    const name = document.createElement('span');
+    // Dimmed while paused (see the toggle below) rather than hidden —
+    // same "still there, just not applied" treatment .file-chip-name.dimmed
+    // gives a budget with unexported edits.
+    name.className = 'file-chip-name' + (cashBalanceEnabled ? '' : ' dimmed');
+    name.innerHTML = `Cash balance: <span class="num ${signCls(cashBalance.amount)}">${fmt(cashBalance.amount)}</span>`;
+    el.appendChild(name);
+
+    // Applies/pauses the entered balance on the Charts page without
+    // discarding it — e.g. to compare its Cash Balance view against plain
+    // Net Cash Flow without having to re-enter the number afterward.
+    // Editing or removing the value itself lives in the modal (Edit
+    // below), not here.
+    const toggle = document.createElement('label');
+    toggle.className = 'cash-balance-toggle';
+    toggle.title = cashBalanceEnabled ? 'Applied on the Charts page — click to pause' : 'Paused — click to apply';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = cashBalanceEnabled;
+    checkbox.addEventListener('change', ()=>{
+      cashBalanceEnabled = checkbox.checked;
+      renderAll();
+    });
+    toggle.appendChild(checkbox);
+    actions.appendChild(toggle);
+
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'file-chip-action chip-edit-btn';
+    editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', openCashBalanceModal);
+    actions.appendChild(editBtn);
+
+    actions.appendChild(fileChipRemoveBtn('Remove cash balance', ()=>{
+      cashBalance = null;
+      cashBalanceEnabled = true;
+      renderAll();
+    }));
+  }
+  el.appendChild(actions);
+  return el;
+}
+function openCashBalanceModal(){
+  const year = DATA.year;
+  const monthEnds = monthEndDayCounts(year);
+  const todayCount = dayOfYearEnd(year, DATA.currentMonthIndex, DATA.currentDay);
+
+  const scrim = document.createElement('div');
+  scrim.className = 'modal-scrim';
+  const dialog = document.createElement('div');
+  dialog.className = 'modal-dialog';
+  dialog.addEventListener('click', e=>e.stopPropagation());
+  scrim.appendChild(dialog);
+
+  const dTitle = document.createElement('div');
+  dTitle.className = 'modal-title';
+  dTitle.textContent = 'Current Cash Balance';
+  dialog.appendChild(dTitle);
+
+  const field = document.createElement('div');
+  field.className = 'modal-field';
+  const fieldLabel = document.createElement('div');
+  fieldLabel.className = 'modal-field-label';
+  fieldLabel.textContent = 'Balance';
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.step = '1';
+  input.className = 'modal-pill-input num';
+  input.placeholder = '0';
+  input.value = cashBalance ? cashBalance.amount : '';
+  field.appendChild(fieldLabel);
+  field.appendChild(input);
+  dialog.appendChild(field);
+
+  const hint = document.createElement('div');
+  hint.className = 'modal-hint';
+  const { month: tm, day: td } = dateFromDayCount(monthEnds, todayCount);
+  // Names the Charts page explicitly now that this modal can be opened
+  // from anywhere (see renderCashBalanceChip) rather than from inside
+  // that chart itself.
+  hint.textContent = `As of ${MONTHS_FULL[tm]} ${td}, ${year} — your latest transaction date. The Charts page's Net Cash Flow chart will show this as your cash balance instead of net cash flow since Jan 1.`;
+  dialog.appendChild(hint);
+
+  const actions = document.createElement('div');
+  actions.className = 'add-plan-actions';
+  if (cashBalance){
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'file-btn ghost year-chart-balance-remove';
+    removeBtn.textContent = 'Remove';
+    removeBtn.addEventListener('click', ()=>{
+      cashBalance = null;
+      cashBalanceEnabled = true;
+      close();
+      renderAll();
+    });
+    actions.appendChild(removeBtn);
+  }
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'file-btn ghost';
+  cancelBtn.textContent = 'Cancel';
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.className = 'file-btn primary';
+  saveBtn.textContent = 'Save';
+  actions.appendChild(cancelBtn);
+  actions.appendChild(saveBtn);
+  dialog.appendChild(actions);
+
+  function close(){
+    document.removeEventListener('keydown', onKeydown);
+    scrim.remove();
+  }
+  function onKeydown(e){ if (e.key === 'Escape') close(); }
+  scrim.addEventListener('click', close);
+  cancelBtn.addEventListener('click', close);
+  saveBtn.addEventListener('click', ()=>{
+    const v = parseFloat(input.value);
+    if (!Number.isFinite(v)){ input.focus(); return; }
+    cashBalance = { dayCount: todayCount, amount: Math.round(v*100)/100 };
+    // Saving is an explicit "apply this" action — re-enables the toggle
+    // even if it had been switched off, same as entering a brand new
+    // balance always starts enabled.
+    cashBalanceEnabled = true;
+    close();
+    renderAll();
+  });
+  document.addEventListener('keydown', onKeydown);
+  document.body.appendChild(scrim);
+  input.focus();
+}
+
 function renderStatusBar(){
   const chip = document.getElementById('statusChip');
   chip.innerHTML = '';
-  chip.appendChild(renderTransactionsChip());
   chip.appendChild(renderBudgetChip());
+  chip.appendChild(renderTransactionsChip());
+  // No "today" to anchor a balance to without any transaction data — same
+  // gate the old in-chart control used.
+  if (DATA.currentMonthIndex != null) chip.appendChild(renderCashBalanceChip());
 }
 
 // Toggles the right panel between its full width and a 3rem collapsed
