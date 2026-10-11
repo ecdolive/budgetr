@@ -1002,6 +1002,11 @@
   table.txn-flat th,
   table.txn-flat td{text-align:left;}
   table.txn-flat td:nth-child(2){white-space:normal;}
+  /* Date (see txnTableDateLabel) is long enough now — "2026 Feb 13" — to
+     wrap under table.ledger td:first-child's default white-space:normal
+     (meant for other ledger tables' category-name first columns); this
+     table's own first column is never a name that needs to wrap. */
+  table.txn-flat td:first-child{white-space:nowrap;}
   table.txn-flat th:nth-child(3),
   table.txn-flat td:nth-child(3){text-align:right;}
 

@@ -2764,7 +2764,7 @@ function renderTransactionsBody(onSortChange){
   } else {
     rows.forEach(t=>{
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td class="num">${t.date}</td><td>${escapeHTML(t.description)}</td>` +
+      tr.innerHTML = `<td class="num">${txnTableDateLabel(t.date)}</td><td>${escapeHTML(t.description)}</td>` +
         `<td class="num" style="color:${t.amount<0?'var(--negative)':'var(--positive)'}">${fmt(t.amount)}</td>` +
         `<td>${escapeHTML(t.category)}</td><td>${escapeHTML(t.subcategory)}</td><td>${escapeHTML(t.account)}</td><td>${escapeHTML(t.type)}</td>`;
       tbody.appendChild(tr);
@@ -4428,6 +4428,18 @@ function txnDateLabel(t){
   const mi = parseInt(t.date.slice(5,7),10) - 1;
   const day = parseInt(t.date.slice(8,10),10);
   return `${MONTHS[mi]} ${day}`;
+}
+// Transactions table's own "Date" column (see renderTransactionsBody) —
+// "yyyy Mon d" (e.g. "2026 Feb 7") rather than the bare ISO string the
+// row's own `date` field holds. Carries the year, unlike txnDateLabel
+// above — that one's only ever used in the right panel's *current*-month
+// lists, where the year is already implied, but this table can span
+// multiple years' worth of transactions at once.
+function txnTableDateLabel(dateStr){
+  const year = dateStr.slice(0,4);
+  const mi = parseInt(dateStr.slice(5,7),10) - 1;
+  const day = parseInt(dateStr.slice(8,10),10);
+  return `${year} ${MONTHS[mi]} ${day}`;
 }
 function renderRightActualList(container, monthFilter){
   const txns = getSelectedTxns(monthFilter).map(t=>({
