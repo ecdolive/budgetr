@@ -2188,14 +2188,6 @@ function renderTransactionsChart(host, rows, onMonthClick){
         svg.appendChild(t);
       });
 
-      // Hover column highlight — same backdrop wash Monthly uses (see its
-      // own hoverBand below), sized to one day's band.
-      const hoverBand = document.createElementNS(svgNS,'rect');
-      hoverBand.setAttribute('y', 0);
-      hoverBand.setAttribute('height', H);
-      hoverBand.setAttribute('class','txn-chart-hover-band');
-      svg.appendChild(hoverBand);
-
       // One thin bar per day — diverging (Income up, Spend down from
       // zero) when both types are present, the same mark language
       // Monthly used before it switched to side-by-side bars (see
@@ -2287,9 +2279,6 @@ function renderTransactionsChart(host, rows, onMonthClick){
         hoveredBars.forEach(b=>b.classList.remove('hover'));
         hoveredBars = (bothTypes ? [incomeBars[i], spendBars[i]] : [singleBars[i]]).filter(Boolean);
         hoveredBars.forEach(b=>b.classList.add('hover'));
-        hoverBand.setAttribute('x', x - bandW/2);
-        hoverBand.setAttribute('width', bandW);
-        hoverBand.style.opacity = 1;
 
         let rows;
         if (bothTypes){
@@ -2314,7 +2303,6 @@ function renderTransactionsChart(host, rows, onMonthClick){
       }
       function hide(){
         hoverLine.style.opacity = 0;
-        hoverBand.style.opacity = 0;
         hoveredBars.forEach(b=>b.classList.remove('hover'));
         hoveredBars = [];
         tooltip.style.opacity = 0;
