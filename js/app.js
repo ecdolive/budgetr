@@ -2024,15 +2024,13 @@ function renderTransactionsChart(host, rows, onMonthClick){
   const legend = document.createElement('div');
   legend.className = 'txn-chart-legend';
   if (bothTypes){
-    // Shape mirrors the actual mark (see txnChartLegendItem) — 'bar' in
-    // Monthly, 'line' in Daily, since Income/Spend switch marks between
-    // the two views. Net only gets a legend entry in Daily, where it's an
-    // actual line — Monthly drops the line entirely (see the bothTypes
-    // branch in draw() below) since its value already sits as a direct
-    // label above the month name, with nothing left to key a swatch to.
-    legend.appendChild(txnChartLegendItem('Income', 'pos', isDaily ? 'line' : 'bar'));
-    legend.appendChild(txnChartLegendItem('Spend', 'neg', isDaily ? 'line' : 'bar'));
-    if (isDaily) legend.appendChild(txnChartLegendItem('Net', 'net', 'line'));
+    // Both views bar Income/Spend now (diverging in Daily, side-by-side
+    // in Monthly — see the bothTypes branches in draw() below). Neither
+    // gives Net a mark/legend entry of its own anymore — its value
+    // already sits as a direct label (Monthly) or a tooltip row (Daily),
+    // with nothing left to key a swatch to.
+    legend.appendChild(txnChartLegendItem('Income', 'pos', 'bar'));
+    legend.appendChild(txnChartLegendItem('Spend', 'neg', 'bar'));
   } else {
     // Just the key here — the actual value rides the line itself (see
     // draw()'s avg-line block below), same as every other direct label on
@@ -2055,16 +2053,14 @@ function renderTransactionsChart(host, rows, onMonthClick){
   // against the real rendered glyphs rather than guessed, same as every
   // other gap on this chart.
   const H = 220, padL = 48, padR = 16, padT = 28, padB = (!isDaily && bothTypes) ? 52 : 28;
-  // Income and Spend both plot as plain positive magnitudes now (side-by-
-  // side bars in Monthly, two lines in Daily — see below). Daily still
-  // draws Net as an actual line, so its domain has to stretch for Net's
-  // own sign; Monthly dropped that line entirely (its value is a plain
-  // label now, fixed under the month name rather than plotted against
-  // this scale — see the bothTypes branch in draw() below), so including
-  // netVals here would only pull the axis below zero for no reason a
-  // reader could see on the chart itself. Single-line mode only has that
-  // one series' own values in play either way.
-  const domainVals = bothTypes ? [...incomeVals, ...spendVals, ...(isDaily ? netVals : [])]
+  // Neither view plots Net anymore (see the bothTypes branches in draw()
+  // below — its value rides a label/tooltip instead, never a mark against
+  // this scale), so the domain only has to fit Income/Spend themselves:
+  // side-by-side, both positive, in Monthly; diverging (Spend negated) in
+  // Daily. Single-series mode only has that one series' own values in
+  // play either way.
+  const domainVals = bothTypes
+    ? (isDaily ? [...incomeVals, ...spendVals.map(v=>-v)] : [...incomeVals, ...spendVals])
     : hasIncome ? incomeVals : hasSpend ? spendVals : netVals;
   const { yMin, yMax, step } = niceAxis(domainVals);
   const svgNS = 'http://www.w3.org/2000/svg';
@@ -2102,15 +2098,11 @@ function renderTransactionsChart(host, rows, onMonthClick){
     svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
 
     const innerW = W - padL - padR, innerH = H - padT - padB;
-    // Monthly: a categorical band per month (Income/Spend's bars need a
-    // slot to sit in, not just a point) — xFor is each band's center,
-    // which also doubles as the Net line's x position for that month.
-    // Daily: a continuous position along the full day range instead —
-    // there's no band to speak of, every series is a line.
+    // A categorical band per day/month — both views are bars now, each
+    // needing a slot to sit in rather than just a point — xFor is each
+    // band's center.
     const bandW = innerW / xs.length;
-    const xFor = isDaily
-      ? (i => padL + innerW * i / Math.max(1, xs.length-1))
-      : (i => padL + bandW*(i+0.5));
+    const xFor = i => padL + bandW*(i+0.5);
     const yFor = v => padT + innerH - innerH * (v-yMin)/(yMax-yMin);
     // fmt() prints "–" for a zero amount — fine in a table cell, but on
     // the chart a day/month with literally no income/spend/net still gets
@@ -2194,41 +2186,79 @@ function renderTransactionsChart(host, rows, onMonthClick){
         svg.appendChild(t);
       });
 
-      // No per-point dots here (see drawLine in the Monthly branch below
-      // for the contrast) — at daily density they'd be a solid smear
-      // along the line; the hover dots further down cover the same need
-      // on demand instead.
-      function drawLine(vals, cls){
-        const poly = document.createElementNS(svgNS,'polyline');
-        poly.setAttribute('points', vals.map((v,i)=>`${xFor(i)},${yFor(v)}`).join(' '));
-        poly.setAttribute('class','txn-chart-line '+cls);
-        svg.appendChild(poly);
+      // Hover column highlight — same backdrop wash Monthly uses (see its
+      // own hoverBand below), sized to one day's band.
+      const hoverBand = document.createElementNS(svgNS,'rect');
+      hoverBand.setAttribute('y', 0);
+      hoverBand.setAttribute('height', H);
+      hoverBand.setAttribute('class','txn-chart-hover-band');
+      svg.appendChild(hoverBand);
+
+      // One thin bar per day — diverging (Income up, Spend down from
+      // zero) when both types are present, the same mark language
+      // Monthly used before it switched to side-by-side bars (see
+      // barPath in the Monthly branch below): daily density reads better
+      // with the two sharing one slot than each getting its own sliver
+      // of an already-thin band. Net never gets a mark of its own here —
+      // its value still shows in the hover tooltip below, just nothing
+      // plotted against the axis for it (see domainVals above).
+      const barW = Math.min(8, Math.max(1, bandW*0.6));
+      function barPath(v, cx, w){
+        const y0 = yFor(0), y1 = yFor(v);
+        const y = Math.min(y0,y1), h = Math.abs(y1-y0);
+        if (h < 0.5) return null; // nothing to show for a ~0 day
+        const r = Math.min(2, w/2, h);
+        const x = cx - w/2;
+        return v >= 0
+          ? `M${x},${y+h} L${x},${y+r} Q${x},${y} ${x+r},${y} L${x+w-r},${y} Q${x+w},${y} ${x+w},${y+r} L${x+w},${y+h} Z`
+          : `M${x},${y} L${x+w},${y} L${x+w},${y+h-r} Q${x+w},${y+h} ${x+w-r},${y+h} L${x+r},${y+h} Q${x},${y+h} ${x},${y+h-r} Z`;
+      }
+      function drawBars(vals, cls){
+        return vals.map((v,i)=>{
+          const d = barPath(v, xFor(i), barW);
+          if (!d) return null;
+          const path = document.createElementNS(svgNS,'path');
+          path.setAttribute('d', d);
+          path.setAttribute('class','txn-chart-bar '+cls);
+          svg.appendChild(path);
+          return path;
+        });
       }
 
+      let incomeBars = null, spendBars = null, singleBars = null;
       if (bothTypes){
-        drawLine(incomeVals, 'pos');
-        // Plotted as a plain positive magnitude, same sign as its own
-        // tooltip value below — trying this against the diverging
-        // (negated, below-zero) treatment Monthly's bars use, undecided
-        // which reads better yet.
-        drawLine(spendVals, 'neg');
-        drawLine(netVals, 'net');
+        incomeBars = drawBars(incomeVals, 'pos');
+        spendBars = drawBars(spendVals.map(v=>-v), 'neg');
       } else {
-        drawLine(singleVals, singleCls);
-        // A lone line has nothing beside it to compare against, so give
+        // The rare net-only fallback (no Income or Spend rows at all —
+        // see singleCls) has no fixed color of its own, so each bar
+        // recolors by its own day's sign, same as every other net-by-
+        // sign mark on this chart.
+        singleBars = singleCls === 'net'
+          ? singleVals.map((v,i)=>{
+              const d = barPath(v, xFor(i), barW);
+              if (!d) return null;
+              const path = document.createElementNS(svgNS,'path');
+              path.setAttribute('d', d);
+              path.setAttribute('class','txn-chart-bar '+(v>=0?'pos':'neg'));
+              svg.appendChild(path);
+              return path;
+            })
+          : drawBars(singleVals, singleCls);
+        // A lone series has nothing beside it to compare against, so give
         // it a flat average reference, same role as Monthly's own Avg
         // line — just fed dailyAverage instead.
         drawAvgLine();
       }
 
-      // Hover: a crosshair at the nearest day under the pointer, a dot on
-      // each visible line at that day, and a tooltip naming the date and
-      // every series' value for it — this is the swap for Monthly's
-      // direct per-point labels, which would be unreadable at this many
-      // points (see padB above).
+      // Hover: the day's band washes + its bar(s) brighten (same pair as
+      // Monthly's own hover — see markAt there), plus a crosshair guide
+      // and a tooltip naming the date and every series' value, including
+      // Net — this is the swap for Monthly's direct per-point labels,
+      // which would be unreadable at this many points (see padB above).
       const overlay = document.createElementNS(svgNS,'rect');
-      overlay.setAttribute('x',padL); overlay.setAttribute('y',padT);
-      overlay.setAttribute('width', innerW); overlay.setAttribute('height', innerH);
+      overlay.setAttribute('x',padL); overlay.setAttribute('y',0);
+      overlay.setAttribute('width', innerW); overlay.setAttribute('height', H);
       overlay.setAttribute('class','txn-chart-overlay daily');
       svg.appendChild(overlay);
 
@@ -2236,47 +2266,35 @@ function renderTransactionsChart(host, rows, onMonthClick){
       hoverLine.setAttribute('y1', padT); hoverLine.setAttribute('y2', padT+innerH);
       hoverLine.setAttribute('class','txn-chart-hover-line');
       svg.appendChild(hoverLine);
-      function hoverDotFor(cls){
-        const c = document.createElementNS(svgNS,'circle');
-        c.setAttribute('r',4);
-        c.setAttribute('class','txn-chart-hover-dot '+cls);
-        svg.appendChild(c);
-        return c;
-      }
-      const incomeDot = bothTypes ? hoverDotFor('pos') : null;
-      const spendDot = bothTypes ? hoverDotFor('neg') : null;
-      // Carries Net's own dot when both types are present, or the single
-      // series' dot otherwise — only one or the other ever applies, so
-      // one shared element covers both rather than two that'd never
-      // coexist.
-      const netOrSingleDot = hoverDotFor('pos');
 
       function dayIndexAt(e){
         const pt = svg.createSVGPoint();
         pt.x = e.clientX; pt.y = e.clientY;
         const loc = pt.matrixTransform(svg.getScreenCTM().inverse());
-        const raw = Math.round((loc.x - padL) / innerW * (xs.length-1));
-        return Math.max(0, Math.min(xs.length-1, raw));
+        return Math.max(0, Math.min(xs.length-1, Math.floor((loc.x - padL)/bandW)));
       }
       function dateLabel(d){
         return `${MONTHS[parseInt(d.slice(5,7),10)-1]} ${parseInt(d.slice(8,10),10)}`;
       }
+      let hoveredBars = [];
       function showAt(i){
         const x = xFor(i);
         hoverLine.setAttribute('x1',x); hoverLine.setAttribute('x2',x);
         hoverLine.style.opacity = 1;
+
+        hoveredBars.forEach(b=>b.classList.remove('hover'));
+        hoveredBars = (bothTypes ? [incomeBars[i], spendBars[i]] : [singleBars[i]]).filter(Boolean);
+        hoveredBars.forEach(b=>b.classList.add('hover'));
+        hoverBand.setAttribute('x', x - bandW/2);
+        hoverBand.setAttribute('width', bandW);
+        hoverBand.style.opacity = 1;
+
         let rows;
         if (bothTypes){
-          incomeDot.setAttribute('cx',x); incomeDot.setAttribute('cy', yFor(incomeVals[i])); incomeDot.style.opacity = 1;
-          spendDot.setAttribute('cx',x); spendDot.setAttribute('cy', yFor(spendVals[i])); spendDot.style.opacity = 1;
           const netCls = netVals[i] >= 0 ? 'pos' : 'neg';
-          netOrSingleDot.setAttribute('class','txn-chart-hover-dot '+netCls);
-          netOrSingleDot.setAttribute('cx',x); netOrSingleDot.setAttribute('cy', yFor(netVals[i])); netOrSingleDot.style.opacity = 1;
           rows = [['Income', incomeVals[i], 'pos'], ['Spend', spendVals[i], 'neg'], ['Net', netVals[i], netCls]];
         } else {
           const dotCls = singleCls === 'net' ? (singleVals[i]>=0?'pos':'neg') : singleCls;
-          netOrSingleDot.setAttribute('class','txn-chart-hover-dot '+dotCls);
-          netOrSingleDot.setAttribute('cx',x); netOrSingleDot.setAttribute('cy', yFor(singleVals[i])); netOrSingleDot.style.opacity = 1;
           const label = hasIncome ? 'Income' : hasSpend ? 'Spend' : 'Net';
           rows = [[label, singleVals[i], dotCls]];
         }
@@ -2294,9 +2312,9 @@ function renderTransactionsChart(host, rows, onMonthClick){
       }
       function hide(){
         hoverLine.style.opacity = 0;
-        if (incomeDot) incomeDot.style.opacity = 0;
-        if (spendDot) spendDot.style.opacity = 0;
-        netOrSingleDot.style.opacity = 0;
+        hoverBand.style.opacity = 0;
+        hoveredBars.forEach(b=>b.classList.remove('hover'));
+        hoveredBars = [];
         tooltip.style.opacity = 0;
       }
       overlay.addEventListener('pointermove', (e)=> showAt(dayIndexAt(e)));
