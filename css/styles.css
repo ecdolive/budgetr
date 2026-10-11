@@ -31,6 +31,7 @@
     --radius-sm:0.25rem;
     --radius-md:10px;
     --radius-lg:14px;
+    --bg-chart:rgba(255,255,255,.04);
   }
   *{box-sizing:border-box;}
   html,body{height:100%;}
@@ -193,11 +194,12 @@
     align-items:center;
   }
   .file-chip-action:hover{background:var(--surface-interactive-hover);}
-  /* The budget chip's entry point once a budget already exists — labeled
-     "Edit" rather than "Create" (see budgetHasSavedContent) — reads as a
-     plain action on the now-loaded budget rather than the accent-teal
-     "start something new" treatment Create/Open.../Save share. */
-  .budget-edit-btn{color:var(--text-primary);}
+  /* A chip's "Edit" action once there's already something loaded to edit
+     (Budget's Edit once a budget exists, Cash Balance's Edit once a
+     balance is set) — reads as a plain action on the existing value
+     rather than the accent-teal "start something new" treatment
+     Create/+Set/Open.../Save share. */
+  .chip-edit-btn{color:var(--text-primary);}
   .file-chip-action input{display:none;}
   .file-chip-action:disabled,
   .file-chip-action:has(input:disabled){opacity:0.4;pointer-events:none;cursor:not-allowed;}
@@ -224,6 +226,11 @@
   .file-chip-remove:hover{opacity:1;}
   .file-chip-remove img{width:24px;height:24px;filter:invert(1);}
   .file-chip-remove:disabled{opacity:0.25;pointer-events:none;cursor:not-allowed;}
+  /* The Cash Balance chip's apply/pause control (see renderCashBalanceChip)
+     — sits in its .file-chip-actions row alongside Edit/remove like any
+     other chip action, just a checkbox instead of a button. */
+  .cash-balance-toggle{display:inline-flex;align-items:center;cursor:pointer;}
+  .cash-balance-toggle input[type="checkbox"]{cursor:pointer;}
 
   /* ================= LEFT PANEL ================= */
   .left{
@@ -540,12 +547,15 @@
     position:relative;
     margin:0 8px 16px;
     padding:16px;
-    background:var(--bg-card);
-    border:1px solid var(--border);
-    border-radius:var(--radius-lg);
+    background:var(--bg-chart);
+    border-radius:var(--radius-md);
   }
   .txn-chart-empty-state{color:var(--text-muted);font-size:13px;text-align:center;padding:32px 16px;}
   .txn-chart-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}
+  /* Groups the title with the Monthly/Daily view toggle (see .pills/.pill
+     below) so both sit together on the left, legend staying a separate
+     flex child on the right — same grouping as .year-chart-head-left. */
+  .txn-chart-head-left{display:flex;align-items:center;gap:16px;}
   .txn-chart-title{font-size:13px;font-weight:700;color:var(--text-secondary);}
   .txn-chart-legend{display:flex;align-items:center;gap:16px;}
   .txn-chart-legend-item{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--text-secondary);}
@@ -560,6 +570,9 @@
   /* Mirrors the line's own dash pattern (see .txn-chart-line.net) rather
      than a solid swatch, so the legend key matches the mark exactly. */
   .txn-chart-legend-swatch.net{background:repeating-linear-gradient(to right, var(--text-muted) 0 2px, transparent 2px 5px);}
+  /* Positioned ancestor for the Daily view's tooltip (see
+     .txn-chart-tooltip below) — same role as .year-chart-plot. */
+  .txn-chart-plot{position:relative;}
   .txn-chart-svg{
     display:block;
     width:100%;
@@ -640,6 +653,10 @@
   .txn-chart-selected-dot.pos{fill:var(--positive);}
   .txn-chart-selected-dot.neg{fill:var(--negative);}
   .txn-chart-overlay{fill:transparent;cursor:pointer;}
+  /* Daily view only — signals "hover for values" rather than "click a
+     column", since there's no categorical band to click here, just a
+     continuous line (see .year-chart-overlay, styled the same way). */
+  .txn-chart-overlay.daily{cursor:crosshair;}
   /* Values live directly on the chart rather than in a hover-only
      tooltip — muted at rest so a whole chart of numbers doesn't compete
      with the marks, brought to full contrast for whichever month is
@@ -662,6 +679,35 @@
   .txn-chart-value-label.selected{font-weight:700;}
   .txn-chart-value-label.selected.pos{fill:var(--positive);}
   .txn-chart-value-label.selected.neg{fill:var(--negative);}
+  /* Daily view's hover guide + tooltip — too many points to label
+     directly (see renderTransactionsChart's padB comment), so values only
+     show on hover, same pattern as .year-chart-hover-line/-tooltip below.
+     The dots themselves reuse .txn-chart-hover-dot/.pos/.neg as-is — the
+     Daily hover always tags each dot .pos or .neg (fixed for Income/
+     Spend, by sign for Net/single — see showAt), never a bare .net. */
+  .txn-chart-hover-line{stroke:var(--text-muted);stroke-width:1;stroke-dasharray:2 3;opacity:0;pointer-events:none;transition:opacity .1s;}
+  /* Plain HTML, not SVG (see the tooltip's own comment in
+     renderTransactionsChart) — positioned in JS via left/top. */
+  .txn-chart-tooltip{
+    position:absolute;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .1s;
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:var(--radius-sm);
+    padding:8px 10px;
+    box-shadow:0 8px 24px rgba(0,0,0,0.45);
+    white-space:nowrap;
+    z-index:3;
+  }
+  .txn-chart-tooltip-date{font-size:12px;font-weight:700;color:var(--text-primary);margin-bottom:4px;}
+  .txn-chart-tooltip-row{display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:12px;}
+  .txn-chart-tooltip-row+.txn-chart-tooltip-row{margin-top:2px;}
+  .txn-chart-tooltip-label{color:var(--text-muted);}
+  .txn-chart-tooltip-row .num{font-size:12px;}
+  .txn-chart-tooltip-row .num.pos{color:var(--positive);}
+  .txn-chart-tooltip-row .num.neg{color:var(--negative);}
 
   /* Charts tab: year-long Budgeted vs. Actual/Forecast net line chart —
      see .txn-chart above for the same card/head/legend/grid/axis-label
@@ -674,37 +720,12 @@
     position:relative;
     margin:0 8px 16px;
     padding:16px;
-    background:var(--bg-card);
-    border:1px solid var(--border);
-    border-radius:var(--radius-lg);
+    background:var(--bg-chart);
+    border-radius:var(--radius-md);
   }
   .year-chart-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}
   .year-chart-head-left{display:flex;align-items:center;gap:16px;}
   .year-chart-title{font-size:13px;font-weight:700;color:var(--text-secondary);}
-  .year-chart-balance-row{display:flex;align-items:center;gap:12px;margin-bottom:8px;}
-  .year-chart-balance-btn{
-    background:none;border:none;padding:0;
-    color:var(--accent-teal);font-size:12px;font-weight:700;cursor:pointer;
-  }
-  .year-chart-balance-btn:hover{opacity:0.8;}
-  .year-chart-balance-toggle{
-    display:inline-flex;align-items:center;gap:6px;
-    color:var(--text-secondary);font-size:12px;font-weight:600;cursor:pointer;
-  }
-  /* Switched off (balance entered but not currently applied — see
-     cashBalanceEnabled) — dims the label the same way a disabled/inactive
-     control reads elsewhere, while the checkbox itself stays at full
-     opacity so the control's own on/off state is still clear at a glance. */
-  .year-chart-balance-toggle.dim span{opacity:0.5;}
-  .year-chart-balance-toggle input[type="checkbox"]{cursor:pointer;}
-  .year-chart-balance-toggle .num{font-size:12px;}
-  .year-chart-balance-toggle .num.pos{color:var(--positive);}
-  .year-chart-balance-toggle .num.neg{color:var(--negative);}
-  .year-chart-balance-edit{
-    background:none;border:none;padding:0;
-    color:var(--accent-teal);font-size:12px;font-weight:700;cursor:pointer;
-  }
-  .year-chart-balance-edit:hover{opacity:0.8;}
   /* Pushed away from Cancel/Save (see .add-plan-actions' flex-end) — a
      destructive action reads safer with distance from the confirm button
      it sits beside. */
@@ -980,6 +1001,11 @@
   table.txn-flat th,
   table.txn-flat td{text-align:left;}
   table.txn-flat td:nth-child(2){white-space:normal;}
+  /* Date (see txnTableDateLabel) is long enough now — "2026 Feb 13" — to
+     wrap under table.ledger td:first-child's default white-space:normal
+     (meant for other ledger tables' category-name first columns); this
+     table's own first column is never a name that needs to wrap. */
+  table.txn-flat td:first-child{white-space:nowrap;}
   table.txn-flat th:nth-child(3),
   table.txn-flat td:nth-child(3){text-align:right;}
 
