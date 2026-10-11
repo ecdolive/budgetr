@@ -546,6 +546,10 @@
   }
   .txn-chart-empty-state{color:var(--text-muted);font-size:13px;text-align:center;padding:32px 16px;}
   .txn-chart-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}
+  /* Groups the title with the Monthly/Daily view toggle (see .pills/.pill
+     below) so both sit together on the left, legend staying a separate
+     flex child on the right — same grouping as .year-chart-head-left. */
+  .txn-chart-head-left{display:flex;align-items:center;gap:16px;}
   .txn-chart-title{font-size:13px;font-weight:700;color:var(--text-secondary);}
   .txn-chart-legend{display:flex;align-items:center;gap:16px;}
   .txn-chart-legend-item{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--text-secondary);}
@@ -560,6 +564,9 @@
   /* Mirrors the line's own dash pattern (see .txn-chart-line.net) rather
      than a solid swatch, so the legend key matches the mark exactly. */
   .txn-chart-legend-swatch.net{background:repeating-linear-gradient(to right, var(--text-muted) 0 2px, transparent 2px 5px);}
+  /* Positioned ancestor for the Daily view's tooltip (see
+     .txn-chart-tooltip below) — same role as .year-chart-plot. */
+  .txn-chart-plot{position:relative;}
   .txn-chart-svg{
     display:block;
     width:100%;
@@ -640,6 +647,10 @@
   .txn-chart-selected-dot.pos{fill:var(--positive);}
   .txn-chart-selected-dot.neg{fill:var(--negative);}
   .txn-chart-overlay{fill:transparent;cursor:pointer;}
+  /* Daily view only — signals "hover for values" rather than "click a
+     column", since there's no categorical band to click here, just a
+     continuous line (see .year-chart-overlay, styled the same way). */
+  .txn-chart-overlay.daily{cursor:crosshair;}
   /* Values live directly on the chart rather than in a hover-only
      tooltip — muted at rest so a whole chart of numbers doesn't compete
      with the marks, brought to full contrast for whichever month is
@@ -662,6 +673,35 @@
   .txn-chart-value-label.selected{font-weight:700;}
   .txn-chart-value-label.selected.pos{fill:var(--positive);}
   .txn-chart-value-label.selected.neg{fill:var(--negative);}
+  /* Daily view's hover guide + tooltip — too many points to label
+     directly (see renderTransactionsChart's padB comment), so values only
+     show on hover, same pattern as .year-chart-hover-line/-tooltip below.
+     The dots themselves reuse .txn-chart-hover-dot/.pos/.neg as-is — the
+     Daily hover always tags each dot .pos or .neg (fixed for Income/
+     Spend, by sign for Net/single — see showAt), never a bare .net. */
+  .txn-chart-hover-line{stroke:var(--text-muted);stroke-width:1;stroke-dasharray:2 3;opacity:0;pointer-events:none;transition:opacity .1s;}
+  /* Plain HTML, not SVG (see the tooltip's own comment in
+     renderTransactionsChart) — positioned in JS via left/top. */
+  .txn-chart-tooltip{
+    position:absolute;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .1s;
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:var(--radius-sm);
+    padding:8px 10px;
+    box-shadow:0 8px 24px rgba(0,0,0,0.45);
+    white-space:nowrap;
+    z-index:3;
+  }
+  .txn-chart-tooltip-date{font-size:12px;font-weight:700;color:var(--text-primary);margin-bottom:4px;}
+  .txn-chart-tooltip-row{display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:12px;}
+  .txn-chart-tooltip-row+.txn-chart-tooltip-row{margin-top:2px;}
+  .txn-chart-tooltip-label{color:var(--text-muted);}
+  .txn-chart-tooltip-row .num{font-size:12px;}
+  .txn-chart-tooltip-row .num.pos{color:var(--positive);}
+  .txn-chart-tooltip-row .num.neg{color:var(--negative);}
 
   /* Charts tab: year-long Budgeted vs. Actual/Forecast net line chart —
      see .txn-chart above for the same card/head/legend/grid/axis-label
