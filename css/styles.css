@@ -726,6 +726,7 @@
     z-index:3;
   }
   .txn-chart-tooltip-date{font-size:12px;font-weight:700;color:var(--text-primary);margin-bottom:4px;}
+  .txn-chart-tooltip-divider{border-top:1px solid var(--border);margin:4px 0;}
   .txn-chart-tooltip-row{display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:12px;}
   .txn-chart-tooltip-row+.txn-chart-tooltip-row{margin-top:2px;}
   .txn-chart-tooltip-label{color:var(--text-muted);}

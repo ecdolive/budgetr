@@ -2314,6 +2314,10 @@ function renderTransactionsChart(host, rows, onMonthClick){
         }
         tooltip.innerHTML = `<div class="txn-chart-tooltip-date">${dateLabel(xs[i])}</div>` +
           rows.map(([label,v,cls])=>
+            // Net is a derived figure (Income minus Spend), not a third
+            // measured value alongside them — the divider sets it apart as
+            // a total, the way a receipt rules off its sum.
+            (bothTypes && label==='Net' ? `<div class="txn-chart-tooltip-divider"></div>` : '') +
             `<div class="txn-chart-tooltip-row"><span class="txn-chart-tooltip-label">${label}</span><span class="num ${cls}">${fmtChartValue(v)}</span></div>`
           ).join('');
         tooltip.style.opacity = 1;
