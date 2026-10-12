@@ -2880,7 +2880,7 @@ function renderChartsPage(mid){
   mid.appendChild(titleBar);
 
   const body = document.createElement('div');
-  body.className = 'mid-body';
+  body.className = 'mid-body charts-mid-body';
   mid.appendChild(body);
 
   const chartHost = document.createElement('div');
