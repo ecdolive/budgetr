@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Budgetr is a single-page budgeting app with **no build step, no package manager, and no backend**. It's plain HTML/CSS/JS:
+Budgetr is a personal, single-user budgeting app with **no build step, no package manager, and no backend**. It's plain HTML/CSS/JS:
 
 - `index.html` — the whole DOM shell (three-panel layout + status bar)
 - `js/app.js` — the entire application (~5,700 lines), vanilla JS, no framework
@@ -23,7 +23,9 @@ Open `index.html` directly in a browser, or serve the directory statically, e.g.
 python3 -m http.server
 ```
 
-There is no test suite, linter, or build/watch command in this repo.
+There is no test suite, linter, or build/watch command in this repo, and no CI configured — PRs merge without waiting on checks.
+
+`js/app.js` stays a single script on purpose, not ES modules: splitting it with `import`/`export` would require always serving the app behind a local server, since browsers block ES module imports over `file://` via CORS — not worth it for what's meant to stay an open-and-go personal tool. Don't propose module-splitting as a cleanup.
 
 ## Data model and persistence
 
@@ -51,3 +53,9 @@ No virtual DOM, no components/props — direct DOM manipulation driven by global
 ## Notable gotchas already solved in this codebase
 
 - Icons are normally referenced via `<img src="icons/*.svg">`, but the delete icon is inlined as a literal SVG string in JS (`DELETE_ICON_SVG`) because `<img src>`/CSS `mask-image` references to local files can silently fail to render when the app is opened via `file://`.
+- Sticky headers (`.logo`, `.mid-title`, `table.ledger th` — every panel has one) use **padding, not margin/gap**, for the spacing around them. A sticky element only occludes scrolled content within its own padded box; spacing implemented as margin or a flex `gap` isn't part of that box, so scrolled content can slide through it above/below the header. Any new or modified sticky header should keep its own inset as padding on the element itself.
+- Icon-only buttons (no text label — chevrons, the "✕" delete buttons) are circular (`border-radius:50%`), not the app's usual squircle `var(--radius-sm)` used for cards/rows/text buttons. This was a deliberate correction — default new icon-only buttons to circular.
+
+## UI conventions
+
+- The budget editor (`renderBudgetEditor`) is a single editable ledger table — Net/Income/Spending rows, always-expanded group headers with categories/subcategories nested underneath — matching the read-only Year/Month table's layout, not a tabbed Expenses/Income card list. Line items for a selected subcategory show in the right panel, not inline. Keep changes to this screen within the table-based structure.
