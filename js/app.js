@@ -3268,8 +3268,8 @@ function renderYearNetChart(host){
       const { month, day } = dateFromDayCount(monthEnds, dc);
       tooltip.innerHTML =
         `<div class="year-chart-tooltip-date">${MONTHS[month]} ${day}, ${year}</div>` +
-        `<div class="year-chart-tooltip-row"><span class="year-chart-tooltip-label">Budgeted</span><span class="num ${signCls(budgetVal)}">${fmt(budgetVal)}</span></div>` +
-        (actualVal != null ? `<div class="year-chart-tooltip-row"><span class="year-chart-tooltip-label">${actualLabel}</span><span class="num ${signCls(actualVal)}">${fmt(actualVal)}</span></div>` : '');
+        (actualVal != null ? `<div class="year-chart-tooltip-row"><span class="year-chart-tooltip-label accent">${actualLabel}</span><span class="num ${signCls(actualVal)}">${fmt(actualVal)}</span></div>` : '') +
+        `<div class="year-chart-tooltip-row"><span class="year-chart-tooltip-label">Budgeted</span><span class="num budget">${fmt(budgetVal)}</span></div>`;
       tooltip.style.opacity = 1;
       // Flips to the guide's left whenever it'd otherwise overflow the
       // card's right edge — tooltip.offsetWidth only has a real value once

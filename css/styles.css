@@ -806,9 +806,11 @@
   .year-chart-tooltip-row{display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:12px;}
   .year-chart-tooltip-row+.year-chart-tooltip-row{margin-top:2px;}
   .year-chart-tooltip-label{color:var(--text-muted);}
+  .year-chart-tooltip-label.accent{color:var(--accent-teal);}
   .year-chart-tooltip-row .num{font-size:12px;}
   .year-chart-tooltip-row .num.pos{color:var(--positive);}
   .year-chart-tooltip-row .num.neg{color:var(--negative);}
+  .year-chart-tooltip-row .num.budget{color:var(--text-muted);}
 
   table.ledger-year th.month-link{cursor:pointer;}
   table.ledger-year th.month-link:hover{color:var(--text-primary);}
