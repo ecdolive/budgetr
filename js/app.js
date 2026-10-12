@@ -2002,9 +2002,10 @@ function renderTransactionsChart(host, rows, onMonthClick){
   headLeft.className = 'txn-chart-head-left';
   const title = document.createElement('div');
   title.className = 'txn-chart-title';
-  title.textContent = isDaily
-    ? (bothTypes ? 'Daily income, spend & net' : hasIncome ? 'Daily income' : hasSpend ? 'Daily spend' : 'Daily net')
-    : (bothTypes ? 'Monthly income, spend & net' : hasIncome ? 'Monthly income' : hasSpend ? 'Monthly spend' : 'Monthly net');
+  title.textContent = bothTypes ? 'Transactions'
+    : hasIncome ? 'Income'
+    : hasSpend ? 'Spend'
+    : (isDaily ? 'Daily net' : 'Monthly net');
   headLeft.appendChild(title);
   const viewPills = document.createElement('div');
   viewPills.className = 'pills';
