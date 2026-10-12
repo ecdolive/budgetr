@@ -964,6 +964,12 @@ let txnSort = { key: 'date', dir: -1 }; // default: newest first
 // same month again and it clears) layered on top of whatever the search box
 // already matches, rather than a persisted setting.
 let txnMonthFilter = null; // month index (0-11) | null
+// Same idea as txnMonthFilter above, but set by clicking a day's bar in the
+// chart's Daily view instead of a month's column in Monthly — the two are
+// mutually exclusive (setting one clears the other, see renderTransactionsChart's
+// click handlers) since they're just the two chart views' own click-to-filter
+// grain, not independent filters meant to combine.
+let txnDayFilter = null; // 'YYYY-MM-DD' | null
 // Transactions tab chart: monthly (bars for Income/Spend, same as always)
 // or daily (every calendar day the data spans, always lines — see
 // dailyTotalsFromRows/renderTransactionsChart). Persists across visits,
@@ -1233,6 +1239,7 @@ function navItem(label, key, isActive, iconSrc){
     searchQuery = '';
     searchField = 'all';
     txnMonthFilter = null;
+    txnDayFilter = null;
     renderAll();
   });
   return div;
@@ -1995,9 +2002,10 @@ function renderTransactionsChart(host, rows, onMonthClick){
   headLeft.className = 'txn-chart-head-left';
   const title = document.createElement('div');
   title.className = 'txn-chart-title';
-  title.textContent = isDaily
-    ? (bothTypes ? 'Daily income, spend & net' : hasIncome ? 'Daily income' : hasSpend ? 'Daily spend' : 'Daily net')
-    : (bothTypes ? 'Monthly income, spend & net' : hasIncome ? 'Monthly income' : hasSpend ? 'Monthly spend' : 'Monthly net');
+  title.textContent = bothTypes ? 'Transactions'
+    : hasIncome ? 'Income'
+    : hasSpend ? 'Spend'
+    : (isDaily ? 'Daily net' : 'Monthly net');
   headLeft.appendChild(title);
   const viewPills = document.createElement('div');
   viewPills.className = 'pills';
@@ -2261,6 +2269,21 @@ function renderTransactionsChart(host, rows, onMonthClick){
       hoverLine.setAttribute('class','txn-chart-hover-line');
       svg.appendChild(hoverLine);
 
+      // The clicked/selected day's own guide (see txnDayFilter) — stays
+      // put in the chart's accent color rather than fading on
+      // pointerleave like the hover line above, so the current filter
+      // reads at a glance even after the pointer moves away.
+      const selectedLine = document.createElementNS(svgNS,'line');
+      selectedLine.setAttribute('y1', padT); selectedLine.setAttribute('y2', padT+innerH);
+      selectedLine.setAttribute('class','txn-chart-selected-line');
+      svg.appendChild(selectedLine);
+      const selectedIdx = txnDayFilter === null ? -1 : xs.indexOf(txnDayFilter);
+      if (selectedIdx >= 0){
+        const x = xFor(selectedIdx);
+        selectedLine.setAttribute('x1', x); selectedLine.setAttribute('x2', x);
+        selectedLine.style.opacity = 1;
+      }
+
       function dayIndexAt(e){
         const pt = svg.createSVGPoint();
         pt.x = e.clientX; pt.y = e.clientY;
@@ -2291,6 +2314,10 @@ function renderTransactionsChart(host, rows, onMonthClick){
         }
         tooltip.innerHTML = `<div class="txn-chart-tooltip-date">${dateLabel(xs[i])}</div>` +
           rows.map(([label,v,cls])=>
+            // Net is a derived figure (Income minus Spend), not a third
+            // measured value alongside them — the divider sets it apart as
+            // a total, the way a receipt rules off its sum.
+            (bothTypes && label==='Net' ? `<div class="txn-chart-tooltip-divider"></div>` : '') +
             `<div class="txn-chart-tooltip-row"><span class="txn-chart-tooltip-label">${label}</span><span class="num ${cls}">${fmtChartValue(v)}</span></div>`
           ).join('');
         tooltip.style.opacity = 1;
@@ -2309,13 +2336,13 @@ function renderTransactionsChart(host, rows, onMonthClick){
       }
       overlay.addEventListener('pointermove', (e)=> showAt(dayIndexAt(e)));
       overlay.addEventListener('pointerleave', hide);
-      // Clicking still filters the table below by month (there's no
-      // separate day-level filter — see txnMonthFilter/
-      // renderTransactionsBody), just derived from whichever day was
-      // clicked rather than a whole month's own band.
+      // Clicking toggles that day as a filter on the table below (see
+      // txnDayFilter/renderTransactionsBody) — clears any month filter left
+      // over from Monthly, since the two are mutually exclusive.
       overlay.addEventListener('click', (e)=>{
-        const mi = parseInt(xs[dayIndexAt(e)].slice(5,7),10)-1;
-        txnMonthFilter = (txnMonthFilter === mi) ? null : mi;
+        const day = xs[dayIndexAt(e)];
+        txnDayFilter = (txnDayFilter === day) ? null : day;
+        txnMonthFilter = null;
         if (onMonthClick) onMonthClick();
       });
     } else {
@@ -2573,10 +2600,13 @@ function renderTransactionsChart(host, rows, onMonthClick){
       overlay.addEventListener('pointerleave', hide);
       // Clicking a month toggles it as a filter on the table below (see
       // txnMonthFilter/renderTransactionsBody) — the chart itself is
-      // unaffected, always showing every month's trend regardless.
+      // unaffected, always showing every month's trend regardless. Clears
+      // any day filter left over from Daily, since the two are mutually
+      // exclusive.
       overlay.addEventListener('click', (e)=>{
         const mi = months[bandIndexAt(e)];
         txnMonthFilter = (txnMonthFilter === mi) ? null : mi;
+        txnDayFilter = null;
         if (onMonthClick) onMonthClick();
       });
     }
@@ -2592,9 +2622,17 @@ function renderTransactionsChart(host, rows, onMonthClick){
 function renderTransactionsPage(mid){
   const titleBar = document.createElement('div');
   titleBar.className = 'mid-title transactions-toolbar';
+
+  // Title + search share a 3-column row (title | search | spacer) so the
+  // search bar sits dead-center in the bar regardless of the title's own
+  // width, rather than just centered in the leftover space beside it (see
+  // .transactions-toolbar-row below) — the spacer is title's mirror,
+  // nothing else.
+  const topRow = document.createElement('div');
+  topRow.className = 'transactions-toolbar-row';
   const titleSpan = document.createElement('span');
   titleSpan.textContent = 'Transactions';
-  titleBar.appendChild(titleSpan);
+  topRow.appendChild(titleSpan);
 
   const searchWrap = document.createElement('div');
   searchWrap.className = 'search-wrap';
@@ -2616,7 +2654,15 @@ function renderTransactionsPage(mid){
   clearBtn.innerHTML = `<img src="icons/close.svg" alt="">`;
   clearBtn.hidden = !searchQuery;
   searchWrap.appendChild(clearBtn);
-  titleBar.appendChild(searchWrap);
+  topRow.appendChild(searchWrap);
+  topRow.appendChild(document.createElement('span')); // spacer, mirrors titleSpan's column
+  titleBar.appendChild(topRow);
+
+  // The results blurb now lives directly under the search bar, in the
+  // sticky header itself (see renderTransactionsHeading) rather than
+  // scrolling away with the table below.
+  const headingHost = document.createElement('div');
+  titleBar.appendChild(headingHost);
   mid.appendChild(titleBar);
 
   const chartHost = document.createElement('div');
@@ -2628,8 +2674,18 @@ function renderTransactionsPage(mid){
 
   function refresh(){
     renderTransactionsChart(chartHost, filteredSearchTxns(), refresh);
+    // txnMonthFilter/txnDayFilter (set by clicking a month/day in the chart
+    // above) only ever narrow the table and heading, never the chart itself
+    // — computed once here and shared by both below rather than each
+    // re-deriving the same filtered set.
+    const rows = filteredSearchTxns().filter(t =>
+      (txnMonthFilter === null || t.month === txnMonthFilter) &&
+      (txnDayFilter === null || t.date === txnDayFilter)
+    );
+    headingHost.innerHTML = '';
+    headingHost.appendChild(renderTransactionsHeading(rows, refresh));
     body.innerHTML = '';
-    body.appendChild(renderTransactionsBody(refresh));
+    body.appendChild(renderTransactionsBody(rows, refresh));
   }
   input.addEventListener('input', (e)=>{
     searchQuery = e.target.value.trim();
@@ -2653,19 +2709,13 @@ function renderTransactionsPage(mid){
 // totaling [amount]" (see refresh() above, which rebuilds this on every
 // keystroke and field-select change alike, since both live in
 // module-level searchQuery/searchField state).
-function renderTransactionsBody(onSortChange){
-  const wrap = document.createDocumentFragment();
+function renderTransactionsHeading(rows, onSortChange){
   const heading = document.createElement('div');
   heading.className = 'search-heading';
-  // txnMonthFilter (set by clicking a month in the chart above — see
-  // renderTransactionsChart) only ever narrows the table, never the chart
-  // itself — the chart keeps showing every month's trend regardless, so
-  // clicking one doesn't collapse it down to a single bar.
-  const rows = filteredSearchTxns().filter(t => txnMonthFilter === null || t.month === txnMonthFilter);
   // Sum of whatever's currently visible — recalculates with every
   // search/filter keystroke and field-select change, since it's derived
-  // from the same filteredSearchTxns() rows the table itself renders, not
-  // the full unfiltered transaction list.
+  // from the same rows the table itself renders, not the full unfiltered
+  // transaction list.
   const total = rows.reduce((a,t)=>a+t.amount,0);
 
   const countEl = document.createElement('b');
@@ -2685,6 +2735,20 @@ function renderTransactionsBody(onSortChange){
       onSortChange();
     });
     heading.appendChild(monthChip);
+  }
+
+  if (txnDayFilter !== null){
+    heading.appendChild(document.createTextNode(' on '));
+    const dayChip = document.createElement('button');
+    dayChip.type = 'button';
+    dayChip.className = 'search-heading-month-chip';
+    dayChip.textContent = txnTableDateLabel(txnDayFilter);
+    dayChip.setAttribute('aria-label', `Clear ${txnTableDateLabel(txnDayFilter)} filter`);
+    dayChip.addEventListener('click', ()=>{
+      txnDayFilter = null;
+      onSortChange();
+    });
+    heading.appendChild(dayChip);
   }
 
   if (searchQuery){
@@ -2733,8 +2797,9 @@ function renderTransactionsBody(onSortChange){
   totalEl.className = 'amt ' + signCls(total);
   totalEl.textContent = fmtSigned(total);
   heading.appendChild(totalEl);
-  wrap.appendChild(heading);
-
+  return heading;
+}
+function renderTransactionsBody(rows, onSortChange){
   const table = document.createElement('table');
   table.className = 'ledger txn-flat';
   const cols = [['date','Date'],['description','Description'],['amount','Amount'],['category','Category'],['subcategory','Subcategory'],['account','Account'],['type','Type']];
@@ -2761,8 +2826,7 @@ function renderTransactionsBody(onSortChange){
     });
   }
   table.appendChild(tbody);
-  wrap.appendChild(wrapScroll(table));
-  return wrap;
+  return wrapScroll(table);
 }
 function filteredSearchTxns(){
   const q = searchQuery.toLowerCase();
