@@ -964,6 +964,12 @@ let txnSort = { key: 'date', dir: -1 }; // default: newest first
 // same month again and it clears) layered on top of whatever the search box
 // already matches, rather than a persisted setting.
 let txnMonthFilter = null; // month index (0-11) | null
+// Same idea as txnMonthFilter above, but set by clicking a day's bar in the
+// chart's Daily view instead of a month's column in Monthly — the two are
+// mutually exclusive (setting one clears the other, see renderTransactionsChart's
+// click handlers) since they're just the two chart views' own click-to-filter
+// grain, not independent filters meant to combine.
+let txnDayFilter = null; // 'YYYY-MM-DD' | null
 // Transactions tab chart: monthly (bars for Income/Spend, same as always)
 // or daily (every calendar day the data spans, always lines — see
 // dailyTotalsFromRows/renderTransactionsChart). Persists across visits,
@@ -1233,6 +1239,7 @@ function navItem(label, key, isActive, iconSrc){
     searchQuery = '';
     searchField = 'all';
     txnMonthFilter = null;
+    txnDayFilter = null;
     renderAll();
   });
   return div;
@@ -2261,6 +2268,21 @@ function renderTransactionsChart(host, rows, onMonthClick){
       hoverLine.setAttribute('class','txn-chart-hover-line');
       svg.appendChild(hoverLine);
 
+      // The clicked/selected day's own guide (see txnDayFilter) — stays
+      // put in the chart's accent color rather than fading on
+      // pointerleave like the hover line above, so the current filter
+      // reads at a glance even after the pointer moves away.
+      const selectedLine = document.createElementNS(svgNS,'line');
+      selectedLine.setAttribute('y1', padT); selectedLine.setAttribute('y2', padT+innerH);
+      selectedLine.setAttribute('class','txn-chart-selected-line');
+      svg.appendChild(selectedLine);
+      const selectedIdx = txnDayFilter === null ? -1 : xs.indexOf(txnDayFilter);
+      if (selectedIdx >= 0){
+        const x = xFor(selectedIdx);
+        selectedLine.setAttribute('x1', x); selectedLine.setAttribute('x2', x);
+        selectedLine.style.opacity = 1;
+      }
+
       function dayIndexAt(e){
         const pt = svg.createSVGPoint();
         pt.x = e.clientX; pt.y = e.clientY;
@@ -2309,13 +2331,13 @@ function renderTransactionsChart(host, rows, onMonthClick){
       }
       overlay.addEventListener('pointermove', (e)=> showAt(dayIndexAt(e)));
       overlay.addEventListener('pointerleave', hide);
-      // Clicking still filters the table below by month (there's no
-      // separate day-level filter — see txnMonthFilter/
-      // renderTransactionsBody), just derived from whichever day was
-      // clicked rather than a whole month's own band.
+      // Clicking toggles that day as a filter on the table below (see
+      // txnDayFilter/renderTransactionsBody) — clears any month filter left
+      // over from Monthly, since the two are mutually exclusive.
       overlay.addEventListener('click', (e)=>{
-        const mi = parseInt(xs[dayIndexAt(e)].slice(5,7),10)-1;
-        txnMonthFilter = (txnMonthFilter === mi) ? null : mi;
+        const day = xs[dayIndexAt(e)];
+        txnDayFilter = (txnDayFilter === day) ? null : day;
+        txnMonthFilter = null;
         if (onMonthClick) onMonthClick();
       });
     } else {
@@ -2573,10 +2595,13 @@ function renderTransactionsChart(host, rows, onMonthClick){
       overlay.addEventListener('pointerleave', hide);
       // Clicking a month toggles it as a filter on the table below (see
       // txnMonthFilter/renderTransactionsBody) — the chart itself is
-      // unaffected, always showing every month's trend regardless.
+      // unaffected, always showing every month's trend regardless. Clears
+      // any day filter left over from Daily, since the two are mutually
+      // exclusive.
       overlay.addEventListener('click', (e)=>{
         const mi = months[bandIndexAt(e)];
         txnMonthFilter = (txnMonthFilter === mi) ? null : mi;
+        txnDayFilter = null;
         if (onMonthClick) onMonthClick();
       });
     }
@@ -2657,11 +2682,14 @@ function renderTransactionsBody(onSortChange){
   const wrap = document.createDocumentFragment();
   const heading = document.createElement('div');
   heading.className = 'search-heading';
-  // txnMonthFilter (set by clicking a month in the chart above — see
-  // renderTransactionsChart) only ever narrows the table, never the chart
-  // itself — the chart keeps showing every month's trend regardless, so
-  // clicking one doesn't collapse it down to a single bar.
-  const rows = filteredSearchTxns().filter(t => txnMonthFilter === null || t.month === txnMonthFilter);
+  // txnMonthFilter/txnDayFilter (set by clicking a month/day in the chart
+  // above — see renderTransactionsChart) only ever narrow the table, never
+  // the chart itself — the chart keeps showing every month's or day's trend
+  // regardless, so clicking one doesn't collapse it down to a single bar.
+  const rows = filteredSearchTxns().filter(t =>
+    (txnMonthFilter === null || t.month === txnMonthFilter) &&
+    (txnDayFilter === null || t.date === txnDayFilter)
+  );
   // Sum of whatever's currently visible — recalculates with every
   // search/filter keystroke and field-select change, since it's derived
   // from the same filteredSearchTxns() rows the table itself renders, not
@@ -2685,6 +2713,20 @@ function renderTransactionsBody(onSortChange){
       onSortChange();
     });
     heading.appendChild(monthChip);
+  }
+
+  if (txnDayFilter !== null){
+    heading.appendChild(document.createTextNode(' on '));
+    const dayChip = document.createElement('button');
+    dayChip.type = 'button';
+    dayChip.className = 'search-heading-month-chip';
+    dayChip.textContent = txnTableDateLabel(txnDayFilter);
+    dayChip.setAttribute('aria-label', `Clear ${txnTableDateLabel(txnDayFilter)} filter`);
+    dayChip.addEventListener('click', ()=>{
+      txnDayFilter = null;
+      onSortChange();
+    });
+    heading.appendChild(dayChip);
   }
 
   if (searchQuery){
