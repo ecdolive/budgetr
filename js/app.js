@@ -2617,9 +2617,17 @@ function renderTransactionsChart(host, rows, onMonthClick){
 function renderTransactionsPage(mid){
   const titleBar = document.createElement('div');
   titleBar.className = 'mid-title transactions-toolbar';
+
+  // Title + search share a 3-column row (title | search | spacer) so the
+  // search bar sits dead-center in the bar regardless of the title's own
+  // width, rather than just centered in the leftover space beside it (see
+  // .transactions-toolbar-row below) — the spacer is title's mirror,
+  // nothing else.
+  const topRow = document.createElement('div');
+  topRow.className = 'transactions-toolbar-row';
   const titleSpan = document.createElement('span');
   titleSpan.textContent = 'Transactions';
-  titleBar.appendChild(titleSpan);
+  topRow.appendChild(titleSpan);
 
   const searchWrap = document.createElement('div');
   searchWrap.className = 'search-wrap';
@@ -2641,7 +2649,15 @@ function renderTransactionsPage(mid){
   clearBtn.innerHTML = `<img src="icons/close.svg" alt="">`;
   clearBtn.hidden = !searchQuery;
   searchWrap.appendChild(clearBtn);
-  titleBar.appendChild(searchWrap);
+  topRow.appendChild(searchWrap);
+  topRow.appendChild(document.createElement('span')); // spacer, mirrors titleSpan's column
+  titleBar.appendChild(topRow);
+
+  // The results blurb now lives directly under the search bar, in the
+  // sticky header itself (see renderTransactionsHeading) rather than
+  // scrolling away with the table below.
+  const headingHost = document.createElement('div');
+  titleBar.appendChild(headingHost);
   mid.appendChild(titleBar);
 
   const chartHost = document.createElement('div');
@@ -2653,8 +2669,18 @@ function renderTransactionsPage(mid){
 
   function refresh(){
     renderTransactionsChart(chartHost, filteredSearchTxns(), refresh);
+    // txnMonthFilter/txnDayFilter (set by clicking a month/day in the chart
+    // above) only ever narrow the table and heading, never the chart itself
+    // — computed once here and shared by both below rather than each
+    // re-deriving the same filtered set.
+    const rows = filteredSearchTxns().filter(t =>
+      (txnMonthFilter === null || t.month === txnMonthFilter) &&
+      (txnDayFilter === null || t.date === txnDayFilter)
+    );
+    headingHost.innerHTML = '';
+    headingHost.appendChild(renderTransactionsHeading(rows, refresh));
     body.innerHTML = '';
-    body.appendChild(renderTransactionsBody(refresh));
+    body.appendChild(renderTransactionsBody(rows, refresh));
   }
   input.addEventListener('input', (e)=>{
     searchQuery = e.target.value.trim();
@@ -2678,22 +2704,13 @@ function renderTransactionsPage(mid){
 // totaling [amount]" (see refresh() above, which rebuilds this on every
 // keystroke and field-select change alike, since both live in
 // module-level searchQuery/searchField state).
-function renderTransactionsBody(onSortChange){
-  const wrap = document.createDocumentFragment();
+function renderTransactionsHeading(rows, onSortChange){
   const heading = document.createElement('div');
   heading.className = 'search-heading';
-  // txnMonthFilter/txnDayFilter (set by clicking a month/day in the chart
-  // above — see renderTransactionsChart) only ever narrow the table, never
-  // the chart itself — the chart keeps showing every month's or day's trend
-  // regardless, so clicking one doesn't collapse it down to a single bar.
-  const rows = filteredSearchTxns().filter(t =>
-    (txnMonthFilter === null || t.month === txnMonthFilter) &&
-    (txnDayFilter === null || t.date === txnDayFilter)
-  );
   // Sum of whatever's currently visible — recalculates with every
   // search/filter keystroke and field-select change, since it's derived
-  // from the same filteredSearchTxns() rows the table itself renders, not
-  // the full unfiltered transaction list.
+  // from the same rows the table itself renders, not the full unfiltered
+  // transaction list.
   const total = rows.reduce((a,t)=>a+t.amount,0);
 
   const countEl = document.createElement('b');
@@ -2775,8 +2792,9 @@ function renderTransactionsBody(onSortChange){
   totalEl.className = 'amt ' + signCls(total);
   totalEl.textContent = fmtSigned(total);
   heading.appendChild(totalEl);
-  wrap.appendChild(heading);
-
+  return heading;
+}
+function renderTransactionsBody(rows, onSortChange){
   const table = document.createElement('table');
   table.className = 'ledger txn-flat';
   const cols = [['date','Date'],['description','Description'],['amount','Amount'],['category','Category'],['subcategory','Subcategory'],['account','Account'],['type','Type']];
@@ -2803,8 +2821,7 @@ function renderTransactionsBody(onSortChange){
     });
   }
   table.appendChild(tbody);
-  wrap.appendChild(wrapScroll(table));
-  return wrap;
+  return wrapScroll(table);
 }
 function filteredSearchTxns(){
   const q = searchQuery.toLowerCase();
